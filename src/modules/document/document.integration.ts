@@ -2,7 +2,9 @@
 // part of `bun test src`. The unit suite runs the routes on a double of the database; this runs the
 // db library's real statements, which is the only place their SQL, row-level security, the quota
 // triggers, the key table and the `created_at::text` cursor are exercised through the routes.
+
 import { afterAll, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { sql } from 'drizzle-orm'
 import {
   documentSchema,
@@ -145,9 +147,7 @@ describe('list, delete and restore against Postgres', () => {
         tx.execute(sql`
           insert into playbook.documents
             (id, organization_id, name, content_hash, size_bytes, declared_type, detected_type, uploaded_by, object_key, created_at)
-          values (${id}, ${h.organizationId}, ${`${i}.pdf`}, ${Buffer.from(pdfBytes(`page-${i}`))
-            .subarray(0, 32)
-            .fill(i + 1)},
+          values (${id}, ${h.organizationId}, ${`${i}.pdf`}, decode(${createHash('sha256').update(`page-${i}`).digest('hex')}, 'hex'),
             10, 'application/pdf', 'pdf', ${h.people.owner.userId}, ${`k${i}`}, '2026-01-01 00:00:00.000001+00')`)
       )
     }
