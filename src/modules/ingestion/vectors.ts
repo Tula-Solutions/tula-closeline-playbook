@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { MAX_HEADING_CHARS } from './chunker'
 import {
   chunksKey,
   documentPrefix,
@@ -11,23 +12,36 @@ import {
 /** The attributes every vector carries: what the cleanup deletes by and what a search shows. */
 export type VectorMeta = { document_id: string; epoch: number; chunk: number; page: number }
 
-/** The parsed pages kept between the parse step and the chunk step (a resume point). */
-export const pagesArtifactSchema = z.strictObject({
-  pages: z.array(z.strictObject({ number: z.number().int().min(1), text: z.string() })),
-})
+/** The parsed pages kept between the parse step and the chunk step (a resume point); bounded by the settings. */
+export function pagesArtifactSchema(env: Pick<PipelineDeps['env'], 'MAX_TEXT_CHARS_PER_DOCUMENT'>) {
+  return z.strictObject({
+    pages: z.array(
+      z.strictObject({
+        number: z.number().int().min(1),
+        text: z.string().max(env.MAX_TEXT_CHARS_PER_DOCUMENT),
+      })
+    ),
+  })
+}
 
-/** The chunks of one ingestion, kept in the object store: the text behind each vector, by chunk number. */
-export const chunksArtifactSchema = z.strictObject({
-  chunks: z.array(
-    z.strictObject({
-      index: z.number().int().min(0),
-      page: z.number().int().min(1),
-      pageEnd: z.number().int().min(1),
-      heading: z.string(),
-      text: z.string().min(1),
-    })
-  ),
-})
+/** The chunks of one ingestion, kept in the object store: the text behind each vector, by chunk number; bounded by the settings. */
+export function chunksArtifactSchema(
+  env: Pick<PipelineDeps['env'], 'CHUNK_MAX_CHARS' | 'MAX_CHUNKS_PER_DOCUMENT'>
+) {
+  return z.strictObject({
+    chunks: z
+      .array(
+        z.strictObject({
+          index: z.number().int().min(0),
+          page: z.number().int().min(1),
+          pageEnd: z.number().int().min(1),
+          heading: z.string().max(MAX_HEADING_CHARS),
+          text: z.string().min(1).max(env.CHUNK_MAX_CHARS),
+        })
+      )
+      .max(env.MAX_CHUNKS_PER_DOCUMENT),
+  })
+}
 
 /**
  * Deletes a document's vectors tagged with an epoch up to and including `upToEpoch`, one filter per

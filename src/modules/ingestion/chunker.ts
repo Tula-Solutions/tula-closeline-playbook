@@ -18,6 +18,12 @@
  *    in two is still whole in one of them.
  * 4. Never emits a chunk that is empty after trimming.
  *
+ * Every per-line step is linear in the line: no regular expression with a quantifier over
+ * whitespace that can backtrack runs on a line (the trailing-hash strip of a heading is a scan from
+ * the end, and a line longer than {@link MAX_HEADING_LINE} is never tested as a heading). The
+ * function is async only to yield: after every {@link YIELD_EVERY_CHARS} characters it lets the
+ * event loop run, so heartbeats and HTTP are not starved by a large or hostile document.
+ *
  * Each chunk keeps the page it starts on (`page`), the page it ends on (`pageEnd`) and the heading
  * it sits under.
  */
@@ -68,8 +74,26 @@ export class ChunkLimitError extends Error {
 /** The longest heading kept on a chunk, in characters. */
 export const MAX_HEADING_CHARS = 200
 
-/** The longest line, in characters, that can be a heading. */
-const MAX_HEADING_LINE = 100
+/** The longest line, in characters, that can be a heading; a longer one is an ordinary paragraph. */
+export const MAX_HEADING_LINE = 100
+
+/** How many characters the chunker works through before it yields to the event loop. */
+export const YIELD_EVERY_CHARS = 65_536
+
+/** Counts the characters worked through and yields to the event loop every {@link YIELD_EVERY_CHARS}. */
+type Pacer = (chars: number) => Promise<void>
+
+/** A pacer that yields with `setImmediate` (a macrotask, so timers and I/O run in between). */
+function createPacer(): Pacer {
+  let since = 0
+  return async (chars) => {
+    since += chars
+    if (since >= YIELD_EVERY_CHARS) {
+      since = 0
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+  }
+}
 
 // Control characters (the tab and line feed are kept), bidirectional overrides and isolates, zero
 // width space and direction marks, the word joiner and the byte order mark.
@@ -99,21 +123,50 @@ export function cleanText(text: string): string {
   return text.replace(LINE_BREAKS, '\n').replace(REMOVED, '').replace(LONE_SURROGATE, '�')
 }
 
-const MARKDOWN_HEADING = /^#{1,6}[ \t]+(\S.*)$/
 const NUMBERED_HEADING = /^(?:\d{1,3}(?:\.\d{1,3}){0,4}|[IVXLC]{1,6})[.)]?[ \t]+\p{Lu}/u
 
 /** Whether `line` ends like a sentence, which a heading does not. */
 function endsLikeSentence(line: string): boolean {
-  return /[.,;:!?]$/.test(line)
+  return '.,;:!?'.includes(line.charAt(line.length - 1))
+}
+
+/** The text of a Markdown heading line (one to six `#`, a space or tab, then text), or `undefined`. Linear. */
+function markdownHeading(line: string): string | undefined {
+  let hashes = 0
+  while (hashes < line.length && line.charCodeAt(hashes) === 35) {
+    hashes++
+  }
+  const after = line.charCodeAt(hashes)
+  if (hashes < 1 || hashes > 6 || (after !== 32 && after !== 9)) {
+    return undefined
+  }
+  let end = line.length
+  // A closing run of hashes (`## Title ##`) is dropped, scanning from the end.
+  let at = end
+  while (at > hashes && line.charCodeAt(at - 1) === 35) {
+    at--
+  }
+  if (
+    at < end &&
+    at > hashes &&
+    (line.charCodeAt(at - 1) === 32 || line.charCodeAt(at - 1) === 9)
+  ) {
+    end = at
+  }
+  const text = line.slice(hashes, end).trim()
+  return text === '' ? undefined : text
 }
 
 /** The heading text of a one-line paragraph, or `undefined` when it is not a heading. */
 function headingOf(line: string): string | undefined {
-  const markdown = MARKDOWN_HEADING.exec(line)
-  if (markdown?.[1] !== undefined) {
-    return markdown[1].replace(/[ \t]+#+$/, '').trim()
+  if (line.length > MAX_HEADING_LINE) {
+    return undefined
   }
-  if (line.length > MAX_HEADING_LINE || endsLikeSentence(line)) {
+  const markdown = markdownHeading(line)
+  if (markdown !== undefined) {
+    return markdown
+  }
+  if (endsLikeSentence(line)) {
     return undefined
   }
   const letters = line.replace(/[^\p{L}]/gu, '')
@@ -140,7 +193,7 @@ function* blocksOf(page: number, cleaned: string): Generator<Block> {
     if (lines.length > 0) {
       const text = lines.join('\n')
       lines = []
-      const single = text.split('\n').length === 1 ? headingOf(text) : undefined
+      const single = text.includes('\n') ? undefined : headingOf(text)
       yield single === undefined
         ? { page, text, heading: false }
         : { page, text: single, heading: true }
@@ -216,7 +269,7 @@ function overlapOf(piece: string, overlap: number): string {
  * towards `targetChars`, a sentence longer than the room left cut hard, each piece after the first
  * beginning with the tail of the one before.
  */
-function splitLong(text: string, options: ChunkOptions): string[] {
+async function splitLong(text: string, options: ChunkOptions, pace: Pacer): Promise<string[]> {
   const { targetChars, maxChars, overlapChars } = options
   // A sentence plus the overlap and one space must still fit the limit.
   const sentenceLimit = maxChars - overlapChars - 1
@@ -234,6 +287,7 @@ function splitLong(text: string, options: ChunkOptions): string[] {
     if (end < 0) {
       end = hardCut(text, at, sentenceLimit)
     }
+    await pace(end - at)
     const sentence = text.slice(at, end).trim()
     at = end
     if (sentence === '') {
@@ -254,11 +308,15 @@ function splitLong(text: string, options: ChunkOptions): string[] {
 }
 
 /**
- * Cuts pages into chunks. Deterministic: the same pages and options always give the same chunks.
+ * Cuts pages into chunks, yielding to the event loop every {@link YIELD_EVERY_CHARS} characters. Deterministic: the same pages and options always give the same chunks.
  * Throws {@link ChunkLimitError} as soon as chunk number `maxChunks + 1` would be produced, so a
  * hostile document costs bounded work.
  */
-export function chunkPages(pages: readonly ChunkInputPage[], options: ChunkOptions): Chunk[] {
+export async function chunkPages(
+  pages: readonly ChunkInputPage[],
+  options: ChunkOptions
+): Promise<Chunk[]> {
+  const pace = createPacer()
   const { targetChars, maxChars, maxChunks } = options
   const minChars = Math.floor(targetChars / 4)
   const chunks: Chunk[] = []
@@ -287,7 +345,9 @@ export function chunkPages(pages: readonly ChunkInputPage[], options: ChunkOptio
   }
 
   for (const page of pages) {
+    await pace(page.text.length)
     for (const block of blocksOf(page.number, cleanText(page.text))) {
+      await pace(block.text.length)
       if (block.heading) {
         flush()
         heading = block.text.slice(0, MAX_HEADING_CHARS)
@@ -297,7 +357,7 @@ export function chunkPages(pages: readonly ChunkInputPage[], options: ChunkOptio
         continue
       }
       if (block.text.length > maxChars) {
-        const pieces = splitLong(block.text, options)
+        const pieces = await splitLong(block.text, options, pace)
         const lead = parts.join('\n\n')
         // A heading waiting alone goes in front of the first piece when they fit together.
         const first = pieces[0] ?? ''

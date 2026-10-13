@@ -317,12 +317,12 @@ async function parseStep(c: JobContext, detectedType: string): Promise<void> {
 async function chunkStep(c: JobContext): Promise<void> {
   const { env } = c.deps
   const { pages } = await readArtifact(c, pagesKey(c.documentId, c.epoch), (value) => {
-    const result = pagesArtifactSchema.safeParse(value)
+    const result = pagesArtifactSchema(env).safeParse(value)
     return result.success ? result.data : undefined
   })
   let chunks: Chunk[]
   try {
-    chunks = chunkPages(pages, {
+    chunks = await chunkPages(pages, {
       targetChars: env.CHUNK_TARGET_CHARS,
       maxChars: env.CHUNK_MAX_CHARS,
       overlapChars: env.CHUNK_OVERLAP_CHARS,
@@ -398,7 +398,7 @@ async function embedStep(c: JobContext): Promise<void> {
   const { deps } = c
   const { env, embedder } = deps
   const { chunks } = await readArtifact(c, chunksKey(c.documentId, c.epoch), (value) => {
-    const result = chunksArtifactSchema.safeParse(value)
+    const result = chunksArtifactSchema(env).safeParse(value)
     return result.success ? result.data : undefined
   })
   if (c.progress.chunkCount !== null && c.progress.chunkCount !== chunks.length) {

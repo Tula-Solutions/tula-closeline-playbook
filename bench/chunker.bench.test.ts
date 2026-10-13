@@ -20,8 +20,8 @@ const options = { targetChars: 1000, maxChars: 1600, overlapChars: 150, maxChunk
 test(`chunker: the best of batches of 20 documents of 300 pages is within ${BUDGET_MS} ms`, async () => {
   let chunks = 0
   const result = await measure(
-    () => {
-      chunks = chunkPages(pages, options).length
+    async () => {
+      chunks = (await chunkPages(pages, options)).length
     },
     { warmup: 20, batchRequests: 20, batches: 5 }
   )
@@ -30,3 +30,29 @@ test(`chunker: the best of batches of 20 documents of 300 pages is within ${BUDG
   expect(chunks).toBeGreaterThan(0)
   expect(result.bestMs).toBeLessThan(BUDGET_MS)
 }, 60_000)
+
+// The hostile shapes: a heading line or a paragraph that is one run of spaces. The scan is linear,
+// so the cost is that of the characters, not their square. Typical best batch: 70 ms for 5 runs of
+// 1 MB (about 14 ms each). Budget: 5x, rounded up, which an O(n^2) scan overshoots by 100x.
+const HOSTILE_BUDGET_MS = 350
+const hostile = [
+  ['a heading followed by a million spaces', `# a${' '.repeat(1_000_000)}b`],
+  ['a million spaces inside a line', `start${' '.repeat(1_000_000)}end`],
+] as const
+
+test.each(hostile)(
+  `chunker, hostile input (%s): the best of batches of 5 is within ${HOSTILE_BUDGET_MS} ms`,
+  async (_name, text) => {
+    const input = [{ number: 1, text }]
+    const result = await measure(
+      async () => {
+        await chunkPages(input, { ...options, maxChunks: 100_000 })
+      },
+      { warmup: 3, batchRequests: 5, batches: 5 }
+    )
+
+    console.log(summary('chunker hostile', result))
+    expect(result.bestMs).toBeLessThan(HOSTILE_BUDGET_MS)
+  },
+  60_000
+)
