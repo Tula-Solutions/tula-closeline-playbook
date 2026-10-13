@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import { formatId, type Role } from 'tula-closeline-contract'
-import { IDEMPOTENCY_BEGIN, QUOTA_LOCK } from 'tula-closeline-db'
+import {
+  DOCUMENT_REQUEUE,
+  DOCUMENT_RESTORE_FOR_UPLOAD,
+  IDEMPOTENCY_BEGIN,
+  QUOTA_LOCK,
+} from 'tula-closeline-db'
 import { createTestDeps, newOrganizationId, newUserId } from '~/testing'
 import * as Documents from './service'
 import { pdfBytes } from './test-support'
@@ -73,6 +78,43 @@ describe('the lock order of an upload transaction (the db library requires the k
     )
     expect(locking.length).toBeGreaterThan(0)
     for (const statements of locking) {
+      expect(statements.indexOf(IDEMPOTENCY_BEGIN)).toBeGreaterThanOrEqual(0)
+      expect(statements.indexOf(IDEMPOTENCY_BEGIN)).toBeLessThan(statements.indexOf(QUOTA_LOCK))
+    }
+  })
+
+  test('the restore-by-upload and failed-document re-upload branches keep the same order', async () => {
+    const deps = createTestDeps()
+    const context = {
+      userId: newUserId(),
+      organizationId: newOrganizationId(),
+      role: 'owner' as const,
+      requestId: formatId('req', crypto.randomUUID()),
+    }
+    const send = (name: string, text: string, key: string) =>
+      Documents.upload(deps, context, {
+        fileName: name,
+        declaredMediaType: null,
+        bytes: new TextEncoder().encode(text),
+        idempotencyKey: key,
+      })
+    // A deleted document uploaded again is restored.
+    const gone = (await send('a.txt', 'content of a', 'k-1')).document
+    await Documents.remove(deps, context, gone.id)
+    await send('a.txt', 'content of a', 'k-2')
+    // A failed document uploaded again is requeued.
+    const failed = (await send('b.txt', 'content of b', 'k-3')).document
+    deps.database.update(context.organizationId, failed.id, {
+      state: 'failed',
+      failure_reason: 'no_text',
+    })
+    await send('b.txt', 'content of b', 'k-4')
+
+    const all = deps.database.transactionStatements
+    const branch = (statement: string) => all.filter((statements) => statements.includes(statement))
+    expect(branch(DOCUMENT_RESTORE_FOR_UPLOAD).length).toBeGreaterThan(0)
+    expect(branch(DOCUMENT_REQUEUE).length).toBeGreaterThan(0)
+    for (const statements of all.filter((x) => x.includes(QUOTA_LOCK))) {
       expect(statements.indexOf(IDEMPOTENCY_BEGIN)).toBeGreaterThanOrEqual(0)
       expect(statements.indexOf(IDEMPOTENCY_BEGIN)).toBeLessThan(statements.indexOf(QUOTA_LOCK))
     }
