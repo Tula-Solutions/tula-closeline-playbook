@@ -548,6 +548,68 @@ describe('shutdown and instances', () => {
     hang.release()
   })
 
+  test("one Organization's long job does not idle the other slots or delay another Organization", async () => {
+    const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
+    const hang = gate()
+    const parse = h.deps.parser.parse.bind(h.deps.parser)
+    const long = await h.upload('long.txt', 'long document')
+    spyOn(h.deps.parser, 'parse').mockImplementation(async (doc, options) => {
+      if (new TextDecoder().decode(doc.bytes) === 'long document') {
+        await hang.open
+      }
+      return parse(doc, options)
+    })
+    const other = h.other()
+    const quick = (
+      await Documents.upload(h.deps, other, {
+        fileName: 'quick.txt',
+        declaredMediaType: null,
+        bytes: new TextEncoder().encode(paragraphs(2, 'quick')),
+        idempotencyKey: undefined,
+      })
+    ).document.id
+
+    const running = h.deps.workers.ingestion.runPass()
+    await h.deps.time.settle()
+
+    // The other Organization's job finished while the long one is still parsing.
+    expect(h.deps.database.documents(other.organizationId).find((d) => d.id === quick)?.state).toBe(
+      'ready'
+    )
+    expect(h.document(long)?.state).not.toBe('ready')
+    hang.release()
+    await running
+    expect(h.document(long)?.state).toBe('ready')
+  })
+
+  test('the pool never runs more jobs than the concurrency setting, across Organizations', async () => {
+    const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
+    let active = 0
+    let peak = 0
+    const parse = h.deps.parser.parse.bind(h.deps.parser)
+    spyOn(h.deps.parser, 'parse').mockImplementation(async (doc, options) => {
+      active++
+      peak = Math.max(peak, active)
+      await h.deps.sleep(500)
+      active--
+      return parse(doc, options)
+    })
+    for (let i = 0; i < 3; i++) {
+      await Documents.upload(h.deps, h.other(), {
+        fileName: `n${i}.txt`,
+        declaredMediaType: null,
+        bytes: new TextEncoder().encode(paragraphs(2, `o${i}`)),
+        idempotencyKey: undefined,
+      })
+    }
+
+    const running = h.deps.workers.ingestion.runPass()
+    await h.deps.time.advance(5_000)
+    expect(await running).toBe(3)
+
+    expect(peak).toBe(2)
+  })
+
   test('two instances running the loop at once process each job once', async () => {
     const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
     const parse = spyOn(h.deps.parser, 'parse')

@@ -1,4 +1,5 @@
 import {
+  type ClaimedIngestionJob,
   claimedJobs,
   INGESTION_JOB_CLAIM,
   INGESTION_JOB_GIVE_UP_SPENT,
@@ -29,8 +30,10 @@ const MAX_NUDGED = 1_000
 export interface Ingestion {
   /**
    * One pass: Organizations nudged since the last pass first, then every Organization the database
-   * names for `jobs_due`. Each gets one claim of up to `INGESTION_CONCURRENCY` jobs, which run to
-   * the end of what their claims allow, then the spent jobs are failed. Returns the jobs run.
+   * names for `jobs_due`. Jobs run in one pool bounded by `INGESTION_CONCURRENCY` across all
+   * Organizations: each Organization is claimed for as many jobs as there are free slots and the
+   * pass moves on without waiting for them, so a long job idles no slot and delays no other
+   * Organization's claim. The pass returns when its jobs have ended, with the number run.
    */
   runPass(): Promise<number>
   /** Asks the loop to look at an Organization at once. Only a hint: losing it loses nothing. */
@@ -52,20 +55,48 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
   let wake: AbortController | undefined
   let running: Promise<void> | undefined
 
-  async function claimAndRun(organizationId: string): Promise<number> {
+  /** The jobs running now, across every Organization: one pool bounded by `INGESTION_CONCURRENCY`. */
+  const active = new Set<Promise<void>>()
+
+  /** Starts a job in the pool without waiting for it; a failing job reports and frees its slot. */
+  function launch(
+    organizationId: string,
+    job: ClaimedIngestionJob,
+    mine: Set<Promise<void>>
+  ): void {
+    const task: Promise<void> = runJob(deps, organizationId, job, shutdown.signal)
+      .then(
+        () => undefined,
+        (error: unknown) => reportWorkerError(deps, error, { worker: 'ingestion', organizationId })
+      )
+      .finally(() => {
+        active.delete(task)
+      })
+    active.add(task)
+    mine.add(task)
+  }
+
+  /** Waits until the pool has a free slot (or shutdown). */
+  async function freeSlot(): Promise<void> {
+    while (active.size >= env.INGESTION_CONCURRENCY && !shutdown.signal.aborted) {
+      await Promise.race(active)
+    }
+  }
+
+  async function claimAndRun(organizationId: string, mine: Set<Promise<void>>): Promise<number> {
     let ran = 0
     for (let round = 0; round < MAX_EMPTY_ROUNDS && !shutdown.signal.aborted; round++) {
+      await freeSlot()
+      if (shutdown.signal.aborted) {
+        break
+      }
+      const free = env.INGESTION_CONCURRENCY - active.size
       let rows: readonly IngestionJobClaimRow[]
       try {
         rows = (
           await inTransaction(deps, organizationId, async (run) => {
             await run(CLAIM_LOCK_TIMEOUT_SQL, [])
-            return run(INGESTION_JOB_CLAIM, [
-              organizationId,
-              env.INGESTION_CONCURRENCY,
-              env.INGESTION_LEASE_MS,
-              null,
-            ])
+            return run(INGESTION_JOB_CLAIM, [organizationId, free, env.INGESTION_LEASE_MS, null])
           })
         ).rows as unknown as IngestionJobClaimRow[]
       } catch (error) {
@@ -78,7 +109,9 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
       }
       const { jobs, cancelled, lost } = claimedJobs(rows)
       if (jobs.length > 0) {
-        await Promise.all(jobs.map((job) => runJob(deps, organizationId, job, shutdown.signal)))
+        for (const job of jobs) {
+          launch(organizationId, job, mine)
+        }
         ran += jobs.length
         break
       }
@@ -101,6 +134,16 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
   }
 
   async function runPass(): Promise<number> {
+    // The slots are shared by every pass of this instance; a pass ends when its own jobs have.
+    const mine = new Set<Promise<void>>()
+    try {
+      return await passOver(mine)
+    } finally {
+      await Promise.all(mine)
+    }
+  }
+
+  async function passOver(mine: Set<Promise<void>>): Promise<number> {
     let ran = 0
     const first = [...nudged]
     nudged.clear()
@@ -111,14 +154,14 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
       }
       done.add(organizationId)
       try {
-        ran += await claimAndRun(organizationId)
+        ran += await claimAndRun(organizationId, mine)
       } catch (error) {
         reportWorkerError(deps, error, { worker: 'ingestion', organizationId })
       }
     }
     await forEachOrganization(deps, 'jobs_due', shutdown.signal, async (organizationId) => {
       if (!done.has(organizationId)) {
-        ran += await claimAndRun(organizationId)
+        ran += await claimAndRun(organizationId, mine)
       }
     })
     return ran
