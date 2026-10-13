@@ -103,6 +103,11 @@ export type MemoryPlaybookDatabase = {
   failNext(statement: string, error: Error): void
   /** Makes every run of this statement text fail with `error` until `clearFailures`. */
   failAlways(statement: string, error: Error): void
+  /**
+   * Makes the next commit fail with `error` after the work ran: `applied` says whether the change
+   * was nonetheless made (the server committed and the answer was lost) or not (it was rolled back).
+   */
+  failNextCommit(error: Error, options: { applied: boolean }): void
   /** Forgets every injected failure. */
   clearFailures(): void
   /** How many transactions were opened, per Organization. */
@@ -143,6 +148,7 @@ const IDENTITY_COLUMNS = [
 export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryPlaybookDatabase {
   let committed: State = { documents: [], jobs: [], keys: [], usage: new Set() }
   const failures: { statement: string; error: Error; once: boolean }[] = []
+  const commitFailures: { error: Error; applied: boolean }[] = []
   const transactions: string[] = []
   let queue: Promise<unknown> = Promise.resolve()
   const now = () => options.clock.now().getTime()
@@ -597,6 +603,13 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         usage: new Set(committed.usage),
       }
       const result = await fn(runner(draft, organizationId))
+      const commitFailure = commitFailures.shift()
+      if (commitFailure !== undefined) {
+        if (commitFailure.applied) {
+          committed = draft
+        }
+        throw commitFailure.error
+      }
       committed = draft
       return result
     }
@@ -678,7 +691,12 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     },
     failNext: (statement, error) => void failures.push({ statement, error, once: true }),
     failAlways: (statement, error) => void failures.push({ statement, error, once: false }),
-    clearFailures: () => void failures.splice(0, failures.length),
+    failNextCommit: (error, options) =>
+      void commitFailures.push({ error, applied: options.applied }),
+    clearFailures: () => {
+      failures.splice(0, failures.length)
+      commitFailures.splice(0, commitFailures.length)
+    },
     transactions,
   }
 }

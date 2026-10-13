@@ -39,9 +39,15 @@ import {
   REMOVE_ALL_IDEMPOTENCY_ROUTE,
 } from 'tula-closeline-db'
 import { INTERNAL_CALL_USER_ID } from 'tula-closeline-db/schema'
-import { isAppError, StorageError } from 'tula-closeline-kit'
+import { StorageError } from 'tula-closeline-kit'
 import type { Run } from '~/adapters/postgres/processed-store'
-import { isLockTimeout, postgresErrorOf, retryTransaction } from '~/adapters/postgres/retry'
+import {
+  DEADLOCK_DETECTED,
+  isLockTimeout,
+  postgresErrorOf,
+  retryTransaction,
+  SERIALIZATION_FAILURE,
+} from '~/adapters/postgres/retry'
 import type { Container } from '~/container'
 import { domainError, RetryAfterError } from '~/http/domain-error'
 import { registry } from '~/messages'
@@ -159,17 +165,40 @@ async function readDocument(
   }
 }
 
+/**
+ * The errors raised while a transaction's work was running, before its commit was sent. Such an
+ * error means the transaction did not commit, whatever it was (a statement the server refused, a
+ * dropped connection, a bug), because the commit is only sent after the work returns. An error
+ * that is not in this set came from before the work or from the commit or release, where the
+ * server may or may not have applied the change.
+ */
+const raisedBeforeCommit = new WeakSet<object>()
+
 /** Makes a transaction that can run again after a deadlock or a serialization failure, then maps a lock timeout to a retryable 503. */
 async function transaction<T>(
   deps: Pick<DocumentDeps, 'scope'>,
   organizationId: string,
   work: (run: Run) => Promise<T>
 ): Promise<T> {
+  const marked = async (run: Run): Promise<T> => {
+    try {
+      return await work(run)
+    } catch (error) {
+      if (typeof error === 'object' && error !== null) {
+        raisedBeforeCommit.add(error)
+      }
+      throw error
+    }
+  }
   try {
-    return await retryTransaction(() => deps.scope(organizationId, work))
+    return await retryTransaction(() => deps.scope(organizationId, marked))
   } catch (error) {
     if (isLockTimeout(error)) {
-      throw new RetryAfterError(ERRORS['server.unavailable'], RETRY_AFTER_SECONDS)
+      const busy = new RetryAfterError(ERRORS['server.unavailable'], RETRY_AFTER_SECONDS)
+      if (typeof error === 'object' && error !== null && raisedBeforeCommit.has(error)) {
+        raisedBeforeCommit.add(busy)
+      }
+      throw busy
     }
     throw error
   }
@@ -234,10 +263,20 @@ function storedDeclaredType(declared: string | null): string {
   return /^[ -~]{1,255}$/.test(normalised) ? normalised : 'application/octet-stream'
 }
 
-/** Whether a failure is certain to have rolled the transaction back: ours, or one the server answered with a SQLSTATE. */
+/**
+ * Whether a failed transaction certainly left no row, so the file written for it can go. That is
+ * so when the error was raised while the work ran (the commit was never sent), and when the server
+ * answered the commit itself with a rollback: a serialization failure, a deadlock or a constraint
+ * violation (class 23). Any other error at or after the commit (a shutdown code such as 57P01, a
+ * connection error of class 08, a socket error such as EPIPE) leaves the outcome unknown.
+ */
 function rolledBack(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && raisedBeforeCommit.has(error)) {
+    return true
+  }
+  const code = postgresErrorOf(error)?.code
   return (
-    error instanceof ObjectRequired || isAppError(error) || postgresErrorOf(error) !== undefined
+    code === SERIALIZATION_FAILURE || code === DEADLOCK_DETECTED || code?.startsWith('23') === true
   )
 }
 

@@ -794,17 +794,57 @@ describe('upload: the order of the three effects and what each crash leaves', ()
     expect(h.published).toEqual([])
   })
 
-  test('a failure whose outcome is unknown keeps the object, because the row may have committed', async () => {
+  test('a failure raised by a statement, with or without a SQLSTATE, removes the object: the commit was never sent', async () => {
+    for (const error of [postgresError('57P01'), new Error('connection reset by peer')]) {
+      const h = await createDocumentHarness()
+      h.deps.database.failNext(DOCUMENT_INSERT, error)
+
+      const response = await h.upload('a.pdf', pdfBytes('a'))
+
+      expect(response.status).toBe(500)
+      expect(await h.objectKeys()).toEqual([])
+      expect(h.deps.database.documents(h.organizationId)).toEqual([])
+      expect(h.published).toEqual([])
+    }
+  })
+
+  test('a commit that fails with an unknown outcome keeps the object, whether or not the row was applied', async () => {
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })
+    for (const [error, applied] of [
+      [postgresError('57P01'), true],
+      [postgresError('57P01'), false],
+      [epipe, true],
+      [epipe, false],
+      [postgresError('08006'), true],
+    ] as const) {
+      const h = await createDocumentHarness()
+      h.deps.database.failNextCommit(error, { applied })
+
+      const response = await h.upload('a.pdf', pdfBytes('a'))
+
+      expect(response.status).toBe(500)
+      expect(await h.objectKeys()).toHaveLength(1)
+      expect(h.deps.database.documents(h.organizationId)).toHaveLength(applied ? 1 : 0)
+      expect(h.deps.logLines.join('\n')).toContain('unknown outcome')
+      if (applied) {
+        const [row] = h.deps.database.documents(h.organizationId)
+        expect(await h.objectKeys()).toEqual([row?.object_key ?? ''])
+        const again = await h.upload('a.pdf', pdfBytes('a'))
+        expect(again.status).toBe(200)
+        expect(await h.objectKeys()).toEqual([row?.object_key ?? ''])
+      }
+    }
+  })
+
+  test('a commit refused with a serialization failure is a certain rollback and is run again', async () => {
     const h = await createDocumentHarness()
-    h.deps.database.failNext(DOCUMENT_INSERT, new Error('connection reset by peer'))
+    h.deps.database.failNextCommit(postgresError('40001'), { applied: false })
 
     const response = await h.upload('a.pdf', pdfBytes('a'))
 
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(201)
     expect(await h.objectKeys()).toHaveLength(1)
-    expect(h.deps.database.documents(h.organizationId)).toEqual([])
-    expect(h.published).toEqual([])
-    expect(h.deps.logLines.join('\n')).toContain('unknown outcome')
+    expect(h.deps.database.documents(h.organizationId)).toHaveLength(1)
   })
 
   test('a failed publish after the commit still answers 201: the document is stored and its job is queued', async () => {
