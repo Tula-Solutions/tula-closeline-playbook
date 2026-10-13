@@ -102,7 +102,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   content check (a DOCX or PPTX is judged by the entry names in its ZIP central directory only),
   SHA-256, then one transaction (idempotency key, quota lock, duplicate by hash,
   quota, insert; it rolls back with `ObjectRequired` when it would insert before the file is
-  stored), the object write under `documents/<documentId>/original.<type>`, the transaction again,
+  stored), an attempt record (route `documents.upload_attempt`, its own short transaction; the
+  orphan sweep's trace of an object whose write answer may be lost), the object write under
+  `documents/<documentId>/original.<type>`, the transaction again,
   and only then the publish. No publish inside a transaction. A crash before the commit leaves
   nothing a row names (the file is deleted only when the transaction certainly rolled back: an error
   raised while its work ran, or a serialization, deadlock or class 23 answer to the commit; any

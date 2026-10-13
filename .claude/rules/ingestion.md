@@ -39,6 +39,10 @@ paths:
   1 s `lock_timeout`; a timeout is tried again next tick, unreported, and a listing cut short by
   `ORPHAN_MAX_PAGES` is not marked. Keys are purged at `IDEMPOTENCY_PURGE_AGE_MS` (26 h). Upload
   transactions insert their idempotency key before `QUOTA_LOCK` (the db's lock-order rule).
+  An upload that may write an object first commits an attempt record (route
+  `documents.upload_attempt`, random key, no response; one short extra transaction and one row per
+  such upload, purged at 26 h) so the orphan sweep can find an object whose answer was lost; if the
+  record fails, the upload fails before anything is stored.
   `cleanup_pending` lists exactly the pending cleanups (`DOCUMENT_LIST_PENDING_CLEANUP`, keyset
   `(deleted_at, id)`, at most 5 pages of 100 a tick) and keeps a five-minute floor so a fresh
   delete is left to its message. A delete message whose cleanup waits on a lease is

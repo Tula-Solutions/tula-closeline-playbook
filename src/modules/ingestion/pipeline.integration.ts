@@ -3,7 +3,7 @@
 // a double of the database; this runs the db library's real claim, advance, cleanup, purge and
 // discovery statements, under row-level security. Objects, vectors, parser and embedder stay in
 // memory: those adapters are other tickets.
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { sql } from 'drizzle-orm'
 import {
   createDb,
@@ -159,5 +159,30 @@ describe('the db v0.13.0 statements against Postgres', () => {
     expect(visit).toEqual({ status: 'done', deleted: 1, more: false })
     expect(await h.deps.objects.head(h.organizationId, orphan)).toBeUndefined()
     expect(await named()).not.toContain(h.organizationId)
+  })
+  test('an upload whose object write landed and whose answer was lost is swept through the real upload path', async () => {
+    const h = harness()
+    await catchUp(h)
+    const put = h.deps.objects.put.bind(h.deps.objects)
+    spyOn(h.deps.objects, 'put').mockImplementation(async (org, key, body, options) => {
+      await put(org, key, body, options)
+      throw new Error('the connection dropped after the write')
+    })
+    await expect(h.upload('notes.txt', paragraphs(2))).rejects.toBeDefined()
+    const listed = () => h.deps.objects.list(h.organizationId, { prefix: 'documents/' })
+    expect((await listed()).items).toHaveLength(1)
+    // The database stamped the attempt with its own clock; age it past the sweep's rules.
+    await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute(
+        sql`update playbook.idempotency_keys set created_at = clock_timestamp() - interval '26 hours'
+            where organization_id = ${h.organizationId} and route = 'documents.upload_attempt'`
+      )
+    )
+    await h.deps.time.advance(30 * 60 * 60 * 1000)
+
+    const visit = await visitOrphanSweep(h.deps, h.organizationId, never)
+
+    expect(visit).toMatchObject({ status: 'done', deleted: 1 })
+    expect((await listed()).items).toEqual([])
   })
 })
