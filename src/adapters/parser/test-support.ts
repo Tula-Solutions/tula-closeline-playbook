@@ -13,6 +13,10 @@ export type PdfOptions = {
   pages: string[]
   /** Adds an `/Encrypt` entry that no empty password satisfies. */
   encrypted?: boolean
+  /** What the page tree root claims as its page count, whatever the pages are. */
+  declaredCount?: number
+  /** Wraps the pages in this many nested page tree nodes, each holding only the next. */
+  nestedDepth?: number
 }
 
 /** Builds a small valid PDF in code, one Helvetica line of text per page. */
@@ -21,13 +25,21 @@ export function buildPdf(options: PdfOptions): Uint8Array {
   const count = options.pages.length
   // 1 catalog, 2 pages, 3 font, then per page a page object and a content stream.
   objects[1] = '<< /Type /Catalog /Pages 2 0 R >>'
+  const depth = options.nestedDepth ?? 0
+  // Nested nodes sit after the pages: 4 + 2 * count + level.
+  const nodeId = (level: number) => (level === 0 ? 2 : 4 + 2 * count + level - 1)
   const kids = options.pages.map((_p, i) => `${4 + i * 2} 0 R`).join(' ')
-  objects[2] = `<< /Type /Pages /Kids [${kids}] /Count ${count} >>`
+  const declared = options.declaredCount ?? count
+  for (let level = 0; level <= depth; level++) {
+    const children = level === depth ? kids : `${nodeId(level + 1)} 0 R`
+    objects[nodeId(level)] =
+      `<< /Type /Pages ${level === 0 ? '' : `/Parent ${nodeId(level - 1)} 0 R `}/Kids [${children}] /Count ${level === 0 ? declared : count} >>`
+  }
   objects[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
   options.pages.forEach((text, i) => {
     const content = text === '' ? '' : `BT /F1 12 Tf 72 720 Td (${pdfString(text)}) Tj ET`
     objects[4 + i * 2] =
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${5 + i * 2} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`
+      `<< /Type /Page /Parent ${nodeId(depth)} 0 R /MediaBox [0 0 612 792] /Contents ${5 + i * 2} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`
     objects[5 + i * 2] = `<< /Length ${content.length} >>\nstream\n${content}\nendstream`
   })
   let encryptRef = ''

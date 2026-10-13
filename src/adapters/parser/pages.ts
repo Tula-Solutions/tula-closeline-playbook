@@ -42,6 +42,11 @@ export class PageSink {
     return this.pages.length
   }
 
+  /** How many more characters of text the document may hold. */
+  get remaining(): number {
+    return Math.max(0, this.limits.maxTextChars - this.chars)
+  }
+
   /** Adds one page of untrusted text, cleaned the way the chunker expects; over a limit it throws a {@link ParseError}. */
   push(text: string, needsOcr = false): void {
     if (this.pages.length >= this.limits.maxPages) {
