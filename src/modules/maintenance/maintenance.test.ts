@@ -312,3 +312,25 @@ describe('work discovery', () => {
     expect(h.deps.database.discoveries.length).toBeGreaterThanOrEqual(4)
   })
 })
+
+describe('what discovery counts as due (as the database does)', () => {
+  test('a message completed minutes ago and a document deleted today are not due, and are once their time comes', async () => {
+    const h = createPipelineHarness()
+    const id = await h.upload('notes.txt', paragraphs(2))
+    await h.pass()
+    await h.deps.consumer.pollOnce()
+    await Documents.remove(h.deps, h.context, id)
+    const names = async (kind: 'consumed_purge' | 'purge_due') =>
+      (await h.deps.discover(kind, '', 100)).map((row) => row.organization_id)
+
+    expect(await names('consumed_purge')).not.toContain(h.organizationId)
+    expect(await names('purge_due')).not.toContain(h.organizationId)
+
+    await h.deps.time.advance(14 * DAY)
+    expect(await names('consumed_purge')).not.toContain(h.organizationId)
+    await h.deps.time.advance(2 * DAY)
+    expect(await names('consumed_purge')).toContain(h.organizationId)
+    await h.deps.time.advance(15 * DAY)
+    expect(await names('purge_due')).toContain(h.organizationId)
+  })
+})

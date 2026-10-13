@@ -193,20 +193,26 @@ describe('Organization isolation', () => {
 
   test('the table-wide purge finds every Organization and the global scope through discovery', async () => {
     await clear()
-    for (const organizationId of [ORG_A, ORG_B, null]) {
-      const k = key(organizationId)
-      const claimed = await postgres.claim(k, 60)
-      if (claimed.status === 'claimed') {
-        await postgres.complete(k, claimed.token)
-      }
+    // Rows that are already old when inserted: the work hint is noted at the insert, at
+    // completed_at + 15 days, and moving completed_at afterwards would not move it.
+    for (const scope of SCOPES) {
+      await withOrganization(owner.db, scope, (tx) =>
+        tx.execute(sql`
+          insert into playbook.consumed_message
+            (consumer, organization_id, message_id, state, claim_token, completed_at)
+          values ('playbook.ingestion', ${scope}, 'old', 'done', gen_random_uuid(),
+                  clock_timestamp() - interval '16 days')`)
+      )
     }
-    await pass(60 * 60 * 24 * 16)
+    // A record completed just now is not due and is left alone.
+    await postgres.claim(key(ORG_A, 'young'), 60)
 
-    await postgres.purge(new Date(), 100)
+    await postgres.purge(new Date(Date.now() - 15 * 24 * 60 * 60 * 1000), 100)
 
-    expect(await rowsIn(ORG_A)).toEqual([])
-    expect(await rowsIn(ORG_B)).toEqual([])
-    expect(await rowsIn(GLOBAL_SCOPE_ORGANIZATION_ID)).toEqual([])
+    for (const scope of SCOPES) {
+      expect((await rowsIn(scope)).map((row) => row.message_id)).not.toContain('old')
+    }
+    expect((await rowsIn(ORG_A)).map((row) => row.message_id)).toEqual(['young'])
   })
 })
 

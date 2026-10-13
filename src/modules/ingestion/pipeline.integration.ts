@@ -82,9 +82,12 @@ describe('the pipeline against Postgres', () => {
     const id = await h.upload('notes.txt', paragraphs(3))
     await h.pass()
     await Documents.remove(h.deps, h.context, id)
+    // Both columns move together (a check ties them), and the update fires the trigger that notes
+    // the work hint at the earlier time, which is how discovery finds the purge as due.
     await withOrganization(owner.db, h.organizationId, (tx) =>
       tx.execute(
-        sql`update playbook.documents set purge_due_at = now() - interval '1 minute' where id = ${id}`
+        sql`update playbook.documents set deleted_at = deleted_at - interval '31 days', purge_due_at = purge_due_at - interval '31 days'
+          where id = ${id}`
       )
     )
 
