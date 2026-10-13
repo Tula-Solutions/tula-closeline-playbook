@@ -7,6 +7,7 @@ import {
   QUOTA_LOCK,
 } from 'tula-closeline-db'
 import { createTestDeps, newOrganizationId, newUserId } from '~/testing'
+import { LOCK_TIMEOUT_SQL } from './idempotency'
 import * as Documents from './service'
 import { pdfBytes } from './test-support'
 
@@ -118,5 +119,29 @@ describe('the lock order of an upload transaction (the db library requires the k
       expect(statements.indexOf(IDEMPOTENCY_BEGIN)).toBeGreaterThanOrEqual(0)
       expect(statements.indexOf(IDEMPOTENCY_BEGIN)).toBeLessThan(statements.indexOf(QUOTA_LOCK))
     }
+  })
+})
+
+describe('the upload attempt record', () => {
+  test('its transaction sets the lock timeout before it takes any lock', async () => {
+    const deps = createTestDeps()
+    const context = {
+      userId: newUserId(),
+      organizationId: newOrganizationId(),
+      role: 'owner' as const,
+      requestId: formatId('req', crypto.randomUUID()),
+    }
+    await Documents.upload(deps, context, {
+      fileName: 'a.txt',
+      declaredMediaType: null,
+      bytes: new TextEncoder().encode('hello there'),
+      idempotencyKey: undefined,
+    })
+
+    const attempt = deps.database.transactionStatements.filter(
+      (statements) => statements.includes(IDEMPOTENCY_BEGIN) && !statements.includes(QUOTA_LOCK)
+    )
+    expect(attempt).toHaveLength(1)
+    expect(attempt[0]?.[0]).toBe(LOCK_TIMEOUT_SQL)
   })
 })

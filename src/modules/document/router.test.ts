@@ -909,6 +909,18 @@ describe('upload: the order of the three effects and what each crash leaves', ()
     expect(await h.objectKeys()).toEqual([])
   })
 
+  test('a lock timeout on the upload attempt record is a retryable 503 and no object is stored', async () => {
+    const h = await createDocumentHarness()
+    // The upload sends no Idempotency-Key, so the only IDEMPOTENCY_BEGIN is the attempt record.
+    h.deps.database.failNext(IDEMPOTENCY_BEGIN, postgresError('55P03'))
+
+    const response = await h.upload('a.pdf', pdfBytes('a'))
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).toBe('1')
+    expect(await h.objectKeys()).toEqual([])
+  })
+
   test('a deadlock is retried and the upload succeeds', async () => {
     const h = await createDocumentHarness()
     h.deps.database.failNext(QUOTA_LOCK, postgresError('40P01'))

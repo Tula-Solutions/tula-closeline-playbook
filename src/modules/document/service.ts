@@ -431,6 +431,8 @@ async function recordUploadAttempt(
   context: CallContext
 ): Promise<void> {
   await transaction(deps, context.organizationId, async (run) => {
+    // First, as in the upload transaction: never wait the session default behind a sweep's lock.
+    await run(LOCK_TIMEOUT_SQL, [])
     await run(IDEMPOTENCY_BEGIN, [
       context.organizationId,
       context.userId,
