@@ -34,6 +34,15 @@ export class ParserTransferFailed extends Error {
   }
 }
 
+/**
+ * How long, in ms, parses on this instance run one at a time after a {@link ParserOverloaded}
+ * event; another such event inside the window extends it. The job retries the ended parses, and
+ * alone a healthy file finishes while a runaway one trips the memory limit by itself and fails for
+ * good. This is scheduling state in this process only (it is not shared and not stored): any
+ * instance can be stopped at any time, and a restart simply starts with the lane open.
+ */
+export const EXCLUSIVE_LANE_MS = 30_000
+
 /** Settings of {@link createDocumentParser}. */
 export type DocumentParserOptions = {
   /** The page and text limits handed to every parse. */
@@ -46,6 +55,8 @@ export type DocumentParserOptions = {
   workerUrl?: URL
   /** Reads the process's resident memory; tests replace it. */
   residentBytes?: () => number
+  /** The clock of the exclusive lane, in ms; tests replace it. */
+  now?: () => number
 }
 
 /** The schema a worker's reply must satisfy under `limits`: it crossed a thread boundary, so it is untrusted. */
@@ -85,15 +96,18 @@ function replySchema(limits: ParserLimits) {
 export function createDocumentParser(options: DocumentParserOptions): DocumentParser {
   const url = options.workerUrl ?? new URL('./worker.ts', import.meta.url)
   const resident = options.residentBytes ?? (() => process.memoryUsage.rss())
-  const parses: LiveParses = { live: 0, contendedUntil: 0 }
+  const now = options.now ?? (() => performance.now())
+  const parses: LiveParses = { live: 0, contendedUntil: 0, exclusiveUntil: 0, waiters: new Set() }
   return {
     parse: async (document, { signal }) => {
       signal.throwIfAborted()
-      parses.live++
+      // Waiting for the lane is not parse time: the document's own time limit starts when its
+      // worker does. The job's call timeout covers the wait too, and a timeout there is retried.
+      await enterLane(parses, signal, now)
       try {
-        return await runInWorker(document, signal, url, resident, options, parses)
+        return await runInWorker(document, signal, url, resident, options, parses, now)
       } finally {
-        parses.live--
+        leaveLane(parses)
       }
     },
   }
@@ -101,9 +115,48 @@ export function createDocumentParser(options: DocumentParserOptions): DocumentPa
 
 /** The parses running in one parser: the memory poll measures the whole process, so it must know who else is running. */
 type LiveParses = {
+  /** Parses with a worker running. */
   live: number
-  /** Until this time (ms) a memory trip counts as shared, so the parses of one episode are judged alike. */
+  /** Until this time (ms, real clock) a memory trip counts as shared, so the parses of one episode are judged alike. */
   contendedUntil: number
+  /** Until this time (on the lane clock) a parse starts only when no other is running. */
+  exclusiveUntil: number
+  /** Parses waiting for the lane, woken whenever one ends. */
+  waiters: Set<() => void>
+}
+
+/** Waits until the parse may start: at once outside the exclusive window, else when none is running; honours `signal`. */
+async function enterLane(
+  parses: LiveParses,
+  signal: AbortSignal,
+  now: () => number
+): Promise<void> {
+  while (now() < parses.exclusiveUntil && parses.live > 0) {
+    await new Promise<void>((resolve, reject) => {
+      const wake = () => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }
+      const onAbort = () => {
+        parses.waiters.delete(wake)
+        reject(signal.reason)
+      }
+      parses.waiters.add(wake)
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+  signal.throwIfAborted()
+  parses.live++
+}
+
+/** Frees the parse's place and lets the waiting parses look again. */
+function leaveLane(parses: LiveParses): void {
+  parses.live--
+  const waiting = [...parses.waiters]
+  parses.waiters.clear()
+  for (const wake of waiting) {
+    wake()
+  }
 }
 
 /** Runs one parse in a fresh worker and always ends the worker. */
@@ -113,7 +166,8 @@ function runInWorker(
   url: URL,
   resident: () => number,
   options: DocumentParserOptions,
-  parses: LiveParses
+  parses: LiveParses,
+  now: () => number
 ): Promise<ParsedDocument> {
   return new Promise<ParsedDocument>((resolve, reject) => {
     const worker = new Worker(url.href, { smol: true })
@@ -136,12 +190,13 @@ function runInWorker(
     const deadline = setTimeout(() => fail('processing_failed'), options.timeoutMs)
     const memory = setInterval(() => {
       if (resident() - baseline > options.memoryLimitBytes) {
-        const now = performance.now()
+        const at = performance.now()
         if (parses.live > 1) {
-          parses.contendedUntil = now + 2 * MEMORY_POLL_MS
+          parses.contendedUntil = at + 2 * MEMORY_POLL_MS
         }
-        if (now < parses.contendedUntil) {
+        if (at < parses.contendedUntil) {
           // Others were running (or just ended for this reason): the growth is not this file's alone.
+          parses.exclusiveUntil = now() + EXCLUSIVE_LANE_MS
           finish(() => reject(new ParserOverloaded()))
         } else {
           fail('processing_failed')

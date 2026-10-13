@@ -66,9 +66,14 @@ paths:
   with a polling gap, backed by the size limits below; a killed Worker's memory may stay resident
   for a while). When the bound trips while another parse is live, the parse ends with
   `ParserOverloaded` (retried by the job, not failed; the parses of one episode are judged alike
-  for two polls), and only a file that trips it alone is `processing_failed`. A runaway file that
-  always overlaps another parse therefore uses at most `INGESTION_MAX_ATTEMPTS` (8) attempts, with
-  the job's backoff, before the job gives up: acceptable, since each attempt is bounded. The Worker's
+  for two polls), and only a file that trips it alone is `processing_failed`. After such an
+  event parses on the instance run one at a time for `EXCLUSIVE_LANE_MS` (30 s, extended by another
+  event; in-process state only, a restart starts with the lane open), so a retry runs alone: a
+  healthy file finishes and a runaway trips the limit by itself and fails for good, at its next
+  attempt. Waiting for the lane does not count against the parser's own time limit (it starts with
+  the worker) but does count against the job's call timeout, which is retried; the wait honours the
+  abort signal and the job's heartbeat keeps running meanwhile. A throw while handing the document
+  to the worker is `ParserTransferFailed`, also retried. The Worker's
   reply is checked with a Zod schema against the limits before use. Hang, crash, runaway and nonsense replies are `ParseError('processing_failed')`,
   never retried (the file is the cause). No error message or log holds file content.
   - Formats: PDF through `unpdf` (pdf.js, no native canvas): page count checked before any page,

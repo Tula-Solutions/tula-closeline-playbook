@@ -6,6 +6,7 @@ import { DOCX_MEDIA_TYPE, PPTX_MEDIA_TYPE } from './extract'
 import {
   createDocumentParser,
   createDocumentParserFor,
+  EXCLUSIVE_LANE_MS,
   ParserOverloaded,
   ParserTransferFailed,
 } from './index'
@@ -199,6 +200,89 @@ describe('a parser that hangs, crashes or runs away fails the document, never th
       )
     }
   })
+
+  /** A parser whose memory reading the test moves by hand and whose clock it also holds. */
+  function steered() {
+    const state = { level: 0, time: 1_000_000 }
+    const parser = createDocumentParser({
+      limits,
+      timeoutMs: 10_000,
+      memoryLimitBytes: 100,
+      workerUrl: new URL('./fixtures/hostile-worker.ts', import.meta.url),
+      residentBytes: () => state.level,
+      now: () => state.time,
+    })
+    return { state, parser }
+  }
+
+  test('after an overload parses run one at a time: the healthy file finishes, the runaway then fails alone for good', async () => {
+    const { state, parser } = steered()
+    // First round: both overlap and both are ended for the shared pressure.
+    const first = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    for (const outcome of await first) {
+      expect(outcome.status === 'rejected' ? outcome.reason : undefined).toBeInstanceOf(
+        ParserOverloaded
+      )
+    }
+
+    // The job retries both; they are admitted one at a time, in the order they ask.
+    const healthy = parser.parse(misbehave('slow'), { signal: never })
+    const runaway = parser.parse(misbehave('spin'), { signal: never })
+    const runawayOutcome = failureOf(runaway)
+    await expect(healthy).resolves.toMatchObject({ pages: [{ text: 'fine' }] })
+    const grow = setInterval(() => {
+      state.level += 1_000_000
+    }, 100)
+    try {
+      expect((await runawayOutcome).reason).toBe('processing_failed')
+    } finally {
+      clearInterval(grow)
+    }
+  }, 20_000)
+
+  test('the lane reopens to normal concurrency after the window', async () => {
+    const { state, parser } = steered()
+    const trip = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    await trip
+    state.time += EXCLUSIVE_LANE_MS + 1
+
+    const started = performance.now()
+    await Promise.all([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('slow'), { signal: never }),
+    ])
+
+    // Two 600 ms parses overlap; in single file they would take 1.2 s.
+    expect(performance.now() - started).toBeLessThan(1_000)
+  }, 20_000)
+
+  test('a parse waiting for the lane can be aborted, and a waiting parse does not use its own time limit', async () => {
+    const { state, parser } = steered()
+    const trip = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    await trip
+    const holder = parser.parse(misbehave('slow'), { signal: never })
+    const controller = new AbortController()
+    const waiting = parser.parse(misbehave('slow'), { signal: controller.signal })
+    setTimeout(() => controller.abort(new Error('shutting down')), 100)
+
+    await expect(waiting).rejects.toThrow('shutting down')
+    await expect(holder).resolves.toBeDefined()
+  }, 20_000)
 
   test('a parse that trips the memory limit alone is permanent', async () => {
     let grown = false
