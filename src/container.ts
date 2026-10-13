@@ -1,0 +1,238 @@
+import { sql } from 'drizzle-orm'
+import type { RequestId } from 'tula-closeline-contract'
+import { createDb, type Transaction, withOrganization } from 'tula-closeline-db'
+import {
+  type Clock,
+  createErrorReporter,
+  createLogger,
+  createRemoteKeySet,
+  createTokenVerifier,
+  type LogDestination,
+  type Logger,
+  type ObjectStore,
+  type ProcessedStore,
+  type Queue,
+  systemClock,
+  type TokenVerifier,
+  type VectorStore,
+} from 'tula-closeline-kit'
+import { type Consumer, createSqsQueue } from 'tula-closeline-kit/queue'
+import { createS3ObjectStore } from 'tula-closeline-kit/storage'
+import {
+  createMemoryObjectStore,
+  createMemoryQueue,
+  createMemoryVectorStore,
+} from 'tula-closeline-kit/testing'
+import { createMemoryEmbedder } from '~/adapters/memory/embedder'
+import { createMemoryOcrReader } from '~/adapters/memory/ocr'
+import { createMemoryParser } from '~/adapters/memory/parser'
+import { createPostgresProcessedStore, scopeOver } from '~/adapters/postgres/processed-store'
+import { createHandlers, createPlaybookConsumer } from '~/consumer'
+import { describeError } from '~/describe-error'
+import { type Env, loadEnv } from '~/env'
+import { SERVICE } from '~/info'
+import { type PlaybookEnvelope, registry } from '~/messages'
+import type { Embedder } from '~/ports/embedder'
+import type { OcrReader } from '~/ports/ocr'
+import type { DocumentParser } from '~/ports/parser'
+
+/** One dependency probe for `/readyz`: resolve when healthy, reject or stall when not. */
+export type ReadinessCheck = {
+  /** A short stable name, reported to the caller, never an address or credential. */
+  name: string
+  /** Probes the dependency; `signal` aborts when the check has run out of time. */
+  run: (signal: AbortSignal) => Promise<void>
+}
+
+/** What `reportError` is told about the request that failed. */
+export type ErrorContext = {
+  requestId: RequestId
+  /** The Organization of the verified token, when the request got that far. */
+  organizationId?: string | undefined
+  method: string
+  /** The path only, never the query string, which can carry secrets. */
+  path: string
+  /** The HTTP status of the response sent to the client, which can differ from the error's own. */
+  status: number
+}
+
+/** Everything a request needs from outside the process, built once in {@link createContainer}. */
+export type Container = {
+  env: Env
+  logger: Logger
+  clock: Clock
+  /** Checks access tokens offline against the auth service's published keys. */
+  tokenVerifier: TokenVerifier
+  /**
+   * Runs `fn` in a transaction scoped to one Organization. The only way any module reaches the
+   * database: a bare connection is never handed out.
+   */
+  withOrganization: <T>(organizationId: string, fn: (tx: Transaction) => Promise<T>) => Promise<T>
+  /** The ingestion queue: SQS when `QUEUE_URL` is set, otherwise in memory (local and tests only). */
+  queue: Queue<PlaybookEnvelope>
+  /** Uploaded files: S3 when `STORAGE_BUCKET` is set, otherwise in memory (local and tests only). */
+  objects: ObjectStore
+  /**
+   * The vector index. Memory only: the real adapter (turbopuffer, ADR 0010) is blocked on hub
+   * issue 48, so nothing written here survives a restart. Fine while no step writes vectors.
+   */
+  vectors: VectorStore
+  /** Which queue messages are done; Postgres, so any instance can be stopped at any time. */
+  processed: ProcessedStore
+  /** Turns text into vectors. A fake until a real adapter exists (ADR 0010). */
+  embedder: Embedder
+  /** Extracts the text layer of a document. A fake until a real adapter exists (ADR 0010). */
+  parser: DocumentParser
+  /** Reads pages with no text layer. A fake until a real adapter exists (ADR 0010). */
+  ocr: OcrReader
+  /** The queue consumer; built here, started by `server.ts` and stopped on shutdown. */
+  consumer: Consumer
+  /** Probes run by `/readyz`: the database. */
+  readinessChecks: readonly ReadinessCheck[]
+  /**
+   * The one place unexpected errors go: the kit's error reporter (Sentry when `SENTRY_DSN` is set)
+   * and a log line. It must not throw and must not return anything to a client.
+   */
+  reportError: (error: unknown, context: ErrorContext) => void
+  /** Delivers pending error reports and releases the database connections; safe to call twice. */
+  close: () => Promise<void>
+  /**
+   * Set once shutdown begins: `/readyz` answers 503 from then on, before the server stops.
+   * `drainingSince` is when the first signal arrived (epoch ms from `clock`), for shutdown only.
+   */
+  lifecycle: { draining: boolean; drainingSince?: number }
+}
+
+/**
+ * Calls `reportError` so that it can neither throw nor leave a rejected promise behind, even if
+ * an implementation wrongly went async.
+ */
+export function reportSafely(container: Container, error: unknown, context: ErrorContext): void {
+  try {
+    const result: unknown = container.reportError(error, context)
+    if (result instanceof Promise) {
+      result.catch(() => {})
+    }
+  } catch {
+    // A failing reporter must never turn a handled error into a dropped response.
+  }
+}
+
+/** Options for {@link createContainer}. */
+export type ContainerOptions = {
+  /** Where log lines go; defaults to stdout. */
+  logDestination?: LogDestination
+}
+
+/** How long `close` waits for the error reporter to deliver what it holds. */
+const REPORTER_CLOSE_MS = 2_000
+
+/** The SQS queue when `QUEUE_URL` is set, otherwise the kit's memory queue. */
+function createQueue(env: Env): Queue<PlaybookEnvelope> {
+  if (env.QUEUE_URL === undefined) {
+    return createMemoryQueue({ registry, clock: systemClock })
+  }
+  return createSqsQueue({
+    queueUrl: env.QUEUE_URL,
+    region: env.AWS_REGION,
+    environment: env.ENVIRONMENT,
+    registry,
+    ...(env.QUEUE_ENDPOINT === undefined ? {} : { endpoint: env.QUEUE_ENDPOINT }),
+  })
+}
+
+/** The S3 object store when `STORAGE_BUCKET` is set, otherwise the kit's memory store. */
+function createObjects(env: Env, logger: Logger): ObjectStore {
+  if (env.STORAGE_BUCKET === undefined) {
+    return createMemoryObjectStore({ maxObjectBytes: env.MAX_UPLOAD_BYTES })
+  }
+  return createS3ObjectStore({
+    bucket: env.STORAGE_BUCKET,
+    region: env.AWS_REGION,
+    environment: env.ENVIRONMENT,
+    maxObjectBytes: env.MAX_UPLOAD_BYTES,
+    logger,
+    ...(env.STORAGE_ENDPOINT === undefined ? {} : { endpoint: env.STORAGE_ENDPOINT }),
+  })
+}
+
+/**
+ * The single composition root: the only place adapters and process-wide objects are constructed.
+ * The real SQS and S3 adapters are built only when their settings are present; otherwise the
+ * kit's memory adapters stand in, which `loadEnv` allows only in `local`.
+ */
+export function createContainer(env: Env = loadEnv(), options: ContainerOptions = {}): Container {
+  const logger = createLogger({
+    service: SERVICE,
+    level: env.LOG_LEVEL,
+    ...(options.logDestination ? { destination: options.logDestination } : {}),
+  })
+  const errors = createErrorReporter({
+    dsn: env.SENTRY_DSN,
+    service: SERVICE,
+    environment: env.ENVIRONMENT,
+    region: env.REGION,
+    release: env.GIT_SHA,
+    logger,
+  })
+
+  const database = createDb(env.DATABASE_URL)
+  const keys = createRemoteKeySet({
+    url: env.AUTH_JWKS_URL,
+    allowInsecureLocalhost: env.ENVIRONMENT === 'local',
+    clock: systemClock,
+    logger,
+  })
+
+  const queue = createQueue(env)
+  const objects = createObjects(env, logger)
+  const embedder = createMemoryEmbedder()
+  const processed = createPostgresProcessedStore({ scope: scopeOver(database.db) })
+
+  const consumer = createPlaybookConsumer({
+    queue,
+    store: processed,
+    logger,
+    errorReporter: errors,
+    handlers: createHandlers(),
+    concurrency: env.CONSUMER_CONCURRENCY,
+  })
+
+  return {
+    env,
+    logger,
+    clock: systemClock,
+    tokenVerifier: createTokenVerifier({
+      issuer: env.AUTH_ISSUER,
+      audience: env.AUTH_AUDIENCE,
+      keys,
+      clock: systemClock,
+    }),
+    withOrganization: (organizationId, fn) => withOrganization(database.db, organizationId, fn),
+    queue,
+    objects,
+    vectors: createMemoryVectorStore({ dimensions: embedder.dimensions }),
+    processed,
+    embedder,
+    parser: createMemoryParser(),
+    ocr: createMemoryOcrReader(),
+    consumer,
+    readinessChecks: [
+      {
+        name: 'database',
+        run: async () => {
+          await database.db.execute(sql`select 1`)
+        },
+      },
+    ],
+    lifecycle: { draining: false },
+    reportError: (error, context) => {
+      logger.error('unhandled error', { ...context, error: describeError(error) })
+      errors.capture(error, context)
+    },
+    close: async () => {
+      await errors.close(REPORTER_CLOSE_MS)
+      await database.close()
+    },
+  }
+}

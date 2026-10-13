@@ -20,5 +20,5 @@
     "resolveJsonModule": true,
     "paths": { "~/*": ["./src/*"] }
   },
-  "include": ["src/**/*", "bench/**/*"]
+  "include": ["src/**/*", "bench/**/*", "scripts/**/*"]
 }
