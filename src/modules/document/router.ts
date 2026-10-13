@@ -7,6 +7,7 @@ import {
   idempotencyKeySchema,
   listDocumentsQuerySchema,
   listDocumentsResponseSchema,
+  PLAYBOOK_READ_ROLES,
   PLAYBOOK_ROUTES,
   PLAYBOOK_WRITE_ROLES,
   type Role,
@@ -44,6 +45,7 @@ function requireRole(roles: readonly Role[]): MiddlewareHandler<AuthedEnv> {
 
 const list = createRoute({
   ...contractRoute('listDocuments'),
+  middleware: requireRole(PLAYBOOK_READ_ROLES),
   tags,
   summary: 'List documents',
   security,
@@ -59,6 +61,7 @@ const list = createRoute({
 
 const get = createRoute({
   ...contractRoute('getDocument'),
+  middleware: requireRole(PLAYBOOK_READ_ROLES),
   tags,
   summary: 'Read a document',
   security,
@@ -74,6 +77,7 @@ const get = createRoute({
 
 const remove = createRoute({
   ...contractRoute('deleteDocument'),
+  middleware: requireRole(PLAYBOOK_WRITE_ROLES),
   tags,
   summary: 'Delete a document',
   security,
@@ -89,6 +93,7 @@ const remove = createRoute({
 
 const restore = createRoute({
   ...contractRoute('restoreDocument'),
+  middleware: requireRole(PLAYBOOK_WRITE_ROLES),
   tags,
   summary: 'Restore a deleted document',
   security,

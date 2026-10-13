@@ -65,6 +65,21 @@ describe('who may call', () => {
     }
   )
 
+  test('the role is checked before the path is validated: a Rep with a malformed id gets auth.forbidden', async () => {
+    const h = await createDocumentHarness()
+    const as = h.people.rep
+
+    const deleted = await h.call('DELETE', `${DOCUMENTS}/not-an-id`, { as })
+    const restored = await h.call('POST', `${DOCUMENTS}/not-an-id/restore`, { as })
+    const malformedAsOwner = await h.call('DELETE', `${DOCUMENTS}/not-an-id`)
+
+    for (const response of [deleted, restored]) {
+      expect(response.status).toBe(403)
+      expect(await errorCode(response)).toBe('auth.forbidden')
+    }
+    expect(malformedAsOwner.status).toBe(400)
+  })
+
   test.each(['owner', 'admin', 'manager', 'rep'] as const)(
     'a %s can list and read',
     async (role) => {
