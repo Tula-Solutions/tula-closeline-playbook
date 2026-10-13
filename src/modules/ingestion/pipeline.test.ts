@@ -523,6 +523,31 @@ describe('shutdown and instances', () => {
     }
   })
 
+  test('shutdown while a vector write is in flight leaves the job running with its lease: no release', async () => {
+    const h = createPipelineHarness()
+    const hang = gate()
+    const upsert = spyOn(h.deps.vectors, 'upsert').mockImplementation(async () => {
+      await hang.open
+    })
+    const id = await h.upload('notes.txt', paragraphs(3))
+    const first = createIngestion(h.deps)
+    const running = first.runPass()
+    await h.deps.time.settle()
+    expect(upsert).toHaveBeenCalled()
+
+    await first.stop(5_000)
+    await running
+
+    expect(jobOutcomes(h.deps)).toEqual(['uncertain'])
+    const [job] = h.deps.database.jobs(h.organizationId)
+    expect(job?.state).toBe('running')
+    expect(job?.next_attempt_at).toBeGreaterThan(h.deps.clock.now().getTime())
+    // A delete now waits for the lease: the late write cannot land after the cleanup.
+    await Documents.remove(h.deps, h.context, id)
+    expect(h.document(id)?.vectors_removed_seq).toBeNull()
+    hang.release()
+  })
+
   test('two instances running the loop at once process each job once', async () => {
     const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
     const parse = spyOn(h.deps.parser, 'parse')

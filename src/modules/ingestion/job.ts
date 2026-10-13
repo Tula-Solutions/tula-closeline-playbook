@@ -88,6 +88,8 @@ type JobContext = {
   signal: AbortSignal
   lost: AbortController
   progress: Progress
+  /** Vector writes started and not yet answered; a write the caller gave up on may still land. */
+  writesInFlight: number
 }
 
 /** Renews the lease once; false means the claim is gone. */
@@ -428,8 +430,8 @@ async function embedStep(c: JobContext): Promise<void> {
     // The claim must be alive when the write starts; the lease is longer than the write's deadline.
     await beat(c)
     try {
-      await within(deps, 'vector store', env.INGESTION_IO_TIMEOUT_MS, c.signal, () =>
-        deps.vectors.upsert(
+      await within(deps, 'vector store', env.INGESTION_IO_TIMEOUT_MS, c.signal, () => {
+        const write = deps.vectors.upsert(
           c.organizationId,
           batch.map((chunk, at) => ({
             id: vectorId(c.documentId, c.epoch, chunk.index),
@@ -442,7 +444,14 @@ async function embedStep(c: JobContext): Promise<void> {
             },
           }))
         )
-      )
+        // Counted until the store itself answers, not until the caller stops waiting.
+        c.writesInFlight++
+        const done = () => {
+          c.writesInFlight--
+        }
+        write.then(done, done)
+        return write
+      })
     } catch (error) {
       if (error instanceof CallTimeout) {
         throw new UncertainWrite()
@@ -521,6 +530,7 @@ export async function runJob(
     signal: AbortSignal.any([shutdown, lost.signal]),
     lost,
     progress: { chunkCount: job.chunk_count, chunksDone: job.chunks_done ?? 0 },
+    writesInFlight: 0,
   }
   const heartbeat = startHeartbeat(context)
   let outcome: JobOutcome
@@ -556,6 +566,15 @@ async function settle(
   try {
     if (c.lost.signal.aborted || error instanceof ClaimLost) {
       return 'lost'
+    }
+    if (c.writesInFlight > 0) {
+      // A write the store has not answered may still land. Releasing the job would clear the lease
+      // that fences a delete's cleanup, so the job stays running until its lease lapses.
+      deps.logger.warn('a vector write was interrupted; the job is left for its lease to lapse', {
+        organizationId: c.organizationId,
+        jobId: c.jobId,
+      })
+      return 'uncertain'
     }
     if (shutdown.aborted || error instanceof ShuttingDown) {
       const released = await inTransaction(deps, c.organizationId, (run) =>
