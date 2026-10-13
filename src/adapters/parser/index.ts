@@ -1,4 +1,5 @@
 import type { DocumentMediaType } from 'tula-closeline-contract'
+import type { Env } from '~/env'
 import { type DocumentParser, type ParsedDocument, ParseError } from '~/ports/parser'
 import type { ParserLimits } from './limits'
 import type { WorkerReply, WorkerRequest } from './worker'
@@ -103,5 +104,30 @@ function runInWorker(
     const bytes = document.bytes.slice()
     const request: WorkerRequest = { bytes, mediaType: document.mediaType, limits: options.limits }
     worker.postMessage(request, [bytes.buffer])
+  })
+}
+
+/**
+ * The parser as the service runs it: the pipeline's page and text limits, the parse timeout
+ * (the parser ends a hung worker at 90% of `INGESTION_PARSE_TIMEOUT_MS`, so its answer, a
+ * permanent `processing_failed`, comes before the job's own timeout, which would be retried) and
+ * the memory bound.
+ */
+export function createDocumentParserFor(
+  env: Pick<
+    Env,
+    | 'MAX_PAGES_PER_DOCUMENT'
+    | 'MAX_TEXT_CHARS_PER_DOCUMENT'
+    | 'INGESTION_PARSE_TIMEOUT_MS'
+    | 'PARSER_MEMORY_LIMIT_BYTES'
+  >
+): DocumentParser {
+  return createDocumentParser({
+    limits: {
+      maxPages: env.MAX_PAGES_PER_DOCUMENT,
+      maxTextChars: env.MAX_TEXT_CHARS_PER_DOCUMENT,
+    },
+    timeoutMs: Math.floor(env.INGESTION_PARSE_TIMEOUT_MS * 0.9),
+    memoryLimitBytes: env.PARSER_MEMORY_LIMIT_BYTES,
   })
 }

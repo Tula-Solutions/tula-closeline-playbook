@@ -318,7 +318,13 @@ describe('worker settings', () => {
 describe('workers outside local while the pipeline ports are fakes', () => {
   test('are refused when switched on, naming the fake ports', () => {
     expect(() => loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev', WORKERS_ENABLED: 'true' })).toThrow(
-      /WORKERS_ENABLED[\s\S]*embedder, parser, ocr, vector store/
+      /WORKERS_ENABLED[\s\S]*embedder, ocr, vector store/
+    )
+  })
+
+  test('no longer name the parser, which is real', () => {
+    expect(() => loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev', WORKERS_ENABLED: 'true' })).not.toThrow(
+      /parser/
     )
   })
 
@@ -343,5 +349,19 @@ describe('SWEEPS_ENABLED', () => {
       loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod', WORKERS_ENABLED: 'false' }).SWEEPS_ENABLED
     ).toBe(true)
     expect(loadEnv({ ENVIRONMENT: 'local', SWEEPS_ENABLED: 'false' }).SWEEPS_ENABLED).toBe(false)
+  })
+})
+
+describe('PARSER_MEMORY_LIMIT_BYTES', () => {
+  test('defaults to 1 GiB and is bounded', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).PARSER_MEMORY_LIMIT_BYTES).toBe(1024 * 1024 * 1024)
+    expect(
+      loadEnv({ ENVIRONMENT: 'local', PARSER_MEMORY_LIMIT_BYTES: '268435456' })
+        .PARSER_MEMORY_LIMIT_BYTES
+    ).toBe(268435456)
+    expect(() => loadEnv({ ENVIRONMENT: 'local', PARSER_MEMORY_LIMIT_BYTES: '1000' })).toThrow()
+    expect(() =>
+      loadEnv({ ENVIRONMENT: 'local', PARSER_MEMORY_LIMIT_BYTES: '99999999999' })
+    ).toThrow()
   })
 })

@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test'
+import { loadEnv } from '~/env'
 import { ParseError } from '~/ports/parser'
 import { parserBehaviour } from '~/ports/parser.behaviour'
 import { DOCX_MEDIA_TYPE, PPTX_MEDIA_TYPE } from './extract'
-import { createDocumentParser } from './index'
+import { createDocumentParser, createDocumentParserFor } from './index'
 import { buildDocx, buildPdf, buildPptx } from './test-support'
 
 const limits = { maxPages: 300, maxTextChars: 5_000_000 }
@@ -157,4 +158,25 @@ describe('a parser that hangs, crashes or runs away fails the document, never th
       ).pages
     ).toHaveLength(1)
   }, 30_000)
+})
+
+describe('createDocumentParserFor', () => {
+  test('takes its limits from the environment', async () => {
+    const env = loadEnv({ ENVIRONMENT: 'local', MAX_TEXT_CHARS_PER_DOCUMENT: '1000' })
+    const parser = createDocumentParserFor(env)
+
+    const ok = await parser.parse(
+      { bytes: new TextEncoder().encode('short'), mediaType: 'text/plain' },
+      { signal: never }
+    )
+    const over = await failureOf(
+      parser.parse(
+        { bytes: new TextEncoder().encode('x'.repeat(1001)), mediaType: 'text/plain' },
+        { signal: never }
+      )
+    )
+
+    expect(ok.pages).toHaveLength(1)
+    expect(over.reason).toBe('processing_failed')
+  })
 })

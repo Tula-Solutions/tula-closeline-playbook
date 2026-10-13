@@ -42,7 +42,7 @@ const MAX_INTERNAL_TOKEN_LENGTH = 512
  * 48). Remove a name as its real adapter lands; while any remains, the workers may not run outside
  * `local`, because they would mark real uploads `ready` over vectors that live in one process.
  */
-export const PIPELINE_FAKE_PORTS = ['embedder', 'parser', 'ocr', 'vector store'] as const
+export const PIPELINE_FAKE_PORTS = ['embedder', 'ocr', 'vector store'] as const
 
 /** A secret is printable ASCII with no space, so it travels in a bearer header unchanged. */
 const PRINTABLE_ASCII = /^[!-~]+$/
@@ -197,6 +197,8 @@ const schema = z
     INGESTION_IO_TIMEOUT_MS: integer(1_000, 120_000).default(30_000),
     /** The longest the parser or OCR may take for one document, in ms (the lease is renewed meanwhile). */
     INGESTION_PARSE_TIMEOUT_MS: integer(1_000, 600_000).default(180_000),
+    /** How far the process's resident memory may grow while one document parses, in bytes; past it the parse is ended with `processing_failed`. */
+    PARSER_MEMORY_LIMIT_BYTES: integer(134_217_728, 8_589_934_592).default(1_073_741_824),
     /** Claims of one job before the service fails it (the database's own bound is 20). */
     INGESTION_MAX_ATTEMPTS: integer(1, 19).default(8),
     /** The first retry delay of a failed attempt, in ms; it doubles per attempt up to ten minutes, with full jitter. */

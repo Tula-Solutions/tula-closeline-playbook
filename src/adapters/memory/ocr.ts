@@ -18,3 +18,16 @@ export function createMemoryOcrReader(): MemoryOcrReader {
     },
   }
 }
+
+/**
+ * Creates an OCR reader for runs where no real reader exists yet: every page reads as empty, so a
+ * scanned document ends `no_text` instead of being filled with invented text.
+ */
+export function createEmptyOcrReader(): OcrReader {
+  return {
+    recognise: async ({ pages }, { signal }) => {
+      signal.throwIfAborted()
+      return pages.map((number): OcrPage => ({ number, text: '' }))
+    },
+  }
+}
