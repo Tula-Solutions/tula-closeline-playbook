@@ -1,4 +1,4 @@
-# hub: 14f4b31
+# hub: 76185b5
 4aa39861535d68d6cb903aac4197ba2e3c93c095c768e3e37c1113ff5204dd5c  .claude/CLAUDE.md
 05ea4e685a3208afbf179b2db4e7ebb8113c553ef1fef288b483d051d078c444  .claude/COMMON.md
 4e0f1f79a6965882c432710e380db5eb37aa6108eda81748494e725e687c45c2  .claude/agents/ollie-reviewer.md
@@ -12,6 +12,7 @@ cf899ea12951126528f72191f9583a9cdc81c6886ea7013c8ba754c57789c5e2  .claude/hooks/
 66a771afb5240a629062d4d3286e276ad8d34605f3f32f0255e7420705b443af  .claude/skills/review-loop/SKILL.md
 082de8f1875bbaaeaa8cb179bda18fc9ebb68ade33df9dfa1309401af04befb5  .claude/skills/verify/SKILL.md
 2e05f96e9298970eeeb7371b193543775d78724c0bbf698ad6f17f94dee71b0e  .github/PULL_REQUEST_TEMPLATE.md
+169c7daebb0b3f4c01d6ce48d3cdabd1ca518bbb7446061c455ed537eea7093e  .github/workflows/ci.yml
 7443f5059ed89948949122a1c3b64b2b3d00e4f1f09187cb2e344d4a4abcecf9  .husky/commit-msg
 64cc8d8870788991a4aef56bb2061ce939b03a89720cc2353ce4732236e13375  .husky/pre-commit
 7f01e9bf7396933d9a7a6a1a2bb8efd5844a876ceeb950b13345cd31b6ebe08c  GLOSSARY.md
