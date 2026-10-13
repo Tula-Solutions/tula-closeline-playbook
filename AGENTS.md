@@ -79,6 +79,12 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   limit and the app's own limits hold the others. The upload's limit checks the declared length
   only in middleware and caps the stream where the route reads it (`capBody`): nothing buffers an
   unauthenticated body.
+- Both upload bounds (the instance's places and one Organization's share) are per instance and
+  in memory. With `MAX_CONCURRENT_UPLOADS=1` the share is the whole gate. Two Organizations (or one
+  with many accounts) can still hold every place by reconnecting each time a deadline passes, so a
+  rate limit per user or source at the edge is required before production (hub issue 19, infra).
+  The default `UPLOAD_BODY_TIMEOUT_MS` of 60 s assumes at least about 3.5 Mbit/s up for a 25 MiB
+  file (25 MiB in 60 s); slower links need a larger value, and it is left at 60 s deliberately.
 - The upload order (service.ts, `upload`): role, instance bound (`MAX_CONCURRENT_UPLOADS`, 503 with
   `Retry-After` when full: the contract has no code for it; one Organization may hold at most half
   the places, rounded up and at least one, else `rate.limited` 429 with `Retry-After`), body cap and

@@ -853,6 +853,23 @@ describe('upload: the order of the three effects and what each crash leaves', ()
     expect(h.deps.database.documents(h.organizationId)).toHaveLength(1)
   })
 
+  test('a failed object write is logged as an unknown outcome with the document id and no file name', async () => {
+    const h = await createDocumentHarness()
+    const put = spyOn(h.deps.objects, 'put').mockRejectedValue(
+      new StorageError('storage.unavailable', 'try later')
+    )
+
+    const response = await h.upload('secret-plan.pdf', pdfBytes('a'))
+
+    expect(response.status).toBe(503)
+    const log = h.deps.logLines.find((line) => line.includes('unknown outcome'))
+    expect(log).toBeDefined()
+    expect(log).toMatch(/doc_[0-9a-f]{32}/)
+    expect(log).toContain(h.organizationId)
+    expect(h.deps.logLines.join('\n')).not.toContain('secret-plan')
+    put.mockRestore()
+  })
+
   test('a failed publish after the commit still answers 201: the document is stored and its job is queued', async () => {
     const h = await createDocumentHarness()
     const publish = spyOn(h.deps.queue, 'publish').mockRejectedValue(new Error('queue down'))

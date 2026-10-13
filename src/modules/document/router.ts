@@ -161,6 +161,8 @@ async function readFilePart(
   if (!/^multipart\/form-data\s*(;|$)/i.test(contentType)) {
     throw domainError(ERRORS['request.unsupported_media_type'])
   }
+  // The deadline covers reading and parsing the body only; `arrayBuffer()` and the service call
+  // that follows are bounded by their own limits (the file size cap, the storage and database timeouts).
   const capped = capBody(c.req.raw, maxBody, AbortSignal.timeout(timeoutMs))
   let form: Awaited<ReturnType<Request['formData']>>
   try {

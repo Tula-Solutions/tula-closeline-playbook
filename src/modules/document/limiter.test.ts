@@ -61,4 +61,12 @@ describe('createOrganizationShare', () => {
 
     expect(shares.organizations).toBe(0)
   })
+
+  test('with one place the share is the whole gate', () => {
+    const shares = createOrganizationShare(1)
+
+    expect(shares.tryAcquire('org_a')).toBeDefined()
+    expect(shares.tryAcquire('org_a')).toBeUndefined()
+    expect(shares.tryAcquire('org_b')).toBeDefined()
+  })
 })

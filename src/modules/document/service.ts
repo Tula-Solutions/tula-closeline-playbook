@@ -373,6 +373,11 @@ export async function upload(
             contentType: MEDIA_TYPE_BY_EXTENSION[`.${fileType}`],
           })
         } catch (putError) {
+          // A write that failed or timed out may still have landed: say so, for the orphan sweep.
+          deps.logger.warn('an upload failed with an unknown outcome; its file may be in place', {
+            organizationId,
+            documentId,
+          })
           throw asStorageFailure(putError)
         }
         stored = true
