@@ -89,6 +89,26 @@ const deepXml = buildZip([
     data: `<w:document>${'<w:x>'.repeat(10_000)}${'</w:x>'.repeat(10_000)}</w:document>`,
   },
 ])
+// A presentation listing one 3 MB slide 299 times: the slide is read once.
+const repeatedSlide = (() => {
+  const text = Array.from({ length: 400_000 }, (_v, i) => `w${i}`).join(' ')
+  const ids = Array.from({ length: 299 }, (_v, i) => `<p:sldId id="${i}" r:id="rId1"/>`).join('')
+  return buildZip([
+    { name: '[Content_Types].xml', data: '<Types/>' },
+    {
+      name: 'ppt/presentation.xml',
+      data: `<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst>${ids}</p:sldIdLst></p:presentation>`,
+    },
+    {
+      name: 'ppt/_rels/presentation.xml.rels',
+      data: '<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>',
+    },
+    {
+      name: 'ppt/slides/slide1.xml',
+      data: `<p:sld xmlns:a="a" xmlns:p="p"><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:sld>`,
+    },
+  ])
+})()
 // Typical locally: bomb 0.1 ms, 25 MB text 3 ms, deep page tree 31 ms, 5 000 pages 25 ms, deep XML 0.3 ms.
 const hostile: [string, () => Promise<unknown>, number][] = [
   ['a zip bomb of 200 MiB of zeros', () => extractDocument(bombZip, mediaTypes.docx, limits), 500],
@@ -99,6 +119,7 @@ const hostile: [string, () => Promise<unknown>, number][] = [
     2_000,
   ],
   ['a PDF with 5 000 pages', () => extractDocument(wideTreePdf, 'application/pdf', limits), 2_000],
+  ['a slide listed 299 times', () => extractDocument(repeatedSlide, mediaTypes.pptx, limits), 500],
   ['XML nested 10 000 deep', () => extractDocument(deepXml, mediaTypes.docx, limits), 500],
 ]
 

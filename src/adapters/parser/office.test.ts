@@ -5,6 +5,7 @@ import { parseDocx } from './docx'
 import { parsePptx } from './pptx'
 import { buildDocx, buildPptx, buildZip, concat } from './test-support'
 import { scanXml, XML_MAX_DEPTH } from './xml'
+import { OFFICE_ZIP_LIMITS, ZipArchive } from './zip'
 
 const limits = { maxPages: 300, maxTextChars: 5_000_000 }
 const encoder = new TextEncoder()
@@ -333,5 +334,51 @@ describe('hostile XML', () => {
       text: () => undefined,
     })
     expect(seen).toEqual(['a', 'b'])
+  })
+})
+
+describe('repeated reads cannot multiply work', () => {
+  const slideXml = (text: string) =>
+    `<p:sld xmlns:a="a" xmlns:p="p"><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:sld>`
+
+  test('a presentation that lists one slide 299 times returns that slide once, fast', () => {
+    const big = slideXml(Array.from({ length: 400_000 }, (_v, i) => `w${i}`).join(' '))
+    const ids = Array.from({ length: 299 }, (_v, i) => `<p:sldId id="${i}" r:id="rId1"/>`).join('')
+    const bytes = buildZip([
+      { name: '[Content_Types].xml', data: CT },
+      {
+        name: 'ppt/presentation.xml',
+        data: `<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst>${ids}</p:sldIdLst></p:presentation>`,
+      },
+      {
+        name: 'ppt/_rels/presentation.xml.rels',
+        data: '<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/></Relationships>',
+      },
+      { name: 'ppt/slides/slide1.xml', data: big },
+    ])
+    const started = performance.now()
+
+    const outcome = (() => {
+      try {
+        return parsePptx(bytes, limits).pages.length
+      } catch (error) {
+        return error instanceof ParseError ? error.reason : 'other'
+      }
+    })()
+
+    expect(outcome).toBe(1)
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
+
+  test('an archive refuses once the entries read add up past the total limit', () => {
+    const data = 'x'.repeat(1_000_000)
+    const archive = new ZipArchive(buildZip([{ name: 'a.xml', data }]), {
+      ...OFFICE_ZIP_LIMITS,
+      maxTotalBytes: 3_500_000,
+    })
+    for (let n = 0; n < 3; n++) {
+      archive.read('a.xml')
+    }
+    expect(reasonOf(() => archive.read('a.xml'))).toBe('processing_failed')
   })
 })

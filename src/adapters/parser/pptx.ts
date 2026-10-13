@@ -39,11 +39,19 @@ function slideOrder(archive: ZipArchive): string[] {
     text() {},
   })
   const ordered: string[] = []
+  const seen = new Set<string>()
   scanXml(partText(archive, 'ppt/presentation.xml'), {
     start(name, attributes) {
       const target =
         name === 'sldId' ? targets.get(xmlAttribute(attributes, 'r:id') ?? '') : undefined
-      if (target !== undefined && SLIDE_NAME.test(target) && archive.has(target)) {
+      if (
+        target !== undefined &&
+        SLIDE_NAME.test(target) &&
+        archive.has(target) &&
+        !seen.has(target)
+      ) {
+        // A part listed again is read once: the first place wins.
+        seen.add(target)
         ordered.push(target)
       }
     },

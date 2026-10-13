@@ -44,6 +44,7 @@ const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]
 /** A zip archive opened for reading named entries under {@link ZipLimits}. */
 export class ZipArchive {
   private readonly entries = new Map<string, ZipEntry>()
+  private inflated = 0
 
   /** Reads the central directory of `bytes` and checks every limit that does not need inflation; throws a {@link ParseError}. */
   constructor(
@@ -67,7 +68,7 @@ export class ZipArchive {
     return this.entries.has(name)
   }
 
-  /** Inflates one entry, never past its declared size or `maxBytes`; a lie, a flaw or a limit is a {@link ParseError}. */
+  /** Inflates one entry, never past its declared size or `maxBytes`, and never past `maxTotalBytes` over all reads; a lie, a flaw or a limit is a {@link ParseError}. */
   read(name: string, maxBytes: number = this.limits.maxEntryBytes): Uint8Array {
     const entry = this.entries.get(name)
     if (entry === undefined) {
@@ -77,6 +78,11 @@ export class ZipArchive {
       throw new ParseError('password_protected')
     }
     if (entry.size > maxBytes) {
+      throw new ParseError('processing_failed')
+    }
+    // Every read counts, so reading one entry over and over cannot multiply the work.
+    this.inflated += entry.size
+    if (this.inflated > this.limits.maxTotalBytes) {
       throw new ParseError('processing_failed')
     }
     const view = new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength)
