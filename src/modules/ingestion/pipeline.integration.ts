@@ -171,13 +171,29 @@ describe('the db v0.13.0 statements against Postgres', () => {
     await expect(h.upload('notes.txt', paragraphs(2))).rejects.toBeDefined()
     const listed = () => h.deps.objects.list(h.organizationId, { prefix: 'documents/' })
     expect((await listed()).items).toHaveLength(1)
-    // The database stamped the attempt with its own clock; age it past the sweep's rules.
-    await withOrganization(owner.db, h.organizationId, (tx) =>
-      tx.execute(
+    // The only key the upload path wrote is the attempt record; the test inserts none.
+    const keyRoutes = () =>
+      withOrganization(owner.db, h.organizationId, (tx) =>
+        tx.execute<{ route: string }>(sql`select route from playbook.idempotency_keys`)
+      )
+    expect((await keyRoutes()).rows.map((row: { route: string }) => row.route)).toEqual([
+      'documents.upload_attempt',
+    ])
+    // Age that row as the table owner. The `idempotency_keys_final` trigger (which refuses any
+    // change of `created_at`) is disabled and re-enabled inside this one transaction, so no other
+    // session ever sees it off and the product's rule is untouched.
+    await withOrganization(owner.db, h.organizationId, async (tx) => {
+      await tx.execute(
+        sql`alter table playbook.idempotency_keys disable trigger idempotency_keys_final`
+      )
+      await tx.execute(
         sql`update playbook.idempotency_keys set created_at = clock_timestamp() - interval '26 hours'
             where organization_id = ${h.organizationId} and route = 'documents.upload_attempt'`
       )
-    )
+      await tx.execute(
+        sql`alter table playbook.idempotency_keys enable trigger idempotency_keys_final`
+      )
+    })
     await h.deps.time.advance(30 * 60 * 60 * 1000)
 
     const visit = await visitOrphanSweep(h.deps, h.organizationId, never)
