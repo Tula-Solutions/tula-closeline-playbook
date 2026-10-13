@@ -700,6 +700,28 @@ describe('shutdown and instances', () => {
     await h.deps.workers.ingestion.stop(5_000)
   })
 
+  test('a failing error report from a job cannot become an unhandled rejection', async () => {
+    const rejections: unknown[] = []
+    const onRejection = (reason: unknown) => rejections.push(reason)
+    process.on('unhandledRejection', onRejection)
+    try {
+      const h = createPipelineHarness({ env: { INGESTION_MAX_ATTEMPTS: '1' } })
+      spyOn(h.deps.embedder, 'embed').mockRejectedValue(new Error('the model is down'))
+      spyOn(h.deps.logger, 'error').mockImplementation(() => {
+        throw new Error('the log destination is gone')
+      })
+      await h.upload('notes.txt', paragraphs(2))
+
+      await h.deps.workers.ingestion.runPass()
+      await h.deps.time.settle()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      expect(rejections).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onRejection)
+    }
+  })
+
   test('stop waits for the pool, and a hung vector write keeps its job running', async () => {
     const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
     const hang = gate()

@@ -70,6 +70,10 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
         () => undefined,
         (error: unknown) => reportWorkerError(deps, error, { worker: 'ingestion', organizationId })
       )
+      .catch(() => {
+        // Reporting itself failed (a dead log destination): nothing more can be done, and the
+        // task must still end quietly, since nothing awaits it with a handler of its own.
+      })
       .finally(() => {
         active.delete(task)
       })
