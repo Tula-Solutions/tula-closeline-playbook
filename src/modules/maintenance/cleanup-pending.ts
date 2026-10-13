@@ -1,4 +1,4 @@
-import { DOCUMENT_LIST_FILTERED } from 'tula-closeline-db'
+import { DOCUMENT_LIST_PENDING_CLEANUP } from 'tula-closeline-db'
 import { parsePgTimestamp } from '~/modules/document/schema'
 import { cleanupDeletion } from '~/modules/ingestion/cleanup'
 import {
@@ -16,35 +16,39 @@ function pgTime(value: unknown): Date | undefined {
       : undefined
 }
 
-/** The listing pages of deleted documents one Organization's cleanup pass reads. */
+/** A timestamp column as the text a keyset cursor carries (the database's own text, or ISO for a date). */
+function pgText(value: unknown): string {
+  return value instanceof Date ? value.toISOString() : String(value)
+}
+
+/** The listing pages of pending cleanups one Organization's pass reads. */
 export const CLEANUP_SCAN_PAGES = 5
 
-/** The documents on a listing page: the most the list statement returns. */
+/** The documents on a listing page. */
 const LIST_PAGE = 100
 
 /**
- * Runs the vector cleanup of the Organization's deleted documents whose message may have been lost
- * (the `cleanup_pending` sweep, called only for an Organization that discovery named for that
- * kind). The database has no statement that lists only the pending cleanups, so this reads the
- * deleted documents (newest first, at most {@link CLEANUP_SCAN_PAGES} pages of 100, always all
- * of them) and runs the cleanup on every one deleted more than five minutes ago. No row says
- * whether its cleanup is recorded, so none is skipped: the cleanup is idempotent, and a redundant
- * run costs a vector delete, while a skipped one would leave vectors behind.
- * TODO: replace with `DOCUMENT_LIST_PENDING_CLEANUP` when db v0.13.0 lands (hub issue 58).
- * Returns how many cleanups it completed.
+ * Runs the vector cleanup of the Organization's deleted documents whose cleanup is not recorded
+ * (the `cleanup_pending` sweep, called for an Organization that discovery named for that kind).
+ * `DOCUMENT_LIST_PENDING_CLEANUP` lists exactly those, oldest deletion first by keyset
+ * `(deleted_at, id)`, so nothing already recorded is touched; at most {@link CLEANUP_SCAN_PAGES}
+ * pages of {@link LIST_PAGE} per pass. The list has no delay of its own, so the five-minute floor
+ * stays here: the delete message normally runs the cleanup at once, and a document deleted more
+ * recently than the floor is left to it instead of being cleaned twice. Returns how many cleanups
+ * it completed.
  */
 export async function cleanupPending(
   deps: PipelineDeps,
   organizationId: string,
   signal: AbortSignal
 ): Promise<number> {
-  let cursor = { t: 'infinity', i: '' }
+  let cursor = { at: '-infinity', id: '' }
   let cleaned = 0
   const oldEnough = deps.clock.now().getTime() - CLEANUP_PENDING_AFTER_MS
   for (let page = 0; page < CLEANUP_SCAN_PAGES && !signal.aborted; page++) {
     const rows = (
       await inTransaction(deps, organizationId, (run) =>
-        run(DOCUMENT_LIST_FILTERED, [organizationId, cursor.t, cursor.i, LIST_PAGE, 'deleted'])
+        run(DOCUMENT_LIST_PENDING_CLEANUP, [organizationId, cursor.at, cursor.id, LIST_PAGE])
       )
     ).rows
     for (const row of rows) {
@@ -52,8 +56,12 @@ export async function cleanupPending(
         return cleaned
       }
       const deletedAt = pgTime(row.deleted_at)
-      if (deletedAt === undefined || deletedAt.getTime() > oldEnough) {
+      if (deletedAt === undefined) {
         continue
+      }
+      if (deletedAt.getTime() > oldEnough) {
+        // Oldest first: everything after this is younger still.
+        return cleaned
       }
       const result = await cleanupDeletion(
         deps,
@@ -70,7 +78,7 @@ export async function cleanupPending(
     if (rows.length < LIST_PAGE || last === undefined) {
       break
     }
-    cursor = { t: String(last.created_at), i: String(last.id) }
+    cursor = { at: pgText(last.deleted_at), id: String(last.id) }
   }
   return cleaned
 }
