@@ -41,3 +41,6 @@ paths:
   acknowledged (the kit cannot retry without an error report) and that sweep finishes it.
 - A message for a removed Organization (no documents, settings or usage left) is acknowledged and
   not recorded (`withoutRemovedOrganizations`), so the remove-all can reach `removed`.
+- Two switches: `WORKERS_ENABLED` is the job loop only (refused outside `local` while the ports are
+  fakes); `SWEEPS_ENABLED` (default true) runs the purge, cleanup_pending, housekeeping and orphan
+  sweeps and never depends on the job loop.

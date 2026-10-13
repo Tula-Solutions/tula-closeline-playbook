@@ -18,10 +18,9 @@ installCrashHandlers({
 const app = createApp(container)
 const server = Bun.serve(serveOptions(container, app))
 container.consumer.start()
-if (container.env.WORKERS_ENABLED) {
-  // After the server is listening, so the instance is ready before it claims work.
-  container.workers.start()
-}
+// After the server is listening, so the instance is ready before it claims work. The job loop and
+// the sweeps are switched separately (`WORKERS_ENABLED`, `SWEEPS_ENABLED`).
+container.workers.start()
 
 container.logger.info('listening', { port: server.port, environment: container.env.ENVIRONMENT })
 

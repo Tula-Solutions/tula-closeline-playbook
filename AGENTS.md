@@ -35,6 +35,7 @@ What does not: every real vendor adapter (vector store, embedder, parser, OCR), 
 embedder/OCR adapters) and the real parser land.** Until then `WORKERS_ENABLED=true` is refused at
 boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`), and the
 default there is false: an API-only instance whose uploads stay `uploaded`, nothing claiming them.
+The sweeps (`SWEEPS_ENABLED`, default true everywhere) run regardless, so deletes are purged.
 
 ## Layout
 
@@ -62,7 +63,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 - `src/messages.ts` is the registry of the two contract messages. `src/consumer.ts` wires the kit's
   `createConsumer` (name `playbook.ingestion`) over the Postgres `ProcessedStore`; handlers go in
   `createHandlers`. `server.ts` starts the consumer and, after it listens, the workers
-  (`WORKERS_ENABLED`); shutdown stops both (`stoppableWith`).
+  (`WORKERS_ENABLED` for the job loop, `SWEEPS_ENABLED` for the sweeps); shutdown stops both (`stoppableWith`).
 - `src/modules/ingestion/` is the pipeline (`job.ts`, `chunker.ts`, `cleanup.ts`, `handlers.ts`);
   `src/modules/maintenance/` the purge, cleanup-pending and housekeeping steps; `src/workers/` the
   loops (`ingestion.ts`, `sweeps.ts`, `discovery.ts`). Tests use `createPipelineHarness`.
@@ -142,7 +143,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 `QUEUE_URL`, `QUEUE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ENDPOINT`, `MAX_UPLOAD_BYTES`,
 `MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `UPLOAD_BODY_TIMEOUT_MS`, `MAX_DOCUMENTS_PER_ORGANIZATION`,
 `MAX_BYTES_PER_ORGANIZATION`, `INTERNAL_API_TOKENS`, `CONSUMER_CONCURRENCY`,
-`CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED` (local: true; elsewhere false), `WORKERS_STOP_DEADLINE_MS`,
+`CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED` (job loop; local: true, elsewhere false), `SWEEPS_ENABLED` (true), `WORKERS_STOP_DEADLINE_MS`,
 `INGESTION_*` (`CONCURRENCY`, `LEASE_MS`, `HEARTBEAT_MS`, `IO_TIMEOUT_MS`, `PARSE_TIMEOUT_MS`,
 `MAX_ATTEMPTS`, `RETRY_BASE_MS`, `POLL_INTERVAL_MS`), `CHUNK_TARGET_CHARS`, `CHUNK_MAX_CHARS`,
 `CHUNK_OVERLAP_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`, `DISCOVERY_BATCH`,

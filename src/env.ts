@@ -168,8 +168,9 @@ const schema = z
     CONSUMER_STOP_DEADLINE_MS: integer(1, 120_000).default(5_000),
 
     /**
-     * Whether this instance runs the background workers (the job loop and the sweeps). Off gives an
-     * API-only instance: uploads stay `uploaded` and nothing claims them. Defaults to true in
+     * Whether this instance runs the ingestion job loop (parse, chunk, embed, index). Off gives an
+     * API-only instance: uploads stay `uploaded` and nothing claims them. The sweeps are
+     * `SWEEPS_ENABLED`, not this. Defaults to true in
      * `local` and false elsewhere, and true is refused outside `local` while a pipeline port is a
      * fake ({@link PIPELINE_FAKE_PORTS}).
      */
@@ -177,6 +178,15 @@ const schema = z
       .enum(['true', 'false'])
       .optional()
       .transform((value) => (value === undefined ? undefined : value === 'true')),
+    /**
+     * Whether this instance runs the sweeps: the purge, `cleanup_pending`, housekeeping and orphan
+     * objects. On by default everywhere, and independent of `WORKERS_ENABLED`: without them
+     * nothing is ever purged and the remove-all route never reaches 200.
+     */
+    SWEEPS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
     /** Ingestion jobs one instance runs at once; it claims no more than this per round. */
     INGESTION_CONCURRENCY: integer(1, 16).default(2),
     /** How long a claimed job is safe from another instance, in ms; a heartbeat renews it. */

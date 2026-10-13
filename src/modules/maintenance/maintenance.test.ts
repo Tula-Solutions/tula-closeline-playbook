@@ -387,3 +387,67 @@ describe('a young orphan is seen again before the key that names its Organizatio
     expect(h.deps.database.keys(h.organizationId)).toEqual([])
   })
 })
+
+describe('the sweeps run without the job loop (outside local, workers off)', () => {
+  const API_ONLY = { ENVIRONMENT: 'dev', WORKERS_ENABLED: 'false' }
+
+  test('a document deleted past retention is purged while a fresh upload stays uploaded', async () => {
+    const h = createPipelineHarness({ env: API_ONLY })
+    const old = await h.upload('old.txt', paragraphs(2, 'old'))
+    await Documents.remove(h.deps, h.context, old)
+    await h.deps.time.advance(31 * DAY)
+    const fresh = await h.upload('fresh.txt', paragraphs(2, 'fresh'))
+
+    h.deps.workers.start()
+    await h.deps.time.advance(2 * h.deps.env.HOUSEKEEPING_INTERVAL_MS)
+    await h.deps.workers.stop(1_000)
+
+    expect(h.document(old)).toBeUndefined()
+    expect(
+      (await h.deps.objects.list(h.organizationId, { prefix: `documents/${old}/` })).items
+    ).toEqual([])
+    expect(h.document(fresh)?.state).toBe('uploaded')
+    expect(h.deps.database.jobs(h.organizationId).map((j) => j.state)).toEqual(['queued'])
+  })
+
+  test('remove-all reaches 200 once the sweeps have purged what it erased', async () => {
+    const h = createPipelineHarness({ env: API_ONLY })
+    await h.upload('a.txt', paragraphs(2))
+    const requestId = formatId('req', crypto.randomUUID())
+    await expect(
+      Documents.removeAll(h.deps, h.organizationId, requestId, 'bye')
+    ).rejects.toMatchObject({ code: 'server.unavailable' })
+
+    h.deps.workers.start()
+    await h.deps.time.advance(2 * h.deps.env.SWEEP_INTERVAL_MS)
+    await h.deps.workers.stop(1_000)
+
+    await expect(
+      Documents.removeAll(h.deps, h.organizationId, requestId, 'bye')
+    ).resolves.toMatchObject({ status: 'removed' })
+  })
+
+  test('SWEEPS_ENABLED=false starts no sweep', async () => {
+    const h = createPipelineHarness({ env: { ...API_ONLY, SWEEPS_ENABLED: 'false' } })
+    const old = await h.upload('old.txt', paragraphs(2))
+    await Documents.remove(h.deps, h.context, old)
+    await h.deps.time.advance(31 * DAY)
+
+    h.deps.workers.start()
+    await h.deps.time.advance(2 * h.deps.env.HOUSEKEEPING_INTERVAL_MS)
+    await h.deps.workers.stop(1_000)
+
+    expect(h.document(old)?.state).toBe('deleted')
+  })
+
+  test('WORKERS_ENABLED=true in local still runs the job loop', async () => {
+    const h = createPipelineHarness()
+    const id = await h.upload('notes.txt', paragraphs(2))
+
+    h.deps.workers.start()
+    await h.deps.time.advance(30_000)
+    await h.deps.workers.stop(1_000)
+
+    expect(h.document(id)?.state).toBe('ready')
+  })
+})

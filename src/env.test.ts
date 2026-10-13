@@ -335,3 +335,14 @@ describe('workers outside local while the pipeline ports are fakes', () => {
     expect(loadEnv({ ENVIRONMENT: 'local', WORKERS_ENABLED: 'false' }).WORKERS_ENABLED).toBe(false)
   })
 })
+
+describe('SWEEPS_ENABLED', () => {
+  test('defaults to true in every environment, independent of WORKERS_ENABLED', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).SWEEPS_ENABLED).toBe(true)
+    expect(loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod' }).SWEEPS_ENABLED).toBe(true)
+    expect(
+      loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod', WORKERS_ENABLED: 'false' }).SWEEPS_ENABLED
+    ).toBe(true)
+    expect(loadEnv({ ENVIRONMENT: 'local', SWEEPS_ENABLED: 'false' }).SWEEPS_ENABLED).toBe(false)
+  })
+})
