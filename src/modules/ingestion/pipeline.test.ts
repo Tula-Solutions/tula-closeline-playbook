@@ -9,6 +9,7 @@ import {
 import { VectorError } from 'tula-closeline-kit'
 import { createMemoryEmbedder } from '~/adapters/memory/embedder'
 import { postgresError } from '~/adapters/memory/playbook-database'
+import { createApp } from '~/app'
 import * as Documents from '~/modules/document/service'
 import { createIngestion } from '~/workers/ingestion'
 import { pdfBytes } from '../document/test-support'
@@ -781,5 +782,22 @@ describe('Organizations stay apart', () => {
     await running
 
     expect(result.rows).toEqual([])
+  })
+})
+
+describe('an API-only instance outside local (workers off)', () => {
+  test('keeps an upload in `uploaded`, serves the routes, and fails nothing', async () => {
+    const h = createPipelineHarness({ env: { ENVIRONMENT: 'dev', WORKERS_ENABLED: 'false' } })
+    expect(h.deps.env.WORKERS_ENABLED).toBe(false)
+    const id = await h.upload('notes.txt', paragraphs(3))
+
+    await h.deps.consumer.pollOnce()
+    await h.deps.time.advance(60_000)
+
+    expect(h.document(id)?.state).toBe('uploaded')
+    expect(h.document(id)?.failure_reason).toBeNull()
+    expect(await h.vectorIds(id)).toEqual([])
+    const app = createApp(h.deps)
+    expect((await app.request('/healthz')).status).toBe(200)
   })
 })

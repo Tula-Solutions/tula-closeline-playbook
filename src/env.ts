@@ -37,6 +37,13 @@ const MAX_INTERNAL_TOKENS = 5
 /** The longest one internal API secret may be, so a pasted blob cannot be mistaken for one. */
 const MAX_INTERNAL_TOKEN_LENGTH = 512
 
+/**
+ * The pipeline ports that have no real adapter yet (ADR 0010; the vector store waits on hub issue
+ * 48). Remove a name as its real adapter lands; while any remains, the workers may not run outside
+ * `local`, because they would mark real uploads `ready` over vectors that live in one process.
+ */
+export const PIPELINE_FAKE_PORTS = ['embedder', 'parser', 'ocr', 'vector store'] as const
+
 /** A secret is printable ASCII with no space, so it travels in a bearer header unchanged. */
 const PRINTABLE_ASCII = /^[!-~]+$/
 
@@ -160,11 +167,16 @@ const schema = z
     /** How long shutdown lets in-flight messages finish before it gives them back to the queue. */
     CONSUMER_STOP_DEADLINE_MS: integer(1, 120_000).default(5_000),
 
-    /** Whether this instance runs the background workers (the job loop and the sweeps). Off gives an API-only instance. */
+    /**
+     * Whether this instance runs the background workers (the job loop and the sweeps). Off gives an
+     * API-only instance: uploads stay `uploaded` and nothing claims them. Defaults to true in
+     * `local` and false elsewhere, and true is refused outside `local` while a pipeline port is a
+     * fake ({@link PIPELINE_FAKE_PORTS}).
+     */
     WORKERS_ENABLED: z
       .enum(['true', 'false'])
-      .default('true')
-      .transform((value) => value === 'true'),
+      .optional()
+      .transform((value) => (value === undefined ? undefined : value === 'true')),
     /** Ingestion jobs one instance runs at once; it claims no more than this per round. */
     INGESTION_CONCURRENCY: integer(1, 16).default(2),
     /** How long a claimed job is safe from another instance, in ms; a heartbeat renews it. */
@@ -246,6 +258,19 @@ const schema = z
   })
   .superRefine(requireSentryDsn)
   .superRefine((env, context) => {
+    if (
+      env.ENVIRONMENT !== 'local' &&
+      env.WORKERS_ENABLED === true &&
+      PIPELINE_FAKE_PORTS.length > 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['WORKERS_ENABLED'],
+        message: `WORKERS_ENABLED cannot be true outside local while these ports are fakes: ${PIPELINE_FAKE_PORTS.join(', ')}`,
+      })
+    }
+  })
+  .superRefine((env, context) => {
     // Messages name the key and the rule, never the value: a URL can carry credentials.
     if (env.ENVIRONMENT !== 'local') {
       for (const key of REQUIRED_OUTSIDE_LOCAL) {
@@ -311,6 +336,7 @@ const schema = z
   })
   .transform((env) => ({
     ...env,
+    WORKERS_ENABLED: env.WORKERS_ENABLED ?? env.ENVIRONMENT === 'local',
     REGION: env.REGION ?? regionSchema.parse('us'),
     DATABASE_URL: env.DATABASE_URL ?? LOCAL_DATABASE_URL,
     AUTH_JWKS_URL: env.AUTH_JWKS_URL ?? `${LOCAL_AUTH_ORIGIN}/.well-known/jwks.json`,

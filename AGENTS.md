@@ -31,6 +31,10 @@ What exists: the skeleton (HTTP stack, token check, container, consumer loop, po
 the document routes (hub issue 14, round A), and the pipeline (round B): message handlers, the
 ingestion job loop, the chunker, vector cleanup, and the purge, housekeeping and orphan sweeps.
 What does not: every real vendor adapter (vector store, embedder, parser, OCR), and search.
+**The pipeline is not deployable until plan steps 1.35 and 1.36 (hub issue 48 and the
+embedder/OCR adapters) and the real parser land.** Until then `WORKERS_ENABLED=true` is refused at
+boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`), and the
+default there is false: an API-only instance whose uploads stay `uploaded`, nothing claiming them.
 
 ## Layout
 
@@ -162,7 +166,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 `QUEUE_URL`, `QUEUE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ENDPOINT`, `MAX_UPLOAD_BYTES`,
 `MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `UPLOAD_BODY_TIMEOUT_MS`, `MAX_DOCUMENTS_PER_ORGANIZATION`,
 `MAX_BYTES_PER_ORGANIZATION`, `INTERNAL_API_TOKENS`, `CONSUMER_CONCURRENCY`,
-`CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED`, `WORKERS_STOP_DEADLINE_MS`,
+`CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED` (local: true; elsewhere false), `WORKERS_STOP_DEADLINE_MS`,
 `INGESTION_*` (`CONCURRENCY`, `LEASE_MS`, `HEARTBEAT_MS`, `IO_TIMEOUT_MS`, `PARSE_TIMEOUT_MS`,
 `MAX_ATTEMPTS`, `RETRY_BASE_MS`, `POLL_INTERVAL_MS`), `CHUNK_TARGET_CHARS`, `CHUNK_MAX_CHARS`,
 `CHUNK_OVERLAP_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`, `DISCOVERY_BATCH`,

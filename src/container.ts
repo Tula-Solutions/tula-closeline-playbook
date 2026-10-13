@@ -45,7 +45,7 @@ import {
 } from '~/adapters/postgres/processed-store'
 import { createHandlers, createPlaybookConsumer } from '~/consumer'
 import { describeError } from '~/describe-error'
-import { type Env, loadEnv } from '~/env'
+import { type Env, loadEnv, PIPELINE_FAKE_PORTS } from '~/env'
 import { SERVICE } from '~/info'
 import { type PlaybookEnvelope, registry } from '~/messages'
 import type { Embedder } from '~/ports/embedder'
@@ -160,9 +160,6 @@ export type ContainerOptions = {
   logDestination?: LogDestination
 }
 
-/** The ports that have no real adapter yet (ADR 0010; the vector store waits on hub issue 48). */
-const FAKE_PORTS = ['embedder', 'parser', 'ocr', 'vector store'] as const
-
 /** How long `close` waits for the error reporter to deliver what it holds. */
 const REPORTER_CLOSE_MS = 2_000
 
@@ -226,7 +223,10 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
   if (env.ENVIRONMENT !== 'local') {
     // Names only: a deployed process on a fake would otherwise look healthy while it embeds
     // nothing real. Remove a name from here as its real adapter lands.
-    logger.warn('ports still on fakes', { ports: FAKE_PORTS })
+    logger.warn('ports still on fakes', {
+      ports: PIPELINE_FAKE_PORTS,
+      workers: env.WORKERS_ENABLED,
+    })
   }
 
   const queue = createQueue(env)

@@ -315,3 +315,23 @@ describe('worker settings', () => {
     expect(() => loadEnv({ ENVIRONMENT: 'local', ...overrides })).toThrow()
   })
 })
+
+describe('workers outside local while the pipeline ports are fakes', () => {
+  test('are refused when switched on, naming the fake ports', () => {
+    expect(() => loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev', WORKERS_ENABLED: 'true' })).toThrow(
+      /WORKERS_ENABLED[\s\S]*embedder, parser, ocr, vector store/
+    )
+  })
+
+  test('are off by default and may be switched off explicitly', () => {
+    expect(loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev' }).WORKERS_ENABLED).toBe(false)
+    expect(
+      loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod', WORKERS_ENABLED: 'false' }).WORKERS_ENABLED
+    ).toBe(false)
+  })
+
+  test('are unchanged in local: on by default, either way allowed', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).WORKERS_ENABLED).toBe(true)
+    expect(loadEnv({ ENVIRONMENT: 'local', WORKERS_ENABLED: 'false' }).WORKERS_ENABLED).toBe(false)
+  })
+})
