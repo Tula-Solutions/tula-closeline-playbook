@@ -118,6 +118,20 @@ function pgTimestamp(ms: number): string {
 
 const infinity = 'infinity'
 
+/** The columns a document keeps for good; the table's trigger refuses any update that changes one. */
+const IDENTITY_COLUMNS = [
+  'id',
+  'organization_id',
+  'name',
+  'content_hash',
+  'size_bytes',
+  'declared_type',
+  'detected_type',
+  'uploaded_by',
+  'object_key',
+  'created_at',
+] as const satisfies readonly (keyof MemoryDocumentRow)[]
+
 /**
  * A stand-in for the Postgres database that runs the db library's statements by their text and
  * does what their documentation says. It exists so the document routes can be tested without
@@ -629,6 +643,32 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       const d = committed.documents.find((x) => x.organization_id === organizationId && x.id === id)
       if (d === undefined) {
         throw new Error('no such seeded document')
+      }
+      const next = { ...d, ...change }
+      // What the table's trigger and checks refuse, so a test cannot arrange a state Postgres forbids.
+      for (const column of IDENTITY_COLUMNS) {
+        if (next[column] !== d[column]) {
+          throw postgresError('23514', `playbook.document_identity: ${column} never changes`)
+        }
+      }
+      if (next.epoch < d.epoch || next.deletion_seq < d.deletion_seq) {
+        throw postgresError(
+          '23514',
+          'playbook.document_identity: epoch and deletion_seq never go down'
+        )
+      }
+      if ((next.state === 'deleted') !== (next.deleted_at !== null)) {
+        throw postgresError('23514', 'documents_deleted_has_times')
+      }
+      if (
+        next.purge_due_at !== null &&
+        next.deleted_at !== null &&
+        next.purge_due_at < next.deleted_at
+      ) {
+        throw postgresError('23514', 'documents_purge_due_after_delete')
+      }
+      if ((next.state === 'failed') !== (next.failure_reason !== null)) {
+        throw postgresError('23514', 'documents_failed_has_reason')
       }
       Object.assign(d, change)
     },

@@ -99,8 +99,14 @@ describe('upload against Postgres', () => {
     const replay = await h.upload('a.pdf', pdfBytes('keyed'), { key })
     const other = await h.upload('b.pdf', pdfBytes('other'), { key })
 
-    expect([a.status, b.status].filter((status) => status === 201)).toHaveLength(1)
+    // The call that waited on the key's row replays the winner's stored answer, which is the 201 it
+    // stored (core's pattern); only a lock timeout would be 409. Either way one document results.
     expect([a.status, b.status].every((status) => status === 201 || status === 409)).toBe(true)
+    expect([a.status, b.status]).toContain(201)
+    if (a.status === 201 && b.status === 201) {
+      expect((await documentOf(a)).id).toBe((await documentOf(b)).id)
+    }
+    expect(await h.objectKeys()).toHaveLength(1)
     expect(replay.status).toBe(201)
     expect(other.status).toBe(422)
     const count = await withOrganization(service.db, h.organizationId, (tx) =>
@@ -129,14 +135,22 @@ describe('upload against Postgres', () => {
 describe('list, delete and restore against Postgres', () => {
   test('pages through documents created in the same instant by the microsecond cursor, with none lost or repeated', async () => {
     const h = await harness()
+    // The table refuses to rewrite created_at, so the tie is made at insert: every row carries one
+    // microsecond-precision instant, as the db library's own suite does.
     const ids: string[] = []
     for (let i = 0; i < 5; i++) {
-      ids.push((await documentOf(await h.upload(`${i}.pdf`, pdfBytes(`page-${i}`)))).id)
+      const id = `doc_${crypto.randomUUID().replaceAll('-', '')}`
+      ids.push(id)
+      await withOrganization(service.db, h.organizationId, (tx) =>
+        tx.execute(sql`
+          insert into playbook.documents
+            (id, organization_id, name, content_hash, size_bytes, declared_type, detected_type, uploaded_by, object_key, created_at)
+          values (${id}, ${h.organizationId}, ${`${i}.pdf`}, ${Buffer.from(pdfBytes(`page-${i}`))
+            .subarray(0, 32)
+            .fill(i + 1)},
+            10, 'application/pdf', 'pdf', ${h.people.owner.userId}, ${`k${i}`}, '2026-01-01 00:00:00.000001+00')`)
+      )
     }
-    await asOwner(
-      h.organizationId,
-      sql`update playbook.documents set created_at = '2026-01-01 00:00:00.000001+00'`
-    )
 
     const seen: string[] = []
     let cursor: string | null = null
@@ -180,7 +194,8 @@ describe('list, delete and restore against Postgres', () => {
     await h.call('DELETE', `${DOCUMENTS}/${created.id}`)
     await asOwner(
       h.organizationId,
-      sql`update playbook.documents set purge_due_at = clock_timestamp() - interval '1 second'`
+      sql`update playbook.documents
+            set deleted_at = deleted_at - interval '31 days', purge_due_at = purge_due_at - interval '31 days'`
     )
     const late = await h.call('POST', `${DOCUMENTS}/${created.id}/restore`)
 
