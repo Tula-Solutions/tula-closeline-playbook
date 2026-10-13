@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { formatId } from 'tula-closeline-contract'
-import { ORGANIZATIONS_WITH_WORK } from 'tula-closeline-db'
+import { ORGANIZATIONS_WITH_WORK, ORPHAN_SWEEP_DONE } from 'tula-closeline-db'
+import { postgresError } from '~/adapters/memory/playbook-database'
 import { registry } from '~/messages'
 import * as Documents from '~/modules/document/service'
 import { createPipelineHarness, logged, paragraphs } from '~/modules/ingestion/test-support'
@@ -189,17 +190,126 @@ describe('the orphan object sweep', () => {
     expect(list.mock.calls.every(([, options]) => (options?.limit ?? 0) <= 2)).toBe(true)
   })
 
-  test('the housekeeping sweep finds an Organization through its idempotency keys and cleans it', async () => {
+  test('an Organization with only a failed upload is visited through the orphan_sweep kind, and marked swept', async () => {
     const h = createPipelineHarness()
     const orphan = `documents/doc_${'d'.repeat(32)}/original.pdf`
     await h.deps.objects.put(h.organizationId, orphan, new Uint8Array([1]))
     await h.upload('notes.txt', paragraphs(2), { key: 'upload-1' })
-    await h.deps.time.advance(25 * 60 * 60 * 1000)
-    expect(h.deps.database.keys(h.organizationId)).toHaveLength(1)
+    const names = async () =>
+      (await h.deps.discover('orphan_sweep', '', 100)).map((row) => row.organization_id)
+    await h.deps.time.advance(24 * 60 * 60 * 1000)
+    expect(await names()).not.toContain(h.organizationId)
+    await h.deps.time.advance(61 * 60 * 1000)
+    expect(await names()).toContain(h.organizationId)
 
     await h.deps.workers.sweeps.run('housekeeping')
 
     expect(await h.deps.objects.head(h.organizationId, orphan)).toBeUndefined()
+    expect(h.deps.database.discoveries.map((d) => d.kind)).toContain('orphan_sweep')
+    expect(await names()).not.toContain(h.organizationId)
+    // The key is kept for 26 hours, an hour past the sweep, then purged.
+    expect(h.deps.database.keys(h.organizationId)).toHaveLength(1)
+  })
+
+  test('an attempt newer than the sweep keeps the Organization named until its own sweep (more)', async () => {
+    const h = createPipelineHarness()
+    await h.upload('a.txt', paragraphs(2, 'a'), { key: 'first' })
+    await h.deps.time.advance(10 * 60 * 60 * 1000)
+    await h.upload('b.txt', paragraphs(2, 'b'), { key: 'second' })
+    await h.deps.time.advance(16 * 60 * 60 * 1000)
+    const names = async () =>
+      (await h.deps.discover('orphan_sweep', '', 100)).map((row) => row.organization_id)
+
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    // The second attempt is 16 hours old: it is not covered, and is named 25 hours after it.
+    expect(await names()).not.toContain(h.organizationId)
+    await h.deps.time.advance(10 * 60 * 60 * 1000)
+    expect(await names()).toContain(h.organizationId)
+    const orphan = `documents/doc_${'f'.repeat(32)}/original.pdf`
+    await h.deps.objects.put(h.organizationId, orphan, new Uint8Array([1]))
+    await h.deps.time.advance(25 * 60 * 60 * 1000)
+    await h.deps.workers.sweeps.run('housekeeping')
+    expect(await h.deps.objects.head(h.organizationId, orphan)).toBeUndefined()
+    expect(await names()).not.toContain(h.organizationId)
+  })
+
+  test('a lock timeout on ORPHAN_SWEEP_DONE is tried again next tick, with no error report', async () => {
+    const h = createPipelineHarness()
+    await h.upload('a.txt', paragraphs(2), { key: 'first' })
+    await h.deps.time.advance(26 * 60 * 60 * 1000)
+    h.deps.database.failAlways(ORPHAN_SWEEP_DONE, postgresError('55P03'))
+    const names = async () =>
+      (await h.deps.discover('orphan_sweep', '', 100)).map((row) => row.organization_id)
+
+    await h.deps.workers.sweeps.run('housekeeping')
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    expect(h.deps.reported).toEqual([])
+    expect(await names()).toContain(h.organizationId)
+    h.deps.database.clearFailures()
+    await h.deps.workers.sweeps.run('housekeeping')
+    expect(await names()).not.toContain(h.organizationId)
+  })
+
+  test('a listing cut short by the page bound is not marked done', async () => {
+    const h = createPipelineHarness({ env: { ORPHAN_PAGE_SIZE: '2', ORPHAN_MAX_PAGES: '1' } })
+    await h.upload('a.txt', paragraphs(2), { key: 'first' })
+    for (let i = 0; i < 6; i++) {
+      await h.deps.objects.put(
+        h.organizationId,
+        `documents/doc_${String(i).repeat(32)}/original.pdf`,
+        new Uint8Array([1])
+      )
+    }
+    await h.deps.time.advance(26 * 60 * 60 * 1000)
+
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    // Two objects looked at and deleted; the rest were not examined, so the sweep is not done.
+    expect(
+      (await h.deps.discover('orphan_sweep', '', 100)).map((row) => row.organization_id)
+    ).toContain(h.organizationId)
+  })
+
+  test('ORPHAN_SWEEP_DONE gets the time the sweep started, not the time done was called', async () => {
+    const h = createPipelineHarness()
+    await h.upload('a.txt', paragraphs(2), { key: 'first' })
+    await h.deps.time.advance(26 * 60 * 60 * 1000)
+    const started = h.deps.clock.now().toISOString()
+    const seen: unknown[][] = []
+    const scope = h.deps.scope
+    h.deps.scope = (organizationId, fn) =>
+      scope(organizationId, (run) =>
+        fn(async (text, params) => {
+          if (text === ORPHAN_SWEEP_DONE) {
+            seen.push([...params])
+          }
+          return run(text, params)
+        })
+      )
+    // The listing takes twenty seconds of virtual time (inside the object-store deadline).
+    const list = h.deps.objects.list.bind(h.deps.objects)
+    spyOn(h.deps.objects, 'list').mockImplementation(async (org, options) => {
+      await h.deps.time.advance(20_000)
+      return list(org, options)
+    })
+
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    expect(seen).toEqual([[h.organizationId, started]])
+  })
+
+  test('the idempotency purge keeps a key for 26 hours', async () => {
+    const h = createPipelineHarness()
+    await h.upload('a.txt', paragraphs(2), { key: 'first' })
+    await h.deps.time.advance(25 * 60 * 60 * 1000)
+    await h.deps.workers.sweeps.run('housekeeping')
+    expect(h.deps.database.keys(h.organizationId)).toHaveLength(1)
+
+    await h.deps.time.advance(2 * 60 * 60 * 1000)
+    await h.deps.workers.sweeps.run('housekeeping')
+
     expect(h.deps.database.keys(h.organizationId)).toEqual([])
   })
 })
@@ -361,30 +471,6 @@ describe('a purge removes the vectors of every epoch', () => {
 
     expect(h.document(id)).toBeUndefined()
     expect(await h.vectorIds(id)).toEqual([])
-  })
-})
-
-describe('a young orphan is seen again before the key that names its Organization goes', () => {
-  test('an object 23 h 59 m old with a key 24 h old: the second housekeeping pass deletes it', async () => {
-    const h = createPipelineHarness()
-    await h.upload('notes.txt', paragraphs(2), { key: 'upload-1' })
-    // The key is created now; the orphan is a minute younger than the key's 24 hours.
-    await h.deps.time.advance(60_000)
-    const orphan = `documents/doc_${'e'.repeat(32)}/original.pdf`
-    await h.deps.objects.put(h.organizationId, orphan, new Uint8Array([1]))
-    await h.deps.time.advance(24 * 60 * 60 * 1000 - 120_000)
-    // The key is now just over 24 hours old, the orphan 23 hours 59 minutes.
-    await h.deps.time.advance(61_000)
-
-    await h.deps.workers.sweeps.run('housekeeping')
-    expect(await h.deps.objects.head(h.organizationId, orphan)).toBeDefined()
-    expect(h.deps.database.keys(h.organizationId)).toHaveLength(1)
-
-    await h.deps.time.advance(h.deps.env.HOUSEKEEPING_INTERVAL_MS + 1_000)
-    await h.deps.workers.sweeps.run('housekeeping')
-
-    expect(await h.deps.objects.head(h.organizationId, orphan)).toBeUndefined()
-    expect(h.deps.database.keys(h.organizationId)).toEqual([])
   })
 })
 
