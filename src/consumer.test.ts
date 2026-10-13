@@ -3,12 +3,14 @@ import { formatId } from 'tula-closeline-contract'
 import type { Handlers } from 'tula-closeline-kit/queue'
 import { CONSUMER_NAME } from './consumer'
 import { type PlaybookEnvelope, registry } from './messages'
-import { createTestDeps, newOrganizationId } from './testing'
+import { createTestDeps, newOrganizationId, type TestDeps } from './testing'
 
 const documentId = () => formatId('doc', crypto.randomUUID())
 const traceId = formatId('req', crypto.randomUUID())
 
-function uploaded(organizationId = newOrganizationId()) {
+/** A message for an Organization that exists: it holds a document, as every real one does when a message arrives. */
+function uploaded(deps: TestDeps, organizationId = newOrganizationId()) {
+  deps.database.seed({ id: documentId(), organization_id: organizationId })
   return registry.create({
     type: 'playbook.document_uploaded',
     organizationId,
@@ -37,7 +39,7 @@ describe('the queue consumer', () => {
   test('a published message is handled once, in its own Organization, and leaves the queue', async () => {
     const { handlers, seen } = counting()
     const deps = createTestDeps({ handlers })
-    const message = uploaded()
+    const message = uploaded(deps)
     await deps.queue.publish(message)
 
     expect(await deps.consumer.pollOnce()).toBe(1)
@@ -50,7 +52,7 @@ describe('the queue consumer', () => {
   test('the same message published twice is handled once', async () => {
     const { handlers, seen } = counting()
     const deps = createTestDeps({ handlers })
-    const message = uploaded()
+    const message = uploaded(deps)
     await deps.queue.publish(message)
     await deps.queue.publish(message)
 
@@ -66,7 +68,7 @@ describe('the queue consumer', () => {
   test('a message redelivered after it was handled is acknowledged without running again', async () => {
     const { handlers, seen } = counting()
     const deps = createTestDeps({ handlers })
-    const message = uploaded()
+    const message = uploaded(deps)
     await deps.queue.publish(message)
     await deps.consumer.pollOnce()
 
@@ -91,7 +93,7 @@ describe('the queue consumer', () => {
         },
       },
     })
-    const message = uploaded()
+    const message = uploaded(deps)
     await deps.queue.publish(message)
     const first = deps.consumer.pollOnce()
     await deps.time.settle()
@@ -107,7 +109,7 @@ describe('the queue consumer', () => {
   test('a handler that fails is retried after a delay and then processed', async () => {
     const { handlers, seen } = counting(1)
     const deps = createTestDeps({ handlers })
-    const message = uploaded()
+    const message = uploaded(deps)
     await deps.queue.publish(message)
 
     await deps.consumer.pollOnce()
@@ -126,7 +128,7 @@ describe('the queue consumer', () => {
   test('a failure is reported without the message payload', async () => {
     const { handlers } = counting(1)
     const deps = createTestDeps({ handlers })
-    await deps.queue.publish(uploaded())
+    await deps.queue.publish(uploaded(deps))
 
     await deps.consumer.pollOnce()
 
@@ -138,7 +140,7 @@ describe('the queue consumer', () => {
   test('a message that always fails ends in the dead-letter list instead of looping for ever', async () => {
     const { handlers, seen } = counting(1_000)
     const deps = createTestDeps({ handlers })
-    await deps.queue.publish(uploaded())
+    await deps.queue.publish(uploaded(deps))
 
     for (let delivery = 0; delivery < 8; delivery++) {
       await deps.consumer.pollOnce()
@@ -152,8 +154,9 @@ describe('the queue consumer', () => {
   test('two Organizations sending the same message id are two messages', async () => {
     const { handlers, seen } = counting()
     const deps = createTestDeps({ handlers })
-    const first = uploaded()
+    const first = uploaded(deps)
     const second = { ...first, organizationId: newOrganizationId() }
+    deps.database.seed({ id: documentId(), organization_id: second.organizationId })
     await deps.queue.publish(first)
     await deps.queue.publish(second)
 
@@ -165,8 +168,8 @@ describe('the queue consumer', () => {
   })
 
   test('a message type with no handler is never acknowledged, so it cannot be silently lost', async () => {
-    const deps = createTestDeps()
-    await deps.queue.publish(uploaded())
+    const deps = createTestDeps({ handlers: {} })
+    await deps.queue.publish(uploaded(deps))
 
     await deps.consumer.pollOnce()
 

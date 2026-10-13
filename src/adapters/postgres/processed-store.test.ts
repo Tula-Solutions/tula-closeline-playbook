@@ -12,6 +12,7 @@ import {
 import { GLOBAL_SCOPE_ORGANIZATION_ID } from 'tula-closeline-db/schema'
 import {
   createPostgresProcessedStore,
+  type Discover,
   type InScope,
   ProcessedStorePurgeUnavailableError,
   type Result,
@@ -207,15 +208,62 @@ describe('purge', () => {
     ])
   })
 
-  test('purge says it cannot find the Organizations to purge, naming the missing piece', async () => {
+  test('a store built without work discovery says it cannot find the Organizations to purge', async () => {
     const { scope, calls } = scripted([])
     const store = createPostgresProcessedStore({ scope })
 
     const error = await store.purge(new Date(), 10).catch((thrown: unknown) => thrown)
 
     expect(error).toBeInstanceOf(ProcessedStorePurgeUnavailableError)
-    expect((error as Error).message).toContain('#53')
+    expect((error as Error).message).toContain('discover')
     expect(calls).toHaveLength(0)
+  })
+
+  test('purge finds the Organizations through discovery, the global scope included, and stops at the limit', async () => {
+    const { scope, calls } = scripted([
+      { rows: [], rowCount: 3 },
+      { rows: [], rowCount: 2 },
+    ])
+    const asked: string[] = []
+    const discover: Discover = async (kind, after) => {
+      asked.push(`${kind}:${after}`)
+      return after === ''
+        ? [
+            { organization_id: GLOBAL_SCOPE_ORGANIZATION_ID, resume_after: ORG },
+            { organization_id: ORG, resume_after: ORG },
+          ]
+        : []
+    }
+    const store = createPostgresProcessedStore({ scope, discover })
+
+    const removed = await store.purge(new Date('2026-01-01T00:00:00Z'), 5)
+
+    expect(removed).toBe(5)
+    expect(asked).toEqual(['consumed_purge:'])
+    expect(calls.map((c) => c.scope)).toEqual([GLOBAL_SCOPE_ORGANIZATION_ID, ORG])
+    expect(calls.map((c) => c.params[2])).toEqual([5, 2])
+  })
+
+  test('purge pages through discovery until it returns no row and sums what was removed', async () => {
+    const { scope } = scripted([
+      { rows: [], rowCount: 1 },
+      { rows: [], rowCount: 4 },
+    ])
+    const ORG2 = 'org_ffffffffffffffffffffffffffffffff'
+    const pages: Record<
+      string,
+      readonly { organization_id: string | null; resume_after: string }[]
+    > = {
+      '': [{ organization_id: ORG, resume_after: ORG }],
+      [ORG]: [{ organization_id: ORG2, resume_after: ORG2 }],
+      [ORG2]: [],
+    }
+    const store = createPostgresProcessedStore({
+      scope,
+      discover: async (_k, after) => pages[after] ?? [],
+    })
+
+    expect(await store.purge(new Date('2026-01-01T00:00:00Z'), 100)).toBe(5)
   })
 })
 

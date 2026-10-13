@@ -1,6 +1,12 @@
 import { sql } from 'drizzle-orm'
 import type { RequestId } from 'tula-closeline-contract'
-import { createDb, type Transaction, withOrganization } from 'tula-closeline-db'
+import {
+  createDb,
+  ORGANIZATIONS_WITH_WORK,
+  type Transaction,
+  type WorkDiscoveryRow,
+  withOrganization,
+} from 'tula-closeline-db'
 import {
   type Clock,
   createErrorReporter,
@@ -12,7 +18,9 @@ import {
   type ObjectStore,
   type ProcessedStore,
   type Queue,
+  type Sleep,
   systemClock,
+  systemSleep,
   type TokenVerifier,
   type VectorStore,
 } from 'tula-closeline-kit'
@@ -28,8 +36,12 @@ import { createMemoryOcrReader } from '~/adapters/memory/ocr'
 import { createMemoryParser } from '~/adapters/memory/parser'
 import {
   createPostgresProcessedStore,
+  type Discover,
   type InScope,
+  organizationIsRemoved,
   scopeOver,
+  statementOf,
+  withoutRemovedOrganizations,
 } from '~/adapters/postgres/processed-store'
 import { createHandlers, createPlaybookConsumer } from '~/consumer'
 import { describeError } from '~/describe-error'
@@ -39,6 +51,7 @@ import { type PlaybookEnvelope, registry } from '~/messages'
 import type { Embedder } from '~/ports/embedder'
 import type { OcrReader } from '~/ports/ocr'
 import type { DocumentParser } from '~/ports/parser'
+import { createWorkers, type Workers } from '~/workers'
 
 /** One dependency probe for `/readyz`: resolve when healthy, reject or stall when not. */
 export type ReadinessCheck = {
@@ -78,13 +91,26 @@ export type Container = {
    * its values. Every module reaches the database through this or `withOrganization`.
    */
   scope: InScope
+  /**
+   * Work discovery (`ORGANIZATIONS_WITH_WORK`): the one statement that runs unscoped. It is the
+   * only statement of a transaction of its own, which commits at once, as the db library requires.
+   */
+  discover: Discover
+  /** Waits for a timer; real time here, virtual time in tests. Workers sleep through this only. */
+  sleep: Sleep
+  /** A number in [0, 1) for jitter; `Math.random` here, fixed in tests. */
+  random: () => number
+  /** The background workers: the ingestion job loop and the sweeps. Started by `server.ts`. */
+  workers: Workers
   /** The ingestion queue: SQS when `QUEUE_URL` is set, otherwise in memory (local and tests only). */
   queue: Queue<PlaybookEnvelope>
   /** Uploaded files: S3 when `STORAGE_BUCKET` is set, otherwise in memory (local and tests only). */
   objects: ObjectStore
   /**
    * The vector index. Memory only: the real adapter (turbopuffer, ADR 0010) is blocked on hub
-   * issue 48, so nothing written here survives a restart. Fine while no step writes vectors.
+   * issue 48, so nothing written here survives a restart. The pipeline writes to it; with the
+   * memory adapter a restart loses vectors that Postgres says are `ready`, so this is for local
+   * runs and tests only.
    */
   vectors: VectorStore
   /** Which queue messages are done; Postgres, so any instance can be stopped at any time. */
@@ -207,14 +233,48 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
   const objects = createObjects(env, logger)
   const embedder = createMemoryEmbedder()
   const scope = scopeOver(database.db)
-  const processed = createPostgresProcessedStore({ scope })
+  const discover: Discover = (kind, after, batch) =>
+    // Unscoped, and the only statement of its transaction (db README, ADR 0017).
+    database.db.transaction(async (tx) => {
+      const result = await tx.execute(statementOf(ORGANIZATIONS_WITH_WORK, [kind, after, batch]))
+      return result.rows as unknown as WorkDiscoveryRow[]
+    })
+  // A message of a removed Organization is acknowledged without a record (see the wrapper).
+  const processed = withoutRemovedOrganizations(
+    createPostgresProcessedStore({ scope, discover }),
+    (organizationId) => organizationIsRemoved(scope, organizationId)
+  )
+  const vectors = createMemoryVectorStore({ dimensions: embedder.dimensions })
+  const parser = createMemoryParser()
+  const ocr = createMemoryOcrReader()
+  const random = Math.random
+  const reportError: Container['reportError'] = (error, context) => {
+    logger.error('unhandled error', { ...context, error: describeError(error) })
+    errors.capture(error, context)
+  }
+  const pipeline = {
+    scope,
+    discover,
+    objects,
+    vectors,
+    embedder,
+    parser,
+    ocr,
+    logger,
+    clock: systemClock,
+    env,
+    sleep: systemSleep,
+    random,
+    reportError,
+  }
+  const workers = createWorkers(pipeline, processed)
 
   const consumer = createPlaybookConsumer({
     queue,
     store: processed,
     logger,
     errorReporter: errors,
-    handlers: createHandlers(),
+    handlers: createHandlers(pipeline, workers.ingestion.nudge),
     concurrency: env.CONSUMER_CONCURRENCY,
   })
 
@@ -230,13 +290,17 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     }),
     withOrganization: (organizationId, fn) => withOrganization(database.db, organizationId, fn),
     scope,
+    discover,
+    sleep: systemSleep,
+    random,
+    workers,
     queue,
     objects,
-    vectors: createMemoryVectorStore({ dimensions: embedder.dimensions }),
+    vectors,
     processed,
     embedder,
-    parser: createMemoryParser(),
-    ocr: createMemoryOcrReader(),
+    parser,
+    ocr,
     consumer,
     readinessChecks: [
       {
@@ -247,10 +311,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
       },
     ],
     lifecycle: { draining: false },
-    reportError: (error, context) => {
-      logger.error('unhandled error', { ...context, error: describeError(error) })
-      errors.capture(error, context)
-    },
+    reportError,
     close: async () => {
       await errors.close(REPORTER_CLOSE_MS)
       await database.close()

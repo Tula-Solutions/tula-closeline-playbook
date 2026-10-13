@@ -4,12 +4,22 @@
 // milliseconds, and the claim race.
 import { afterAll, describe, expect, test } from 'bun:test'
 import { sql } from 'drizzle-orm'
-import { createDb, withOrganization } from 'tula-closeline-db'
+import {
+  createDb,
+  ORGANIZATIONS_WITH_WORK,
+  type WorkDiscoveryRow,
+  withOrganization,
+} from 'tula-closeline-db'
 import { GLOBAL_SCOPE_ORGANIZATION_ID } from 'tula-closeline-db/schema'
 import type { ConsumedKey, ProcessedStore } from 'tula-closeline-kit'
 import { processedStoreBehaviour } from 'tula-closeline-kit/testing/behaviour'
 import { integrationUrls } from '~/integration-support'
-import { createPostgresProcessedStore, scopeOver } from './processed-store'
+import {
+  createPostgresProcessedStore,
+  type Discover,
+  scopeOver,
+  statementOf,
+} from './processed-store'
 
 const urls = integrationUrls()
 const service = createDb(urls.service)
@@ -43,11 +53,17 @@ async function pass(seconds: number): Promise<void> {
   }
 }
 
-const postgres = createPostgresProcessedStore({ scope: scopeOver(service.db) })
+const discover: Discover = (kind, after, batch) =>
+  service.db.transaction(async (tx) => {
+    const result = await tx.execute(statementOf(ORGANIZATIONS_WITH_WORK, [kind, after, batch]))
+    return result.rows as unknown as WorkDiscoveryRow[]
+  })
+const postgres = createPostgresProcessedStore({ scope: scopeOver(service.db), discover })
+const withoutDiscovery = createPostgresProcessedStore({ scope: scopeOver(service.db) })
 
 // The suite names Organizations `org_a` and `org_b`, which are not wire ids: map them to real
-// ones, and make `purge` run `purgeScope` over the scopes the suite uses (the real `purge` cannot
-// list Organizations until hub issue #53).
+// ones, and make `purge` run `purgeScope` over the scopes the suite uses (the real `purge` finds
+// them through discovery and is covered below).
 const IDS: Record<string, string> = { org_a: ORG_A, org_b: ORG_B }
 const wire = (key: ConsumedKey): ConsumedKey => ({
   ...key,
@@ -161,7 +177,7 @@ describe('Organization isolation', () => {
     expect(await rowsIn(GLOBAL_SCOPE_ORGANIZATION_ID)).toHaveLength(1)
   })
 
-  test('a failed table-wide purge is explicit and removes nothing', async () => {
+  test('a store built without discovery refuses a table-wide purge and removes nothing', async () => {
     await clear()
     const k = key(ORG_A)
     const claimed = await postgres.claim(k, 60)
@@ -170,9 +186,27 @@ describe('Organization isolation', () => {
     }
     await pass(60)
 
-    await expect(postgres.purge(new Date(), 100)).rejects.toThrow(/#53/)
+    await expect(withoutDiscovery.purge(new Date(), 100)).rejects.toThrow(/discover/)
 
     expect(await rowsIn(ORG_A)).toHaveLength(1)
+  })
+
+  test('the table-wide purge finds every Organization and the global scope through discovery', async () => {
+    await clear()
+    for (const organizationId of [ORG_A, ORG_B, null]) {
+      const k = key(organizationId)
+      const claimed = await postgres.claim(k, 60)
+      if (claimed.status === 'claimed') {
+        await postgres.complete(k, claimed.token)
+      }
+    }
+    await pass(60 * 60 * 24 * 16)
+
+    await postgres.purge(new Date(), 100)
+
+    expect(await rowsIn(ORG_A)).toEqual([])
+    expect(await rowsIn(ORG_B)).toEqual([])
+    expect(await rowsIn(GLOBAL_SCOPE_ORGANIZATION_ID)).toEqual([])
   })
 })
 

@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test'
 import { formatId } from 'tula-closeline-contract'
+import { createMemoryProcessedStore } from 'tula-closeline-kit'
+import { createPlaybookConsumer } from '../src/consumer'
 import { registry } from '../src/messages'
 import { createTestDeps } from '../src/testing'
 import { BATCH_REQUESTS, BATCHES, measure, summary } from './measure'
@@ -13,12 +15,21 @@ const BUDGET_MS = 45
 
 test(`ingestion claim: the best of ${BATCHES} batches of ${BATCH_REQUESTS} messages is within ${BUDGET_MS} ms`, async () => {
   let handled = 0
-  const deps = createTestDeps({
+  const deps = createTestDeps()
+  // The kit's memory store: the Postgres one runs its statements on the database double here,
+  // whose transactions copy all state, which would time the double and not the claim.
+  const consumer = createPlaybookConsumer({
+    queue: deps.queue,
+    store: createMemoryProcessedStore({ clock: deps.time.clock }),
+    logger: deps.logger,
+    errorReporter: deps.errors,
     handlers: {
       'playbook.document_uploaded': async () => {
         handled++
       },
     },
+    concurrency: deps.env.CONSUMER_CONCURRENCY,
+    sleep: deps.time.sleep,
   })
   const organizationId = formatId('org', crypto.randomUUID())
   const traceId = formatId('req', crypto.randomUUID())
@@ -32,7 +43,7 @@ test(`ingestion claim: the best of ${BATCHES} batches of ${BATCH_REQUESTS} messa
         payload: { documentId: formatId('doc', crypto.randomUUID()) },
       })
     )
-    await deps.consumer.pollOnce()
+    await consumer.pollOnce()
   })
 
   console.log(summary('ingestion claim', result))

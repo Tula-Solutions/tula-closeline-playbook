@@ -8,18 +8,25 @@ export type Stoppable = {
 }
 
 /**
- * Combines the server and the queue consumer into one thing to stop. Stopping it stops receiving
- * new messages and lets the ones in flight finish for up to `deadlineMs`, after which they are
- * given back to the queue; a forced stop adds nothing, as the consumer's own deadline has run.
+ * Combines the server, the queue consumer and the background workers into one thing to stop.
+ * Stopping it stops receiving new messages and lets the ones in flight finish for up to
+ * `deadlineMs`, after which they are given back to the queue; the workers stop claiming and
+ * their jobs are released at the step they reached (`workersDeadlineMs`, default `deadlineMs`).
+ * A forced stop adds nothing, as the deadlines have run.
  */
 export function stoppableWith(
   server: Stoppable,
   consumer: { stop: (deadlineMs: number) => Promise<unknown> },
-  deadlineMs: number
+  deadlineMs: number,
+  workers?: { stop: (deadlineMs: number) => Promise<unknown>; deadlineMs?: number }
 ): Stoppable {
   return {
     stop: async (force) => {
-      await Promise.all([server.stop(force), consumer.stop(force ? 0 : deadlineMs)])
+      await Promise.all([
+        server.stop(force),
+        consumer.stop(force ? 0 : deadlineMs),
+        workers?.stop(force ? 0 : (workers.deadlineMs ?? deadlineMs)),
+      ])
     },
   }
 }

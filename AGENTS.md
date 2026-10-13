@@ -28,10 +28,9 @@ search over them, and later fine-tuning. It owns the `playbook` Postgres schema 
 `auth` schema; it asks core over HTTP or consumes events.
 
 What exists: the skeleton (HTTP stack, token check, container, consumer loop, ports and fakes) and
-the document routes (hub issue 14, round A): upload, list, read, delete, restore and the internal
-remove-all.
-What does not: the pipeline (consumers, the ingestion job loop, vector cleanup, the purge and
-erasure sweeps: round B) and every real vendor adapter.
+the document routes (hub issue 14, round A), and the pipeline (round B): message handlers, the
+ingestion job loop, the chunker, vector cleanup, and the purge, housekeeping and orphan sweeps.
+What does not: every real vendor adapter (vector store, embedder, parser, OCR), and search.
 
 ## Layout
 
@@ -58,7 +57,11 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   run locally; run it with the compose Postgres up before relying on a change to a statement's use.
 - `src/messages.ts` is the registry of the two contract messages. `src/consumer.ts` wires the kit's
   `createConsumer` (name `playbook.ingestion`) over the Postgres `ProcessedStore`; handlers go in
-  `createHandlers`. `server.ts` starts the consumer; shutdown stops it (`stoppableWith`).
+  `createHandlers`. `server.ts` starts the consumer and, after it listens, the workers
+  (`WORKERS_ENABLED`); shutdown stops both (`stoppableWith`).
+- `src/modules/ingestion/` is the pipeline (`job.ts`, `chunker.ts`, `cleanup.ts`, `handlers.ts`);
+  `src/modules/maintenance/` the purge, cleanup-pending and housekeeping steps; `src/workers/` the
+  loops (`ingestion.ts`, `sweeps.ts`, `discovery.ts`). Tests use `createPipelineHarness`.
 - Public routes mount on `publicRoutes` in `src/app.ts` under `/v1`, behind `authenticate`. Read the
   caller with `callerOf(c)`: the Organization comes from the verified token and nowhere else.
 - Errors: `reportError` is the one seam; call `reportSafely`. Log errors with `describeError`.
@@ -101,19 +104,40 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   other error at or after the commit leaves the file and logs "unknown outcome"); after it the document is `uploaded` with a queued job, which the job loop
   finds without the message (`jobs_due`). A failed delete or restore publish is recovered by the
   `cleanup_pending` sweep. A publish failure never fails a request that has committed.
-- Round B must: handle `playbook.document_uploaded` and `playbook.document_deleted` (until then a
-  published message is hidden, reported and dead-lettered by the consumer: do not deploy round A
-  alone); run the job loop over `jobs_due`; run the purge sweep over `purge_due` (the remove-all
-  route answers 503 until it has removed the barred documents and their files); delete orphan
-  objects (an upload that failed with an unknown outcome keeps its object, under `documents/` with
-  no row); run `idempotency_purge`; and stop recording consumed messages for a removed Organization.
+- The job (`runJob`) has four steps, each recorded with `INGESTION_JOB_ADVANCE`, so a retry resumes:
+  parse (original read, parser, OCR in batches of 50; `page_count` recorded, pages written to
+  `pages-<epoch>.json`), chunk (`chunks-<epoch>.json`, which holds the chunk text because the kit's
+  vector attributes cap at 512 characters; search reads text from it by chunk number), embed
+  (batches of `MAX_EMBED_TEXTS`, `chunks_done` recorded per batch), index (older-epoch vectors and
+  the pages file go, then `INGESTION_JOB_COMPLETE`). Failures end `failed` with a contract reason;
+  a transient error retries with jittered backoff until `INGESTION_MAX_ATTEMPTS` (8: every
+  shutdown release and rolling deploy spends a claim attempt).
+- A heartbeat renews the lease every `INGESTION_HEARTBEAT_MS` and once more before each vector
+  write. A missing row on any renew, advance or complete, or no renewal for lease minus heartbeat,
+  is a lost claim: in-flight calls are cancelled and nothing more is written. A vector write that
+  times out is uncertain: the job stays running until its lease lapses. Shutdown aborts the same
+  way and releases the job (`INGESTION_JOB_RETRY`, delay 0), at its recorded step.
+- Vectors: id `<documentId>:<epoch>:<chunk>`, attributes `document_id`, `epoch`, `chunk`, `page`;
+  the stores are scoped to the Organization by their ports. Chunks target `CHUNK_TARGET_CHARS`
+  (1000, about 250 tokens), at most `CHUNK_MAX_CHARS` (1600), overlap only inside an over-long
+  paragraph; a document over `MAX_CHUNKS_PER_DOCUMENT` or `MAX_TEXT_CHARS_PER_DOCUMENT` fails
+  `processing_failed`. Filters are equality only, so cleanup deletes per epoch (newest 64).
+- Workers find Organizations with the one unscoped call, `ORGANIZATIONS_WITH_WORK` (`discover`,
+  alone in its transaction); everything else runs in the Organization scope. Sweeps: `cleanup` and
+  `purge` every `SWEEP_INTERVAL_MS`, `housekeeping` (consumed and idempotency purges, spent purges
+  logged for a person and never claimed, orphan objects) every `HOUSEKEEPING_INTERVAL_MS`. Orphan
+  rule: delete an object under `documents/doc_<id>/` only if the id has no row and the object is
+  older than `ORPHAN_MIN_AGE_MS` (24 h). The db has no orphan work kind, so only Organizations
+  named by `consumed_purge`, `idempotency_purge` or `purge_due` are visited; `cleanup_pending`
+  has no list of its own, so the sweep scans deleted documents (up to 500) and cleans each.
+- A message for a removed Organization (no documents, settings or usage left) is acknowledged and
+  not recorded (`withoutRemovedOrganizations`), so the remove-all can reach `removed`.
 - The remove-all route does bounded work (5 erase batches of 100, then the cleanup publishes eight
   at a time inside a 5 s budget; the rest is left to the `cleanup_pending` sweep) and answers 200
   only when nothing remains. Core must stop the Organization signing in and uploading before it
   calls: this service only detects an upload that lands late (a row left unerased) and answers 503. While documents remain it answers 503 `server.unavailable` with `Retry-After: 30` and
   stores no key; the caller repeats until 200. The key is required and stored with the final answer.
-- Vector ids are deterministic (`<documentId>:<chunk>`) and each vector carries its job's epoch
-  (db README, ADR 0016). Search drops results whose document is deleted or gone; that state check
+- Vector ids are deterministic and each vector carries its job's epoch (db README, ADR 0016). Search drops results whose document is deleted or gone; that state check
   is the guarantee, the vector cleanup is not.
 - Uploads are held whole in memory: `MAX_CONCURRENT_UPLOADS` bounds them per instance, and sizes and
   page counts come from the contract's constants (`env.ts` may lower them, never raise them).
@@ -122,16 +146,13 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   file per upload: 100 MiB, 400 MiB at the default bound of 4.
 - A list is one call to `DOCUMENT_LIST_FILTERED` (db v0.12.0): any state filter, every column a read
   returns on each row (`updated_at`, `page_count`), so a listed document is never read again.
-  `pageCount` is the row's `page_count`, null until round B's ingestion job records it with
-  `INGESTION_JOB_ADVANCE` before it completes or fails the job.
+  `pageCount` is the row's `page_count`, null until the job records it with `INGESTION_JOB_ADVANCE`.
 - File content, extracted text and prompts are untrusted data. Never log or return them; no
   document text in an error message, a log field or a queue payload.
 - Every call to a vendor port takes an `AbortSignal`. Every call has its own timeout and a bounded,
   jittered retry inside the adapter (`COMMON.md`); the caller cancels with the signal and retries
   nothing itself. `embed` takes at most `MAX_EMBED_TEXTS` texts; the caller splits.
-- `ProcessedStore.purge` throws `ProcessedStorePurgeUnavailableError` until hub issue 53 lets the
-  service list the Organizations to purge; `purgeScope` works per scope. Do not make `purge` a
-  quiet partial.
+- `ProcessedStore.purge` finds Organizations through `consumed_purge` discovery; without `discover` it throws.
 
 ## Env keys (`src/env.ts`, mirrored in `.env.example`)
 
@@ -141,7 +162,12 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 `QUEUE_URL`, `QUEUE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ENDPOINT`, `MAX_UPLOAD_BYTES`,
 `MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `UPLOAD_BODY_TIMEOUT_MS`, `MAX_DOCUMENTS_PER_ORGANIZATION`,
 `MAX_BYTES_PER_ORGANIZATION`, `INTERNAL_API_TOKENS`, `CONSUMER_CONCURRENCY`,
-`CONSUMER_STOP_DEADLINE_MS`. Outside `local`, `REGION`, `SENTRY_DSN`, `DATABASE_URL`, the `AUTH_*`
+`CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED`, `WORKERS_STOP_DEADLINE_MS`,
+`INGESTION_*` (`CONCURRENCY`, `LEASE_MS`, `HEARTBEAT_MS`, `IO_TIMEOUT_MS`, `PARSE_TIMEOUT_MS`,
+`MAX_ATTEMPTS`, `RETRY_BASE_MS`, `POLL_INTERVAL_MS`), `CHUNK_TARGET_CHARS`, `CHUNK_MAX_CHARS`,
+`CHUNK_OVERLAP_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`, `DISCOVERY_BATCH`,
+`SWEEP_BATCH`, `HOUSEKEEPING_BATCH`, `SWEEP_INTERVAL_MS`, `HOUSEKEEPING_INTERVAL_MS`,
+`PURGE_LEASE_MS`, `ORPHAN_*`. Outside `local`, `REGION`, `SENTRY_DSN`, `DATABASE_URL`, the `AUTH_*`
 keys, `AWS_REGION`, `QUEUE_URL`, `STORAGE_BUCKET` and `INTERNAL_API_TOKENS` are required (the
 public local secret is refused). Add a key in both files.
 
@@ -153,6 +179,9 @@ Each has a benchmark in `bench/` with a budget; a change to one states its compl
 - **The ingestion claim** (`createPlaybookConsumer`: receive, claim, handle, complete, acknowledge),
   O(1) per message in the store: `bench/consumer.bench.test.ts`. The Postgres store adds one
   statement per step; only its integration suite sees that.
+- **Chunking** (`chunkPages`): O(total characters) time, O(input + output) memory, bounded by
+  `MAX_CHUNKS_PER_DOCUMENT`: `bench/chunker.bench.test.ts`. **The claim loop** is O(`INGESTION_CONCURRENCY`)
+  per Organization per pass plus O(Organizations with work) discovery, in pages of `DISCOVERY_BATCH`.
 - **The upload** (`upload` in `src/modules/document/service.ts`): O(file size) for the file check,
   the content check and the SHA-256, with no copy of the file, plus one transaction of O(1) indexed
   statements (two when the file is new) and one object write: `bench/upload.bench.test.ts` times the

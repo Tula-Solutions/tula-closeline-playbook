@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test'
 import { formatId } from 'tula-closeline-contract'
-import { ProcessedStorePurgeUnavailableError } from './adapters/postgres/processed-store'
 import { createContainer, reportSafely } from './container'
 import { loadEnv } from './env'
 
@@ -204,12 +203,14 @@ test('STORAGE_BUCKET switches the object store to S3, reached at the configured 
   }
 })
 
-test('the processed store is the Postgres one, whose purge says plainly that it cannot run yet', async () => {
+test('the container builds the workers, the unscoped discovery call and real time for them', async () => {
   const container = createContainer(loadEnv({ ENVIRONMENT: 'local', LOG_LEVEL: 'silent' }))
 
-  const error = await container.processed.purge(new Date(), 10).catch((thrown: unknown) => thrown)
-
-  expect(error).toBeInstanceOf(ProcessedStorePurgeUnavailableError)
+  expect(typeof container.discover).toBe('function')
+  expect(typeof container.workers.start).toBe('function')
+  expect(typeof container.workers.ingestion.nudge).toBe('function')
+  expect(container.random()).toBeLessThan(1)
+  await container.close()
 })
 
 test('closing the container twice is harmless', async () => {

@@ -4,7 +4,7 @@ import { createFixedClock } from 'tula-closeline-kit'
 import { createApp } from './app'
 import { registry } from './messages'
 import { drain, type Stoppable, shutdown, stoppableWith } from './shutdown'
-import { createTestDeps, newOrganizationId } from './testing'
+import { createTestDeps, newOrganizationId, type TestDeps } from './testing'
 
 function fakeServer(finishesAfterMs: number | null) {
   const calls: (boolean | undefined)[] = []
@@ -153,12 +153,16 @@ test.each([
   expect(exits).toEqual([level === 'error' ? 1 : 0])
 })
 
-function uploaded() {
+/** A message for an Organization that exists (it holds a document), as every real one does. */
+function uploaded(deps: TestDeps) {
+  const organizationId = newOrganizationId()
+  const documentId = formatId('doc', crypto.randomUUID())
+  deps.database.seed({ id: documentId, organization_id: organizationId })
   return registry.create({
     type: 'playbook.document_uploaded',
-    organizationId: newOrganizationId(),
+    organizationId,
     traceId: formatId('req', crypto.randomUUID()),
-    payload: { documentId: formatId('doc', crypto.randomUUID()) },
+    payload: { documentId },
   })
 }
 
@@ -179,7 +183,7 @@ test('stopping lets the message in flight finish, and then receives nothing more
     },
   })
   deps.consumer.start()
-  await deps.queue.publish(uploaded())
+  await deps.queue.publish(uploaded(deps))
   await deps.time.settle()
   expect(deps.queue.depth()).toEqual({ visible: 0, inFlight: 1 })
 
@@ -189,7 +193,7 @@ test('stopping lets the message in flight finish, and then receives nothing more
 
   expect(finished).toBe(true)
   expect(deps.queue.depth()).toEqual({ visible: 0, inFlight: 0 })
-  await deps.queue.publish(uploaded())
+  await deps.queue.publish(uploaded(deps))
   await deps.time.advance(60_000)
   expect(deps.queue.depth()).toEqual({ visible: 1, inFlight: 0 })
 })
@@ -208,7 +212,7 @@ test('a message still running at the deadline is aborted and given back to the q
     },
   })
   deps.consumer.start()
-  await deps.queue.publish(uploaded())
+  await deps.queue.publish(uploaded(deps))
   await deps.time.settle()
 
   const stopping = stoppableWith(noServer(), deps.consumer, 5_000).stop()

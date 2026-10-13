@@ -7,7 +7,11 @@ import {
   CONSUMED_RELEASE,
   CONSUMED_RENEW,
   type Database,
+  discoveredOrganizations,
+  ORGANIZATION_REMOVAL_STATUS,
   PLAYBOOK_MAX_BATCH,
+  type WORK_KINDS,
+  type WorkDiscoveryRow,
   withOrganization,
 } from 'tula-closeline-db'
 import { GLOBAL_SCOPE_ORGANIZATION_ID } from 'tula-closeline-db/schema'
@@ -28,6 +32,19 @@ export type Run = (text: string, params: readonly unknown[]) => Promise<Result>
  * connection.
  */
 export type InScope = <T>(organizationId: string, fn: (run: Run) => Promise<T>) => Promise<T>
+
+/** A kind of background work the database can say which Organizations have due. */
+export type WorkKind = (typeof WORK_KINDS)[number]
+
+/**
+ * Runs the db library's work discovery the one way Postgres allows: unscoped, as the only statement
+ * of a transaction of its own. Returns the raw rows; read them with `discoveredOrganizations`.
+ */
+export type Discover = (
+  kind: WorkKind,
+  after: string,
+  batch: number
+) => Promise<readonly WorkDiscoveryRow[]>
 
 /** The most times `claim` repeats itself when the record disappears between its two steps. */
 export const DEFAULT_MAX_CLAIM_ATTEMPTS = 3
@@ -66,14 +83,14 @@ export function scopeOver(db: Database): InScope {
     )
 }
 
-/** Thrown by {@link PostgresProcessedStore.purge}: the Organizations to purge cannot be found yet. */
+/** Thrown by {@link PostgresProcessedStore.purge} on a store built without work discovery: it cannot find the Organizations to purge. */
 export class ProcessedStorePurgeUnavailableError extends Error {
-  /** Creates the error with the message that names the missing work. */
+  /** Creates the error with the message that names the missing piece. */
   constructor() {
     super(
       'ProcessedStore.purge cannot run: every playbook table is under row-level security, so the ' +
-        'Organizations that hold old consumed messages cannot be listed until hub issue #53 adds ' +
-        'work discovery. Call purgeScope for a known Organization, or for the global scope.'
+        'Organizations that hold old consumed messages are found through work discovery, and this ' +
+        'store was built without a `discover` function. Call purgeScope for a known Organization.'
     )
     this.name = 'ProcessedStorePurgeUnavailableError'
   }
@@ -96,6 +113,8 @@ export type PostgresProcessedStoreOptions = {
   newToken?: () => string
   /** How many times `claim` repeats when the record vanishes between its two steps. */
   maxClaimAttempts?: number
+  /** Work discovery (unscoped, alone in its transaction), so `purge` can find the Organizations; without it `purge` throws. */
+  discover?: Discover
 }
 
 /** A claim token is a uuid in the table, so only a uuid can be one this store issued. */
@@ -259,9 +278,78 @@ export function createPostgresProcessedStore(
       return result.rowCount
     },
 
-    purge(): Promise<number> {
-      // Not a quiet partial purge: a run that skipped every Organization would look like success.
-      return Promise.reject(new ProcessedStorePurgeUnavailableError())
+    async purge(before, limit): Promise<number> {
+      if (options.discover === undefined) {
+        // Not a quiet partial purge: a run that skipped every Organization would look like success.
+        throw new ProcessedStorePurgeUnavailableError()
+      }
+      if (!Number.isInteger(limit) || limit < 1) {
+        throw new RangeError('purge limit must be a whole number from 1')
+      }
+      // The Organizations come from the database's own list of who has old records, the global
+      // scope included, so none is skipped; each is purged inside its own scope.
+      let remaining = limit
+      let after = ''
+      for (;;) {
+        const { organizations, resumeAfter } = discoveredOrganizations(
+          await options.discover('consumed_purge', after, PLAYBOOK_MAX_BATCH)
+        )
+        for (const organizationId of organizations) {
+          while (remaining > 0) {
+            const asked = Math.min(remaining, PLAYBOOK_MAX_BATCH)
+            const removed = await this.purgeScope(organizationId, before, asked)
+            remaining -= removed
+            if (removed < asked) {
+              break
+            }
+          }
+          if (remaining <= 0) {
+            return limit
+          }
+        }
+        if (resumeAfter === null) {
+          return limit - remaining
+        }
+        after = resumeAfter
+      }
     },
+  }
+}
+
+/**
+ * Whether an Organization has been removed: no document, no index settings and no usage row (the
+ * parts of `ORGANIZATION_REMOVAL_STATUS` that a consumed message does not itself create). A
+ * message for such an Organization has nothing to act on.
+ */
+export async function organizationIsRemoved(
+  scope: InScope,
+  organizationId: string
+): Promise<boolean> {
+  const status = (
+    await scope(organizationId, (run) => run(ORGANIZATION_REMOVAL_STATUS, [organizationId]))
+  ).rows[0]
+  return status?.no_documents === true && status.no_settings === true && status.no_usage === true
+}
+
+/**
+ * Wraps a processed store so that a message of a removed Organization is acknowledged without
+ * being recorded. Recording one would put a row in `consumed_message` that
+ * `ORGANIZATION_REMOVAL_STATUS` counts, and the Organization could then never read as removed.
+ * The claim answers `done`, which the consumer acknowledges without running a handler. Every
+ * other call, and every message of a live Organization, is the inner store's.
+ */
+export function withoutRemovedOrganizations(
+  inner: ProcessedStore,
+  isRemoved: (organizationId: string) => Promise<boolean>
+): ProcessedStore {
+  return {
+    claim: async (key, leaseSeconds) =>
+      key.organizationId !== null && (await isRemoved(key.organizationId))
+        ? { status: 'done' }
+        : inner.claim(key, leaseSeconds),
+    renew: (key, token, leaseSeconds) => inner.renew(key, token, leaseSeconds),
+    complete: (key, token) => inner.complete(key, token),
+    release: (key, token) => inner.release(key, token),
+    purge: (before, limit) => inner.purge(before, limit),
   }
 }

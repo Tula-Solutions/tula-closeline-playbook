@@ -13,7 +13,7 @@ import { z } from 'zod'
 const PG_TIMESTAMP = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}(:\d{2})?$/
 
 /** Parses the text of a `timestamptz` into a Date, or `undefined` when it is not one. */
-function parsePgTimestamp(text: string): Date | undefined {
+export function parsePgTimestamp(text: string): Date | undefined {
   if (!PG_TIMESTAMP.test(text)) {
     return undefined
   }
