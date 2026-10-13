@@ -19,6 +19,7 @@ import {
 } from './processed-store'
 
 const ORG = 'org_0123456789abcdef0123456789abcdef'
+const TOK = '11111111-2222-4333-8444-555555555555'
 const key = { consumer: 'playbook.ingestion', organizationId: ORG, messageId: 'msg-1' }
 
 type Call = { scope: string; text: string; params: readonly unknown[] }
@@ -155,12 +156,12 @@ describe('renew, complete and release', () => {
     const { scope, calls } = scripted([one(), none])
     const store = createPostgresProcessedStore({ scope })
 
-    expect(await store.renew(key, 'tok', 30)).toBe(true)
-    expect(await store.renew(key, 'tok', 30)).toBe(false)
+    expect(await store.renew(key, TOK, 30)).toBe(true)
+    expect(await store.renew(key, TOK, 30)).toBe(false)
     expect(calls[0]).toEqual({
       scope: ORG,
       text: CONSUMED_RENEW,
-      params: [key.consumer, ORG, 'msg-1', 'tok', 30_000],
+      params: [key.consumer, ORG, 'msg-1', TOK, 30_000],
     })
   })
 
@@ -168,12 +169,12 @@ describe('renew, complete and release', () => {
     const { scope, calls } = scripted([one(), none])
     const store = createPostgresProcessedStore({ scope })
 
-    expect(await store.complete(key, 'tok')).toBe(true)
-    expect(await store.complete(key, 'tok')).toBe(false)
+    expect(await store.complete(key, TOK)).toBe(true)
+    expect(await store.complete(key, TOK)).toBe(false)
     expect(calls[0]).toEqual({
       scope: ORG,
       text: CONSUMED_COMPLETE,
-      params: [key.consumer, ORG, 'msg-1', 'tok'],
+      params: [key.consumer, ORG, 'msg-1', TOK],
     })
   })
 
@@ -181,13 +182,13 @@ describe('renew, complete and release', () => {
     const { scope, calls } = scripted([none])
     const store = createPostgresProcessedStore({ scope })
 
-    await store.release({ ...key, organizationId: null }, 'tok')
+    await store.release({ ...key, organizationId: null }, TOK)
 
     expect(calls).toEqual([
       {
         scope: GLOBAL_SCOPE_ORGANIZATION_ID,
         text: CONSUMED_RELEASE,
-        params: [key.consumer, GLOBAL_SCOPE_ORGANIZATION_ID, 'msg-1', 'tok'],
+        params: [key.consumer, GLOBAL_SCOPE_ORGANIZATION_ID, 'msg-1', TOK],
       },
     ])
   })
@@ -214,5 +215,86 @@ describe('purge', () => {
     expect(error).toBeInstanceOf(ProcessedStorePurgeUnavailableError)
     expect((error as Error).message).toContain('#53')
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe('inputs the table could not hold', () => {
+  const TOKEN = '0b0f6f0e-6f0e-4f0e-8f0e-0f0e6f0e6f0e'
+
+  test.each(['wrong-token', '', 'nope', `${TOKEN}x`, ` ${TOKEN}`, TOKEN.replace(/-/g, '')])(
+    'a token that is not a uuid (%j) renews, completes and releases nothing, without a query',
+    async (token) => {
+      const { scope, calls } = scripted([])
+      const store = createPostgresProcessedStore({ scope })
+
+      expect(await store.renew(key, token, 30)).toBe(false)
+      expect(await store.complete(key, token)).toBe(false)
+      await store.release(key, token)
+
+      expect(calls).toHaveLength(0)
+    }
+  )
+
+  test('a well-formed uuid token, in any case, still reaches the database', async () => {
+    const { scope, calls } = scripted([one(), one()])
+    const store = createPostgresProcessedStore({ scope })
+
+    expect(await store.complete(key, TOKEN.toUpperCase())).toBe(true)
+    expect(await store.renew(key, TOKEN, 30)).toBe(true)
+    expect(calls).toHaveLength(2)
+  })
+
+  test.each([
+    ['an empty message id', { messageId: '' }],
+    ['a message id with a space', { messageId: 'has space' }],
+    ['a message id of 129 characters', { messageId: 'm'.repeat(129) }],
+    ['an empty consumer name', { consumer: '' }],
+    ['a consumer name with a slash', { consumer: 'a/b' }],
+  ])('%s cannot be a record: claim refuses it, the others find no record', async (_name, bad) => {
+    const { scope, calls } = scripted([])
+    const store = createPostgresProcessedStore({ scope })
+    const badKey = { ...key, ...bad }
+
+    await expect(store.claim(badKey, 60)).rejects.toThrow(/message id|consumer/)
+    expect(await store.renew(badKey, TOKEN, 30)).toBe(false)
+    expect(await store.complete(badKey, TOKEN)).toBe(false)
+    await store.release(badKey, TOKEN)
+    expect(calls).toHaveLength(0)
+  })
+
+  test('an Organization id that is not a wire id is refused by claim and finds no record elsewhere', async () => {
+    const { scope, calls } = scripted([])
+    const store = createPostgresProcessedStore({ scope })
+    const badKey = { ...key, organizationId: 'org_a' }
+
+    await expect(store.claim(badKey, 60)).rejects.toThrow(/Organization/)
+    expect(await store.complete(badKey, TOKEN)).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  test.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'a lease of %p seconds is refused by claim and renew',
+    async (lease) => {
+      const { scope, calls } = scripted([])
+      const store = createPostgresProcessedStore({ scope })
+
+      await expect(store.claim(key, lease)).rejects.toThrow(/lease/)
+      await expect(store.renew(key, TOKEN, lease)).rejects.toThrow(/lease/)
+      expect(calls).toHaveLength(0)
+    }
+  )
+
+  test.each([0, 1.5, Number.NaN, -3])('a purge limit of %p is refused', async (limit) => {
+    const { scope } = scripted([])
+    const store = createPostgresProcessedStore({ scope })
+
+    await expect(store.purgeScope(ORG, new Date(), limit)).rejects.toThrow(/limit/)
+  })
+
+  test('a purge cutoff that is not a date is refused', async () => {
+    const { scope } = scripted([])
+    const store = createPostgresProcessedStore({ scope })
+
+    await expect(store.purgeScope(ORG, new Date(Number.NaN), 10)).rejects.toThrow(/cutoff/)
   })
 })

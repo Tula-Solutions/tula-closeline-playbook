@@ -97,6 +97,55 @@ export type PostgresProcessedStoreOptions = {
   maxClaimAttempts?: number
 }
 
+/** A claim token is a uuid in the table, so only a uuid can be one this store issued. */
+const TOKEN_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The shape the table's checks require of a consumer name and a message id. */
+const NAME_SHAPE = /^[A-Za-z0-9_.:-]{1,128}$/
+
+/** The shape of an Organization wire id. */
+const ORGANIZATION_SHAPE = /^org_[0-9a-f]{32}$/
+
+/**
+ * Whether a record could exist for `key` and `token`. A token that is not a uuid, or a key the
+ * table's checks would refuse, names no record: `renew`, `complete` and `release` then answer as
+ * for a stale token without a query, as the kit's contract says (a database error here would
+ * wrongly look like a failure of the store).
+ */
+function couldExist(key: ConsumedKey, token: string): boolean {
+  return TOKEN_SHAPE.test(token) && keyIsValid(key)
+}
+
+/** Whether the table could hold a record under `key`. */
+function keyIsValid(key: ConsumedKey): boolean {
+  return (
+    NAME_SHAPE.test(key.consumer) &&
+    NAME_SHAPE.test(key.messageId) &&
+    (key.organizationId === null || ORGANIZATION_SHAPE.test(key.organizationId))
+  )
+}
+
+/** Throws a clear error for a key the table cannot hold, naming the part and never its value. */
+function assertKey(key: ConsumedKey): void {
+  if (!NAME_SHAPE.test(key.consumer)) {
+    throw new RangeError('consumer name must be 1 to 128 of letters, digits and _ . : -')
+  }
+  if (!NAME_SHAPE.test(key.messageId)) {
+    throw new RangeError('message id must be 1 to 128 of letters, digits and _ . : -')
+  }
+  if (key.organizationId !== null && !ORGANIZATION_SHAPE.test(key.organizationId)) {
+    throw new RangeError('Organization id must be org_ and 32 lower-case hex digits')
+  }
+}
+
+/** Throws unless `seconds` is a finite number above zero, and returns it in milliseconds. */
+function leaseMs(seconds: number): number {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new RangeError('lease must be a finite number of seconds above zero')
+  }
+  return seconds * 1000
+}
+
 /** The scope a message is recorded under: its Organization, or the all-zero id for a global message. */
 function scopeOf(key: ConsumedKey): string {
   return key.organizationId ?? GLOBAL_SCOPE_ORGANIZATION_ID
@@ -124,17 +173,13 @@ export function createPostgresProcessedStore(
 
   return {
     async claim(key, leaseSeconds): Promise<ClaimResult> {
+      assertKey(key)
+      const lease = leaseMs(leaseSeconds)
       const organizationId = scopeOf(key)
       const token = newToken()
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const claimed = await scope(organizationId, (run) =>
-          run(CONSUMED_CLAIM, [
-            key.consumer,
-            organizationId,
-            key.messageId,
-            token,
-            leaseSeconds * 1000,
-          ])
+          run(CONSUMED_CLAIM, [key.consumer, organizationId, key.messageId, token, lease])
         )
         if (claimed.rows.length > 0) {
           return { status: 'claimed', token }
@@ -158,20 +203,21 @@ export function createPostgresProcessedStore(
     },
 
     async renew(key, token, leaseSeconds) {
+      const lease = leaseMs(leaseSeconds)
+      if (!couldExist(key, token)) {
+        return false
+      }
       const organizationId = scopeOf(key)
       const result = await scope(organizationId, (run) =>
-        run(CONSUMED_RENEW, [
-          key.consumer,
-          organizationId,
-          key.messageId,
-          token,
-          leaseSeconds * 1000,
-        ])
+        run(CONSUMED_RENEW, [key.consumer, organizationId, key.messageId, token, lease])
       )
       return result.rows.length > 0
     },
 
     async complete(key, token) {
+      if (!couldExist(key, token)) {
+        return false
+      }
       const organizationId = scopeOf(key)
       const result = await scope(organizationId, (run) =>
         run(CONSUMED_COMPLETE, [key.consumer, organizationId, key.messageId, token])
@@ -180,6 +226,9 @@ export function createPostgresProcessedStore(
     },
 
     async release(key, token) {
+      if (!couldExist(key, token)) {
+        return
+      }
       const organizationId = scopeOf(key)
       await scope(organizationId, (run) =>
         run(CONSUMED_RELEASE, [key.consumer, organizationId, key.messageId, token])
@@ -187,6 +236,12 @@ export function createPostgresProcessedStore(
     },
 
     async purgeScope(organizationId, before, limit) {
+      if (Number.isNaN(before.getTime())) {
+        throw new RangeError('purge cutoff must be a valid date')
+      }
+      if (!Number.isInteger(limit) || limit < 1) {
+        throw new RangeError('purge limit must be a whole number of at least 1')
+      }
       const result = await scope(organizationId, (run) =>
         run(CONSUMED_PURGE, [organizationId, before.toISOString(), limit])
       )
