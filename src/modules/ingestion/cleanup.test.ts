@@ -80,8 +80,8 @@ describe('the vector cleanup of a deleted document', () => {
     expect(h.deps.queue.depth()).toEqual({ visible: 0, inFlight: 0 })
   })
 
-  test('while a job may still hold its lease the cleanup waits for it, then runs', async () => {
-    const h = createPipelineHarness()
+  test('a delete that must wait for a lease does not hold the consumer slot or report an error; the sweep finishes it', async () => {
+    const h = createPipelineHarness({ consumerConcurrency: 1 })
     let release: () => void = () => undefined
     const open = new Promise<void>((resolve) => {
       release = resolve
@@ -94,16 +94,30 @@ describe('the vector cleanup of a deleted document', () => {
     const pass = h.deps.workers.ingestion.runPass()
     await h.deps.time.settle()
     await Documents.remove(h.deps, h.context, id)
+    // An unrelated deletion queued behind it in the single slot.
+    spyOn(h.deps.parser, 'parse').mockRestore()
+    const other = await h.upload('other.txt', paragraphs(2, 'other'))
+    await h.pass()
+    await Documents.remove(h.deps, h.context, other)
 
-    const polling = h.deps.consumer.pollOnce()
+    // Every message in the queue is handled within a second of virtual time, one slot or not.
+    const polling = (async () => {
+      for (let round = 0; round < 8; round++) {
+        await h.deps.consumer.pollOnce()
+      }
+    })()
     await h.deps.time.advance(1_000)
-    // Still waiting: the cancelled job's lease has not ended and nothing is recorded.
+    await polling
+    expect(h.document(other)?.vectors_removed_seq).toBe(1)
     expect(h.document(id)?.vectors_removed_seq).toBeNull()
+    expect(h.deps.reported).toEqual([])
+    expect(h.deps.errors.captured?.length ?? 0).toBe(0)
+
     release()
     await h.deps.time.advance(100_000)
-    await polling
     await pass
-
+    await h.deps.time.advance(6 * 60 * 1000)
+    await h.deps.workers.sweeps.run('cleanup')
     expect(h.document(id)?.vectors_removed_seq).toBe(1)
   })
 

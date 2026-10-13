@@ -11,9 +11,6 @@ export type CleanupResult =
   /** A job of the document may still hold its lease: try again after it ends. */
   | 'waiting'
 
-/** How often a cleanup that must wait for a lease looks again, in ms. */
-const WAIT_STEP_MS = 2_000
-
 /**
  * Removes the vectors of one deletion of a document: begins the cleanup for that `deletionSeq`
  * (the database answers only while the document is deleted at exactly that sequence), refuses to
@@ -49,25 +46,4 @@ export async function cleanupDeletion(
     run(DOCUMENT_CLEANUP_DONE, [organizationId, documentId, deletionSeq])
   )
   return done.rows.length > 0 ? 'done' : 'moot'
-}
-
-/**
- * {@link cleanupDeletion}, waiting for a job's lease to end for up to the lease length plus a
- * margin. Still waiting after that is returned as `waiting` for the caller to retry later.
- */
-export async function cleanupDeletionPatiently(
-  deps: PipelineDeps,
-  organizationId: string,
-  documentId: string,
-  deletionSeq: number,
-  signal: AbortSignal
-): Promise<CleanupResult> {
-  const deadline = deps.clock.now().getTime() + deps.env.INGESTION_LEASE_MS + 5_000
-  for (;;) {
-    const result = await cleanupDeletion(deps, organizationId, documentId, deletionSeq, signal)
-    if (result !== 'waiting' || signal.aborted || deps.clock.now().getTime() >= deadline) {
-      return result
-    }
-    await deps.sleep(WAIT_STEP_MS, signal)
-  }
 }
