@@ -584,6 +584,49 @@ describe('shutdown and instances', () => {
     expect(h.document(long)?.state).toBe('ready')
   })
 
+  test('the loop does not wait for a long job: a document uploaded later reaches ready while it is still hung', async () => {
+    const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
+    const hang = gate()
+    const parse = h.deps.parser.parse.bind(h.deps.parser)
+    spyOn(h.deps.parser, 'parse').mockImplementation(async (doc, options) => {
+      if (new TextDecoder().decode(doc.bytes) === 'long document') {
+        await hang.open
+      }
+      return parse(doc, options)
+    })
+    const long = await h.upload('long.txt', 'long document')
+    h.deps.workers.ingestion.start()
+    await h.deps.time.advance(1_000)
+    expect(h.document(long)?.state).not.toBe('ready')
+
+    const later = await h.upload('later.txt', paragraphs(2, 'later'))
+    await h.deps.time.advance(2 * h.deps.env.INGESTION_POLL_INTERVAL_MS)
+
+    expect(h.document(later)?.state).toBe('ready')
+    expect(h.document(long)?.state).not.toBe('ready')
+    hang.release()
+    await h.deps.time.advance(2 * h.deps.env.INGESTION_POLL_INTERVAL_MS)
+    expect(h.document(long)?.state).toBe('ready')
+    await h.deps.workers.ingestion.stop(5_000)
+  })
+
+  test('stop waits for the pool, and a hung vector write keeps its job running', async () => {
+    const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
+    const hang = gate()
+    spyOn(h.deps.vectors, 'upsert').mockImplementation(async () => {
+      await hang.open
+    })
+    await h.upload('notes.txt', paragraphs(2))
+    h.deps.workers.ingestion.start()
+    await h.deps.time.advance(1_000)
+
+    await h.deps.workers.ingestion.stop(5_000)
+
+    expect(h.deps.database.jobs(h.organizationId)[0]?.state).toBe('running')
+    expect(jobOutcomes(h.deps)).toEqual(['uncertain'])
+    hang.release()
+  })
+
   test('the pool never runs more jobs than the concurrency setting, across Organizations', async () => {
     const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
     let active = 0

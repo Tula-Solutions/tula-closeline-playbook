@@ -42,7 +42,8 @@ export interface Ingestion {
   start(): void
   /**
    * Stops claiming, cancels every call in flight (their jobs are released at the step they reached,
-   * due again at once, or left to lapse if the database cannot be told) and waits up to `deadlineMs`.
+   * due again at once, or left to lapse if the database cannot be told) and waits up to `deadlineMs`
+   * for the loop and the pool.
    */
   stop(deadlineMs: number): Promise<void>
 }
@@ -133,8 +134,8 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     return ran
   }
 
+  /** One pass that waits for the jobs it started (tests and one-shot runs); the loop does not. */
   async function runPass(): Promise<number> {
-    // The slots are shared by every pass of this instance; a pass ends when its own jobs have.
     const mine = new Set<Promise<void>>()
     try {
       return await passOver(mine)
@@ -171,7 +172,10 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     while (!shutdown.signal.aborted) {
       let ran = 0
       try {
-        ran = await runPass()
+        // Jobs are not awaited: they run in the pool while the loop looks for more work, so one
+        // long job never idles the other slots. With the pool full the loop waits for a slot.
+        await freeSlot()
+        ran = await passOver(new Set())
       } catch (error) {
         reportWorkerError(deps, error, { worker: 'ingestion' })
       }
@@ -205,7 +209,9 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
       shutdown.abort(new ShuttingDown())
       wake?.abort()
       const timer = new AbortController()
-      await Promise.race([running ?? Promise.resolve(), deps.sleep(deadlineMs, timer.signal)])
+      // The loop, then every job in the pool: each is released at its step or left to lapse.
+      const drained = (running ?? Promise.resolve()).then(() => Promise.all(active))
+      await Promise.race([drained, deps.sleep(deadlineMs, timer.signal)])
       timer.abort()
     },
   }
