@@ -1,0 +1,20 @@
+# dependencies and local output (dist/ is committed in library repos, see ADR 0006)
+node_modules/
+out/
+coverage/
+*.tsbuildinfo
+
+# env — only the example is committed
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.log
+
+# Claude Code — the shared harness is committed; personal and runtime state is not
+.claude/settings.local.json
+.claude/.state/
+.claude/worktrees/
+.claude/launch.json

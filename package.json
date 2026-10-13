@@ -1,0 +1,34 @@
+{
+  "name": "tula-closeline-playbook",
+  "version": "0.0.0",
+  "description": "Closeline playbook service: ingestion, search and fine-tuning of an Organization's sales knowledge",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "scripts": {
+    "prepare": "husky || true",
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "check": "biome check src bench",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "test:coverage": "bun test src --coverage",
+    "bench": "bun test bench",
+    "shared:check": "bash .claude/hooks/shared-check.sh",
+    "verify": "bun run check && bun run typecheck && bun run test:coverage && bun run bench && bun run shared:check",
+    "verify:changed": "biome check --changed --no-errors-on-unmatched src bench && bun run typecheck && bun run test"
+  },
+  "dependencies": {
+    "hono": "^4.13.13",
+    "tula-closeline-contract": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#v0.1.0",
+    "tula-closeline-db": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-db.git#v0.1.0",
+    "tula-closeline-kit": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-kit.git#v0.1.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "bun-types": "^1.4.2",
+    "husky": "^9.1.7",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,5 @@
+bunx biome check --write --staged --no-errors-on-unmatched && git update-index --again
+bun run typecheck
+# Shared libraries commit their build output; `precommit:dist` rebuilds and stages it. Repos
+# without a dist do not define the script, and `--if-present` makes that a no-op.
+bun run --if-present precommit:dist
