@@ -36,8 +36,8 @@ paths:
   older than `ORPHAN_MIN_AGE_MS` (24 h). The db has no orphan work kind, so only Organizations
   named by `consumed_purge`, `idempotency_purge` or `purge_due` are visited, and a key outlives the
   orphan age by one housekeeping interval so a young orphan is seen again. `cleanup_pending` has
-  no list of its own: the sweep scans deleted documents (up to 500) and skips those whose
-  `updated_at` shows a recorded cleanup. A delete message whose cleanup waits on a lease is
+  no list of its own: the sweep scans all deleted documents (5 pages of 100) and re-runs the
+  idempotent cleanup on each (TODO: `DOCUMENT_LIST_PENDING_CLEANUP`, hub issue 58). A delete message whose cleanup waits on a lease is
   acknowledged (the kit cannot retry without an error report) and that sweep finishes it.
 - A message for a removed Organization (no documents, settings or usage left) is acknowledged and
   not recorded (`withoutRemovedOrganizations`), so the remove-all can reach `removed`.

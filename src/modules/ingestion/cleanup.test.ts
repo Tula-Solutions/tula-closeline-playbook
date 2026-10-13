@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { registry } from '~/messages'
 import * as Documents from '~/modules/document/service'
+import { cleanupDeletion } from './cleanup'
 import { createPipelineHarness, paragraphs } from './test-support'
 
 describe('the vector cleanup of a deleted document', () => {
@@ -144,7 +145,7 @@ describe('the vector cleanup of a deleted document', () => {
     expect(h.deps.database.discoveries.map((d) => d.kind)).toContain('cleanup_pending')
   })
 
-  test('the sweep does not run the cleanup again for deletions already recorded as cleaned', async () => {
+  test('the sweep does not visit an Organization whose deletions are all recorded as cleaned (discovery names none)', async () => {
     const h = createPipelineHarness()
     const ids: string[] = []
     for (let i = 0; i < 3; i++) {
@@ -185,5 +186,46 @@ describe('the vector cleanup of a deleted document', () => {
 
     expect(await h.vectorIds(id)).toEqual([])
     expect(await h.vectorIds(id, stranger)).toEqual([`${id}:0:0`])
+  })
+})
+
+describe('the cleanup_pending sweep scans for a lost cleanup', () => {
+  test('reaches a lost cleanup behind 100 newer deleted documents, whether theirs were recorded fast or slowly', async () => {
+    const h = createPipelineHarness()
+    const never = new AbortController().signal
+    // Created one millisecond apart, so the newest-first listing order is the creation order.
+    const fast = await h.upload('fast.txt', paragraphs(1, 'fast'))
+    await h.deps.time.advance(1)
+    const lost = await h.upload('lost.txt', paragraphs(2, 'lost'))
+    const others: string[] = []
+    for (let i = 0; i < 100; i++) {
+      await h.deps.time.advance(1)
+      others.push(await h.upload(`n${i}.txt`, paragraphs(1, `d${i}`)))
+    }
+    for (const id of [fast, lost, ...others]) {
+      await Documents.remove(h.deps, h.context, id)
+    }
+    // One cleanup is recorded 200 ms after its delete, the rest more than a second after.
+    await h.deps.time.advance(200)
+    await cleanupDeletion(h.deps, h.organizationId, fast, 1, never)
+    await h.deps.time.advance(2_000)
+    for (const id of others) {
+      await cleanupDeletion(h.deps, h.organizationId, id, 1, never)
+    }
+    expect(h.document(lost)?.vectors_removed_seq).toBeNull()
+    await h.deps.time.advance(6 * 60 * 1000)
+    const old = await h.deps.vectors.upsert(h.organizationId, [
+      {
+        id: `${lost}:1:0`,
+        vector: Array.from({ length: h.deps.embedder.dimensions }, () => 0.5),
+        attributes: { document_id: lost, epoch: 1, chunk: 0, page: 1 },
+      },
+    ])
+    expect(old).toBeUndefined()
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(h.document(lost)?.vectors_removed_seq).toBe(1)
+    expect(await h.vectorIds(lost)).toEqual([])
   })
 })

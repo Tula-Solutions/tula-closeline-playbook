@@ -22,19 +22,15 @@ export const CLEANUP_SCAN_PAGES = 5
 /** The documents on a listing page: the most the list statement returns. */
 const LIST_PAGE = 100
 
-/** How far after `deleted_at` a document's `updated_at` may be and still read as untouched since the delete (microseconds of one statement; a second is generous). */
-const UNTOUCHED_WITHIN_MS = 1_000
-
 /**
  * Runs the vector cleanup of the Organization's deleted documents whose message may have been lost
  * (the `cleanup_pending` sweep, called only for an Organization that discovery named for that
  * kind). The database has no statement that lists only the pending cleanups, so this reads the
- * deleted documents (newest first, at most {@link CLEANUP_SCAN_PAGES} pages of 100) and cleans
- * those deleted more than five minutes ago that still look pending. A recorded cleanup bumps
- * `updated_at`, so a document whose `updated_at` is later than its `deleted_at` is skipped as
- * already cleaned; the cleanup itself is idempotent, so a wrong guess costs one redundant call
- * and the purge runs the cleanup again as the backstop. The scan stops after the first page on
- * which nothing needed cleaning. A listing of pending cleanups in the db library replaces this.
+ * deleted documents (newest first, at most {@link CLEANUP_SCAN_PAGES} pages of 100, always all
+ * of them) and runs the cleanup on every one deleted more than five minutes ago. No row says
+ * whether its cleanup is recorded, so none is skipped: the cleanup is idempotent, and a redundant
+ * run costs a vector delete, while a skipped one would leave vectors behind.
+ * TODO: replace with `DOCUMENT_LIST_PENDING_CLEANUP` when db v0.13.0 lands (hub issue 58).
  * Returns how many cleanups it completed.
  */
 export async function cleanupPending(
@@ -51,7 +47,6 @@ export async function cleanupPending(
         run(DOCUMENT_LIST_FILTERED, [organizationId, cursor.t, cursor.i, LIST_PAGE, 'deleted'])
       )
     ).rows
-    let needed = 0
     for (const row of rows) {
       if (signal.aborted) {
         return cleaned
@@ -60,14 +55,6 @@ export async function cleanupPending(
       if (deletedAt === undefined || deletedAt.getTime() > oldEnough) {
         continue
       }
-      const updatedAt = pgTime(row.updated_at)
-      if (
-        updatedAt !== undefined &&
-        updatedAt.getTime() - deletedAt.getTime() > UNTOUCHED_WITHIN_MS
-      ) {
-        continue
-      }
-      needed++
       const result = await cleanupDeletion(
         deps,
         organizationId,
@@ -78,9 +65,6 @@ export async function cleanupPending(
       if (result === 'done') {
         cleaned++
       }
-    }
-    if (needed === 0) {
-      break
     }
     const last = rows.at(-1)
     if (rows.length < LIST_PAGE || last === undefined) {
