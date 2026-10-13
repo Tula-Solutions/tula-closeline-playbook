@@ -11,10 +11,11 @@ import {
   listDocumentsResponseSchema,
   type PlaybookDocument,
 } from 'tula-closeline-contract'
-import { createDb, withOrganization } from 'tula-closeline-db'
+import { createDb, IDEMPOTENCY_BEGIN, withOrganization } from 'tula-closeline-db'
 import { scopeOver } from '~/adapters/postgres/processed-store'
 import { integrationUrls } from '~/integration-support'
 import { newOrganizationId } from '~/testing'
+import { UPLOAD_IDEMPOTENCY_ROUTE } from './service'
 import {
   createDocumentHarness,
   DOCUMENTS,
@@ -115,6 +116,39 @@ describe('upload against Postgres', () => {
       tx.execute(sql`select count(*)::int as n from playbook.documents`)
     )
     expect(count.rows[0]).toEqual({ n: 1 })
+  })
+
+  test('a key held open by another transaction past the lock timeout is request.idempotency_in_progress (409) with Retry-After, and nothing is stored', async () => {
+    const h = await harness()
+    const key = newKey()
+    const holding = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const holder = scopeOver(service.db)(h.organizationId, async (run) => {
+      await run(IDEMPOTENCY_BEGIN, [
+        h.organizationId,
+        h.people.owner.userId,
+        UPLOAD_IDEMPOTENCY_ROUTE,
+        key,
+        createHash('sha256').update('held').digest(),
+      ])
+      holding.resolve()
+      await release.promise
+      throw new Error('roll the held key back')
+    }).catch(() => undefined)
+    await holding.promise
+
+    // The held row is uncommitted, so this call's insert of the same key waits for it and gives up
+    // when the two second lock timeout runs out.
+    const blocked = await h.upload('a.pdf', pdfBytes('held-key'), { key })
+    release.resolve()
+    await holder
+
+    expect(blocked.status).toBe(409)
+    expect(await errorCode(blocked)).toBe('request.idempotency_in_progress')
+    expect(blocked.headers.get('retry-after')).not.toBeNull()
+    expect(await h.objectKeys()).toEqual([])
+    const after = await h.upload('a.pdf', pdfBytes('held-key'), { key })
+    expect(after.status).toBe(201)
   })
 
   test('the owner of another Organization cannot read, list, delete or restore it', async () => {
