@@ -1,0 +1,405 @@
+import { describe, expect, spyOn, test } from 'bun:test'
+import { loadEnv } from '~/env'
+import { ParseError } from '~/ports/parser'
+import { parserBehaviour } from '~/ports/parser.behaviour'
+import { DOCX_MEDIA_TYPE, PPTX_MEDIA_TYPE } from './extract'
+import {
+  createDocumentParser,
+  createDocumentParserFor,
+  EXCLUSIVE_LANE_MS,
+  enterLane,
+  type LiveParses,
+  laneWaitCap,
+  ParserOverloaded,
+  ParserTransferFailed,
+} from './index'
+import { buildDocx, buildPdf, buildPptx } from './test-support'
+
+const limits = { maxPages: 300, maxTextChars: 5_000_000 }
+const real = () => createDocumentParser({ limits, timeoutMs: 30_000, memoryLimitBytes: 2 ** 31 })
+const hostile = (overrides: { timeoutMs?: number; memoryLimitBytes?: number } = {}) =>
+  createDocumentParser({
+    limits,
+    timeoutMs: overrides.timeoutMs ?? 5_000,
+    memoryLimitBytes: overrides.memoryLimitBytes ?? 2 ** 31,
+    workerUrl: new URL('./fixtures/hostile-worker.ts', import.meta.url),
+  })
+const never = new AbortController().signal
+/** A call that makes the stand-in worker misbehave in the named way (the mode rides in the media type). */
+const misbehave = (mode: string) => ({ bytes: new Uint8Array(8), mediaType: mode as never })
+
+async function failureOf(run: Promise<unknown>): Promise<ParseError> {
+  const error = await run.then(
+    () => undefined,
+    (thrown: unknown) => thrown
+  )
+  expect(error).toBeInstanceOf(ParseError)
+  return error as ParseError
+}
+
+parserBehaviour('the worker parser', () => ({
+  parser: real(),
+  readable: new TextEncoder().encode('some text\n\nmore text'),
+  unreadable: new TextEncoder().encode('this is not a pdf'),
+}))
+
+describe('the worker parser parses each type off the main thread', () => {
+  test.each([
+    ['text/plain', new TextEncoder().encode('plain words'), 'plain words'],
+    ['text/markdown', new TextEncoder().encode('# Title\n\nbody'), '# Title'],
+    [DOCX_MEDIA_TYPE, buildDocx(['docx words']), 'docx words'],
+    [PPTX_MEDIA_TYPE, buildPptx([['pptx words']]), 'pptx words'],
+    ['application/pdf', buildPdf({ pages: ['pdf words'] }), 'pdf words'],
+  ] as const)('%s', async (mediaType, bytes, expected) => {
+    const parsed = await real().parse({ bytes, mediaType }, { signal: never })
+    expect(parsed.pages[0]?.text).toContain(expected)
+  })
+
+  test('the caller keeps its bytes (the worker gets a copy)', async () => {
+    const bytes = buildDocx(['x'])
+    const before = bytes.length
+    await real().parse({ bytes, mediaType: DOCX_MEDIA_TYPE }, { signal: never })
+    expect(bytes.length).toBe(before)
+  })
+
+  test('reasons from the file come through, with the page count when it was known', async () => {
+    const parser = createDocumentParser({
+      limits: { ...limits, maxPages: 2 },
+      timeoutMs: 30_000,
+      memoryLimitBytes: 2 ** 31,
+    })
+    const error = await failureOf(
+      parser.parse(
+        { bytes: buildPdf({ pages: ['a', 'b', 'c', 'd'] }), mediaType: 'application/pdf' },
+        { signal: never }
+      )
+    )
+    expect(error.reason).toBe('too_many_pages')
+    expect(error.pageCount).toBe(4)
+    const locked = await failureOf(
+      real().parse(
+        { bytes: buildPdf({ pages: ['x'], encrypted: true }), mediaType: 'application/pdf' },
+        { signal: never }
+      )
+    )
+    expect(locked.reason).toBe('password_protected')
+  })
+
+  test('the main event loop keeps ticking while a 300-page PDF parses', async () => {
+    const bytes = buildPdf({ pages: Array.from({ length: 300 }, (_v, i) => `page ${i + 1} text`) })
+    let last = performance.now()
+    let worst = 0
+    const tick = setInterval(() => {
+      const now = performance.now()
+      worst = Math.max(worst, now - last)
+      last = now
+    }, 10)
+    try {
+      const parsed = await real().parse({ bytes, mediaType: 'application/pdf' }, { signal: never })
+      expect(parsed.pages).toHaveLength(300)
+    } finally {
+      clearInterval(tick)
+    }
+    // Generous: a parse on the main thread would block it for the whole second or more.
+    expect(worst).toBeLessThan(250)
+  }, 30_000)
+})
+
+describe('a parser that hangs, crashes or runs away fails the document, never the service', () => {
+  test('a hang ends at the time limit as processing_failed, and the next parse works', async () => {
+    const parser = hostile({ timeoutMs: 300 })
+    const started = performance.now()
+
+    const error = await failureOf(parser.parse(misbehave('spin'), { signal: never }))
+
+    expect(error.reason).toBe('processing_failed')
+    expect(performance.now() - started).toBeLessThan(3_000)
+    const next = await parser.parse(misbehave('ok'), { signal: never })
+    expect(next.pages[0]?.text).toBe('fine')
+  })
+
+  test('the main loop ticks during a hang', async () => {
+    let ticks = 0
+    const tick = setInterval(() => ticks++, 10)
+    await failureOf(hostile({ timeoutMs: 400 }).parse(misbehave('spin'), { signal: never }))
+    clearInterval(tick)
+    expect(ticks).toBeGreaterThan(15)
+  })
+
+  test('runaway memory is cut off at the memory limit as processing_failed', async () => {
+    const started = performance.now()
+
+    const error = await failureOf(
+      hostile({ memoryLimitBytes: 256 * 1024 * 1024 }).parse(misbehave('oom'), { signal: never })
+    )
+
+    expect(error.reason).toBe('processing_failed')
+    expect(performance.now() - started).toBeLessThan(10_000)
+  }, 20_000)
+
+  test('a worker that throws, exits or answers nonsense is processing_failed, with no content in the error', async () => {
+    for (const mode of ['throw', 'exit', 'garbage']) {
+      const error = await failureOf(hostile().parse(misbehave(mode), { signal: never }))
+      expect(error.reason).toBe('processing_failed')
+      expect(String(error) + String(error.cause)).not.toContain('SECRET')
+    }
+  })
+
+  test.each([
+    'document-not-an-object',
+    'unknown-reason',
+    'too-many-pages',
+    'too-much-text',
+    'bad-page',
+    'bad-page-count',
+  ])('a reply that breaks the contract (%s) is a permanent processing_failed', async (mode) => {
+    const error = await failureOf(hostile().parse(misbehave(mode), { signal: never }))
+
+    expect(error.reason).toBe('processing_failed')
+  })
+
+  test('a postMessage that throws ends the parse at once with a retryable error, not a verdict on the file', async () => {
+    const post = spyOn(Worker.prototype, 'postMessage').mockImplementation(() => {
+      throw new Error('cannot clone')
+    })
+    try {
+      const started = performance.now()
+      const error = await hostile()
+        .parse(misbehave('ok'), { signal: never })
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown
+        )
+
+      expect(error).toBeInstanceOf(ParserTransferFailed)
+      expect(error).not.toBeInstanceOf(ParseError)
+      expect(performance.now() - started).toBeLessThan(1_000)
+    } finally {
+      post.mockRestore()
+    }
+  })
+
+  test('two parses at once, one runaway: neither is failed for good because of the other', async () => {
+    let grown = false
+    const parser = createDocumentParser({
+      limits,
+      timeoutMs: 10_000,
+      memoryLimitBytes: 100,
+      workerUrl: new URL('./fixtures/hostile-worker.ts', import.meta.url),
+      residentBytes: () => (grown ? 1_000_000 : 0),
+    })
+    const healthy = parser.parse(misbehave('slow'), { signal: never })
+    const runaway = parser.parse(misbehave('spin'), { signal: never })
+    const outcomes = Promise.allSettled([healthy, runaway])
+    setTimeout(() => {
+      grown = true
+    }, 150)
+
+    const [first, second] = await outcomes
+
+    for (const outcome of [first, second]) {
+      expect(outcome.status === 'rejected' ? outcome.reason : undefined).toBeInstanceOf(
+        ParserOverloaded
+      )
+    }
+  })
+
+  /** A parser whose memory reading the test moves by hand and whose clock it also holds. */
+  function steered(extra: { maxLaneWaitMs?: number } = {}) {
+    const state = { level: 0, time: 1_000_000 }
+    const parser = createDocumentParser({
+      ...extra,
+      limits,
+      timeoutMs: 10_000,
+      memoryLimitBytes: 100,
+      workerUrl: new URL('./fixtures/hostile-worker.ts', import.meta.url),
+      residentBytes: () => state.level,
+      now: () => state.time,
+    })
+    return { state, parser }
+  }
+
+  test('after an overload parses run one at a time: the healthy file finishes, the runaway then fails alone for good', async () => {
+    const { state, parser } = steered()
+    // First round: both overlap and both are ended for the shared pressure.
+    const first = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    for (const outcome of await first) {
+      expect(outcome.status === 'rejected' ? outcome.reason : undefined).toBeInstanceOf(
+        ParserOverloaded
+      )
+    }
+
+    // The job retries both; they are admitted one at a time, in the order they ask.
+    const healthy = parser.parse(misbehave('slow'), { signal: never })
+    const runaway = parser.parse(misbehave('spin'), { signal: never })
+    const runawayOutcome = failureOf(runaway)
+    await expect(healthy).resolves.toMatchObject({ pages: [{ text: 'fine' }] })
+    const grow = setInterval(() => {
+      state.level += 1_000_000
+    }, 100)
+    try {
+      expect((await runawayOutcome).reason).toBe('processing_failed')
+    } finally {
+      clearInterval(grow)
+    }
+  }, 20_000)
+
+  test('the lane reopens to normal concurrency after the window', async () => {
+    const { state, parser } = steered()
+    const trip = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    await trip
+    state.time += EXCLUSIVE_LANE_MS + 1
+
+    const started = performance.now()
+    await Promise.all([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('slow'), { signal: never }),
+    ])
+
+    // Two 600 ms parses overlap; in single file they would take 1.2 s.
+    expect(performance.now() - started).toBeLessThan(1_000)
+  }, 20_000)
+
+  test('a parse waiting for the lane can be aborted, and a waiting parse does not use its own time limit', async () => {
+    const { state, parser } = steered()
+    const trip = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    await trip
+    const holder = parser.parse(misbehave('slow'), { signal: never })
+    const controller = new AbortController()
+    const waiting = parser.parse(misbehave('slow'), { signal: controller.signal })
+    setTimeout(() => controller.abort(new Error('shutting down')), 100)
+
+    await expect(waiting).rejects.toThrow('shutting down')
+    await expect(holder).resolves.toBeDefined()
+  }, 20_000)
+
+  test('a parse that waits for the lane past the cap ends ParserOverloaded, not a call timeout', async () => {
+    const { state, parser } = steered({ maxLaneWaitMs: 200 })
+    const trip = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    await trip
+    const holder = parser.parse(misbehave('slow'), { signal: never })
+    const started = performance.now()
+
+    const error = await parser.parse(misbehave('slow'), { signal: never }).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    )
+
+    expect(error).toBeInstanceOf(ParserOverloaded)
+    expect(performance.now() - started).toBeLessThan(500)
+    await holder
+  }, 20_000)
+
+  test('the wait cap leaves room for the parser limit inside the job timeout, whatever the settings', () => {
+    for (const [job, parser] of [
+      [180_000, 162_000],
+      [1_000, 900],
+      [600_000, 540_000],
+      [5_000, 4_500],
+    ] as const) {
+      expect(laneWaitCap(job, parser)).toBeGreaterThan(0)
+      expect(laneWaitCap(job, parser) + parser).toBeLessThan(job)
+      expect(laneWaitCap(job, parser)).toBeLessThanOrEqual(15_000)
+    }
+  })
+
+  test('an abort between a wake-up and the next wait ends the wait', async () => {
+    const parses: LiveParses = {
+      live: 1,
+      contendedUntil: 0,
+      exclusiveUntil: 10,
+      waiters: new Set(),
+    }
+    const controller = new AbortController()
+    const waiting = enterLane(parses, controller.signal, () => 0, 60_000)
+    await Bun.sleep(10)
+    // The lane is woken but still busy, and the abort lands before the waiter looks again.
+    for (const wake of [...parses.waiters]) {
+      wake()
+    }
+    controller.abort(new Error('shutting down'))
+
+    await expect(waiting).rejects.toThrow('shutting down')
+  }, 5_000)
+
+  test('a parse that trips the memory limit alone is permanent', async () => {
+    let grown = false
+    const parser = createDocumentParser({
+      limits,
+      timeoutMs: 10_000,
+      memoryLimitBytes: 100,
+      workerUrl: new URL('./fixtures/hostile-worker.ts', import.meta.url),
+      residentBytes: () => (grown ? 1_000_000 : 0),
+    })
+    const run = parser.parse(misbehave('spin'), { signal: never })
+    setTimeout(() => {
+      grown = true
+    }, 100)
+
+    expect((await failureOf(run)).reason).toBe('processing_failed')
+  })
+
+  test('an abort ends a running parse at once and rejects with the abort reason', async () => {
+    const controller = new AbortController()
+    const run = hostile().parse(misbehave('spin'), { signal: controller.signal })
+    setTimeout(() => controller.abort(new Error('shutting down')), 100)
+
+    await expect(run).rejects.toThrow('shutting down')
+  })
+
+  test('twenty hanging parses in a row leave the process able to parse', async () => {
+    const parser = hostile({ timeoutMs: 100 })
+    for (let n = 0; n < 20; n++) {
+      await failureOf(parser.parse(misbehave('spin'), { signal: never }))
+    }
+    expect(
+      (
+        await real().parse(
+          { bytes: new TextEncoder().encode('ok'), mediaType: 'text/plain' },
+          { signal: never }
+        )
+      ).pages
+    ).toHaveLength(1)
+  }, 30_000)
+})
+
+describe('createDocumentParserFor', () => {
+  test('takes its limits from the environment', async () => {
+    const env = loadEnv({ ENVIRONMENT: 'local', MAX_TEXT_CHARS_PER_DOCUMENT: '1000' })
+    const parser = createDocumentParserFor(env)
+
+    const ok = await parser.parse(
+      { bytes: new TextEncoder().encode('short'), mediaType: 'text/plain' },
+      { signal: never }
+    )
+    const over = await failureOf(
+      parser.parse(
+        { bytes: new TextEncoder().encode('x'.repeat(1001)), mediaType: 'text/plain' },
+        { signal: never }
+      )
+    )
+
+    expect(ok.pages).toHaveLength(1)
+    expect(over.reason).toBe('processing_failed')
+  })
+})

@@ -30,9 +30,10 @@ search over them, and later fine-tuning. It owns the `playbook` Postgres schema 
 What exists: the skeleton (HTTP stack, token check, container, consumer loop, ports and fakes) and
 the document routes (hub issue 14, round A), and the pipeline (round B): message handlers, the
 ingestion job loop, the chunker, vector cleanup, and the purge, housekeeping and orphan sweeps.
-What does not: every real vendor adapter (vector store, embedder, parser, OCR), and search.
+What does not: the vendor adapters for the vector store, embedder and OCR, and search. The parser
+is real (`src/adapters/parser/`).
 **The pipeline is not deployable until plan steps 1.35 and 1.36 (hub issue 48 and the
-embedder/OCR adapters) and the real parser land.** Until then `WORKERS_ENABLED=true` is refused at
+embedder/OCR adapters) land.** Until then `WORKERS_ENABLED=true` is refused at
 boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`), and the
 default there is false: an API-only instance whose uploads stay `uploaded`, nothing claiming them.
 The sweeps (`SWEEPS_ENABLED`, default true everywhere) run regardless, so deletes are purged.
@@ -49,7 +50,12 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   kit's memory adapters otherwise, which `src/env.ts` allows only when `ENVIRONMENT=local`. The
   vector store is memory only: turbopuffer's adapter is blocked on hub issue 48.
 - `src/ports/` holds the embedder, parser and OCR ports (ADR 0010, kept here by ADR 0016), each with
-  a behaviour suite; `src/adapters/memory/` has the fakes. No real adapter exists.
+  a behaviour suite; `src/adapters/memory/` has the fakes. The parser is the one real adapter:
+  `src/adapters/parser/` (PDF through `unpdf`, DOCX and PPTX through our own zip and XML reading,
+  TXT and MD). Each parse runs in its own Bun `Worker` that the host ends at 90% of
+  `INGESTION_PARSE_TIMEOUT_MS`, on abort, or when the process memory grows past
+  `PARSER_MEMORY_LIMIT_BYTES`; a hang, crash or runaway ends the document `processing_failed`. See
+  `.claude/rules/ingestion.md`. The container's OCR stand-in reads pages as empty (`no_text`).
 - All database access goes through `container.withOrganization(organizationId, fn)`, the db
   library's tenant-scoped helper. Statements are the db library's `PLAYBOOK_STATEMENTS` strings;
   `statementOf` in `src/adapters/postgres/processed-store.ts` binds their `$n` placeholders.

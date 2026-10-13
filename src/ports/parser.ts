@@ -16,17 +16,23 @@ export type ParsedDocument = {
 }
 
 /** The failure reasons a parser can name; the pipeline stores them as the document's `failureReason`. */
-export type ParseFailureReason = Extract<DocumentFailureReason, 'unreadable' | 'password_protected'>
+export type ParseFailureReason = Extract<
+  DocumentFailureReason,
+  'unreadable' | 'password_protected' | 'too_many_pages' | 'processing_failed'
+>
 
 /** Thrown by a parser for a document it cannot read at all; the document ends `failed`. */
 export class ParseError extends Error {
   readonly reason: ParseFailureReason
+  /** For `too_many_pages`: the page count the file declares, when the parser knew it without reading the pages. */
+  readonly pageCount: number | undefined
 
   /** Creates the error; `reason` is what the pipeline records, and the message never holds content. */
-  constructor(reason: ParseFailureReason, options?: { cause?: unknown }) {
-    super(`document could not be parsed: ${reason}`, options)
+  constructor(reason: ParseFailureReason, options?: { cause?: unknown; pageCount?: number }) {
+    super(`document could not be parsed: ${reason}`, { cause: options?.cause })
     this.name = 'ParseError'
     this.reason = reason
+    this.pageCount = options?.pageCount
   }
 }
 

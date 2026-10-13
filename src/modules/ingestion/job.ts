@@ -272,7 +272,15 @@ async function parseStep(c: JobContext, detectedType: string): Promise<void> {
   const document = { bytes: file.body, mediaType }
   const parsed = await within(deps, 'parser', env.INGESTION_PARSE_TIMEOUT_MS, c.signal, (signal) =>
     deps.parser.parse(document, { signal })
-  )
+  ).catch(async (error: unknown) => {
+    if (error instanceof ParseError && error.reason === 'too_many_pages') {
+      // The parser counted the pages without reading them: keep the count for the portal.
+      await advance(c, 'parse', {
+        pages: Math.min(error.pageCount ?? env.MAX_PAGES_PER_DOCUMENT + 1, DOCUMENT_MAX_PAGE_COUNT),
+      })
+    }
+    throw error
+  })
   const count = parsed.pages.length
   if (count === 0) {
     throw new PermanentFailure('unreadable')

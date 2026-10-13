@@ -32,8 +32,8 @@ import {
   createMemoryVectorStore,
 } from 'tula-closeline-kit/testing'
 import { createMemoryEmbedder } from '~/adapters/memory/embedder'
-import { createMemoryOcrReader } from '~/adapters/memory/ocr'
-import { createMemoryParser } from '~/adapters/memory/parser'
+import { createEmptyOcrReader } from '~/adapters/memory/ocr'
+import { createDocumentParserFor } from '~/adapters/parser'
 import {
   createPostgresProcessedStore,
   type Discover,
@@ -244,8 +244,9 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     (organizationId) => organizationIsRemoved(scope, organizationId)
   )
   const vectors = createMemoryVectorStore({ dimensions: embedder.dimensions })
-  const parser = createMemoryParser()
-  const ocr = createMemoryOcrReader()
+  const parser = createDocumentParserFor(env)
+  // No real reader yet: a scanned page reads as empty, so such a document ends `no_text`.
+  const ocr = createEmptyOcrReader()
   const random = Math.random
   const reportError: Container['reportError'] = (error, context) => {
     logger.error('unhandled error', { ...context, error: describeError(error) })
