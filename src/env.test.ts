@@ -310,7 +310,6 @@ describe('worker settings', () => {
     ['no room for target plus overlap', { CHUNK_TARGET_CHARS: '1600', CHUNK_OVERLAP_CHARS: '100' }],
     ['a worker stop deadline past the shutdown timeout', { WORKERS_STOP_DEADLINE_MS: '600000' }],
     ['a concurrency of zero', { INGESTION_CONCURRENCY: '0' }],
-    ['an orphan age under an hour', { ORPHAN_MIN_AGE_MS: '60000' }],
   ])('refuses %s', (_label, overrides) => {
     expect(() => loadEnv({ ENVIRONMENT: 'local', ...overrides })).toThrow()
   })

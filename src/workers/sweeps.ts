@@ -10,16 +10,13 @@ import {
   logSpentPurges,
   purgeConsumedMessages,
   purgeIdempotencyKeys,
-  sweepOrphanObjects,
+  visitOrphanSweep,
 } from '~/modules/maintenance/housekeeping'
 import { purgeDue } from '~/modules/maintenance/purge'
 import { forEachOrganization } from './discovery'
 
 /** The periodic sweeps of one instance. */
 export type SweepName = 'cleanup' | 'purge' | 'housekeeping'
-
-/** The all-zero Organization id of the global scope, which has no documents or objects. */
-const GLOBAL_SCOPE = `org_${'0'.repeat(32)}`
 
 /** The sweeps; every instance runs all of them, and the database's leases and `skip locked` keep them from clashing. */
 export interface Sweeps {
@@ -56,20 +53,6 @@ export function createSweeps(deps: PipelineDeps, processed: ProcessedStore): Swe
         reportWorkerError(deps, error, { worker })
       }
     }
-    // There is no work kind for orphan objects: the sweep visits the Organizations that other
-    // background work names, once each per pass, before the purges below drop the records
-    // (an aged idempotency key) that name them.
-    const visited = new Set<string>([GLOBAL_SCOPE])
-    for (const kind of ['consumed_purge', 'idempotency_purge', 'purge_due'] as const) {
-      await attempt('orphan_objects', () =>
-        forEachOrganization(deps, kind, signal, async (organizationId) => {
-          if (!visited.has(organizationId)) {
-            visited.add(organizationId)
-            await sweepOrphanObjects(deps, organizationId, signal)
-          }
-        })
-      )
-    }
     await attempt('consumed_purge', () => purgeConsumedMessages(deps, processed))
     await attempt('idempotency_purge', () =>
       forEachOrganization(deps, 'idempotency_purge', signal, async (organizationId) => {
@@ -79,6 +62,26 @@ export function createSweeps(deps: PipelineDeps, processed: ProcessedStore): Swe
     await attempt('purge_spent', () =>
       forEachOrganization(deps, 'purge_spent', signal, async (organizationId) => {
         await logSpentPurges(deps, organizationId)
+      })
+    )
+    // Orphan objects have a work kind of their own: an Organization with one failed upload is named
+    // 25 hours after it, and `ORPHAN_SWEEP_DONE` records the sweep.
+    await attempt('orphan_sweep', () =>
+      forEachOrganization(deps, 'orphan_sweep', signal, async (organizationId) => {
+        const visit = await visitOrphanSweep(deps, organizationId, signal)
+        if (visit.status === 'incomplete' && !signal.aborted) {
+          // Listed again from the top next time, so an Organization with more objects than the
+          // bound covers is starved (a persisted cursor would fix it: it needs its own ticket).
+          deps.logger.warn('an orphan sweep did not cover the listing; it will start again', {
+            organizationId,
+            maxPages: env.ORPHAN_MAX_PAGES,
+            pageSize: env.ORPHAN_PAGE_SIZE,
+          })
+        } else if (visit.status === 'busy') {
+          deps.logger.info('an orphan sweep could not be recorded yet; it will be tried again', {
+            organizationId,
+          })
+        }
       })
     )
   }

@@ -14,6 +14,7 @@ import {
   DOCUMENT_INSERT,
   DOCUMENT_LIST_FILTERED,
   DOCUMENT_LIST_MAX_PAGE,
+  DOCUMENT_LIST_PENDING_CLEANUP,
   DOCUMENT_LIST_SPENT_PURGES,
   DOCUMENT_MIN_RETENTION_MS,
   DOCUMENT_PURGE_CLAIM,
@@ -41,6 +42,8 @@ import {
   ORGANIZATION_REMOVAL_STATUS,
   ORGANIZATION_REMOVE_REST,
   ORGANIZATIONS_WITH_WORK,
+  ORPHAN_SWEEP_AGE_MS,
+  ORPHAN_SWEEP_DONE,
   PLAYBOOK_MAX_BATCH,
   PLAYBOOK_MIN_LEASE_MS,
   QUOTA_LOCK,
@@ -147,6 +150,12 @@ type State = {
   consumed: MemoryConsumedRow[]
   /** Organizations whose `organization_usage` row exists: set by the first insert, kept until removed. */
   usage: Set<string>
+  /**
+   * The `orphan_sweeps` rows. `sweptThrough` is the time the service swept through; `lostAttemptAt`
+   * is the creation time of the latest upload attempt whose key erasure or the key purge deleted
+   * (the real hint and row stand in for it until a sweep covers it).
+   */
+  orphans: Map<string, { sweptThrough: number | null; lostAttemptAt: number | null }>
 }
 
 /** A Postgres-style failure the double raises on request: an error carrying a SQLSTATE `code`. */
@@ -230,6 +239,34 @@ const IDENTITY_COLUMNS = [
   'created_at',
 ] as const satisfies readonly (keyof MemoryDocumentRow)[]
 
+/** Remembers the latest upload attempt among keys that are about to be deleted, until a sweep covers it. */
+function noteLostAttempts(
+  state: State,
+  organization: string,
+  keys: readonly { created_at: number }[]
+): void {
+  const latest = Math.max(Number.NEGATIVE_INFINITY, ...keys.map((k) => k.created_at))
+  if (latest === Number.NEGATIVE_INFINITY) {
+    return
+  }
+  const row = state.orphans.get(organization) ?? { sweptThrough: null, lostAttemptAt: null }
+  row.lostAttemptAt = Math.max(row.lostAttemptAt ?? Number.NEGATIVE_INFINITY, latest)
+  state.orphans.set(organization, row)
+}
+
+/** The upload attempts of an Organization newer than the time its objects were swept through. */
+function pendingAttempts(state: State, organization: string): number[] {
+  const row = state.orphans.get(organization)
+  const swept = row?.sweptThrough ?? Number.NEGATIVE_INFINITY
+  const times = state.keys
+    .filter((k) => k.organization_id === organization)
+    .map((k) => k.created_at)
+  if (row?.lostAttemptAt !== null && row?.lostAttemptAt !== undefined) {
+    times.push(row.lostAttemptAt)
+  }
+  return times.filter((t) => t > swept)
+}
+
 /**
  * A stand-in for the Postgres database that runs the db library's statements by their text and
  * does what their documentation says. It exists so the document routes can be tested without
@@ -246,6 +283,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     settings: [],
     consumed: [],
     usage: new Set(),
+    orphans: new Map(),
   }
   const failures: { statement: string; error: Error; once: boolean }[] = []
   const commitFailures: { error: Error; applied: boolean }[] = []
@@ -621,9 +659,11 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           state.usage.delete(organization)
           state.settings = state.settings.filter((x) => x.organization_id !== organization)
           state.consumed = state.consumed.filter((x) => x.organization_id !== organization)
-          state.keys = state.keys.filter(
-            (k) => k.organization_id !== organization || k.route === keepRoute
+          const erased = state.keys.filter(
+            (k) => k.organization_id === organization && k.route !== keepRoute
           )
+          noteLostAttempts(state, organization, erased)
+          state.keys = state.keys.filter((k) => !erased.includes(k))
           return rows([{ removed: true }])
         }
         case ORGANIZATION_REMOVAL_STATUS: {
@@ -1179,6 +1219,57 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             { embedding_model: row.embedding_model, embedding_dimension: row.embedding_dimension },
           ])
         }
+        case DOCUMENT_LIST_PENDING_CLEANUP: {
+          const [organization, afterAt, afterId, size] = params as [
+            string,
+            string,
+            string,
+            number | null,
+          ]
+          const page = documentsOf(organization)
+            .filter(
+              (d) =>
+                d.state === 'deleted' &&
+                (d.vectors_removed_seq === null || d.vectors_removed_seq < d.deletion_seq)
+            )
+            .map((d) => ({ d, at: pgTimestamp(d.deleted_at ?? 0) }))
+            .filter(
+              ({ d, at }) =>
+                afterAt === '-infinity' || at > afterAt || (at === afterAt && d.id > afterId)
+            )
+            .sort((a, b) => (a.at === b.at ? (a.d.id < b.d.id ? -1 : 1) : a.at < b.at ? -1 : 1))
+            .slice(0, batch(size, PLAYBOOK_MAX_BATCH))
+          return rows(
+            page.map(({ d, at }) => ({
+              id: d.id,
+              epoch: d.epoch,
+              deletion_seq: d.deletion_seq,
+              deleted_at: at,
+            }))
+          )
+        }
+        case ORPHAN_SWEEP_DONE: {
+          const [organization, through] = params as [string, string]
+          if (!own(organization)) {
+            return none
+          }
+          const row = state.orphans.get(organization) ?? { sweptThrough: null, lostAttemptAt: null }
+          // Cut to the orphan age before now, and never moved back.
+          const cut = Math.min(new Date(through).getTime(), now() - ORPHAN_SWEEP_AGE_MS)
+          row.sweptThrough = Math.max(row.sweptThrough ?? Number.NEGATIVE_INFINITY, cut)
+          state.orphans.set(organization, row)
+          const more = pendingAttempts(state, organization).length > 0
+          if (
+            !more &&
+            !state.keys.some((k) => k.organization_id === organization) &&
+            documentsOf(organization).length === 0
+          ) {
+            state.orphans.delete(organization)
+          } else if (!more) {
+            row.lostAttemptAt = null
+          }
+          return rows([{ swept_through: pgTimestamp(row.sweptThrough), more }])
+        }
         case IDEMPOTENCY_PURGE: {
           const [organization, ageMs, size] = params as [string, number, number]
           const age = Math.max(Number(ageMs) || 0, IDEMPOTENCY_MIN_PURGE_AGE_MS)
@@ -1191,6 +1282,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             )
             .sort((a, b) => a.created_at - b.created_at)
             .slice(0, batch(size, PLAYBOOK_MAX_BATCH))
+          noteLostAttempts(state, organization, gone)
           state.keys = state.keys.filter((k) => !gone.includes(k))
           return { rows: [], rowCount: gone.length }
         }
@@ -1258,6 +1350,19 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           }
         }
         break
+      case 'orphan_sweep': {
+        const known = new Set([
+          ...committed.keys.map((k) => k.organization_id),
+          ...committed.orphans.keys(),
+        ])
+        for (const organization of known) {
+          const attempts = pendingAttempts(committed, organization)
+          if (attempts.length > 0 && Math.min(...attempts) + ORPHAN_SWEEP_AGE_MS <= now()) {
+            organizations.add(organization)
+          }
+        }
+        break
+      }
       case 'idempotency_purge':
         for (const k of committed.keys) {
           if (k.created_at + IDEMPOTENCY_PURGE_AGE_MS <= now()) {
@@ -1282,6 +1387,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         settings: structuredClone(committed.settings),
         consumed: structuredClone(committed.consumed),
         usage: new Set(committed.usage),
+        orphans: structuredClone(committed.orphans),
       }
       const inside: string[] = []
       transactionStatements.push(inside)

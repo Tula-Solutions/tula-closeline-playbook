@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { registry } from '~/messages'
 import * as Documents from '~/modules/document/service'
-import { cleanupDeletion } from './cleanup'
+import { cleanupPending } from '~/modules/maintenance/cleanup-pending'
 import { createPipelineHarness, paragraphs } from './test-support'
 
 describe('the vector cleanup of a deleted document', () => {
@@ -189,43 +189,164 @@ describe('the vector cleanup of a deleted document', () => {
   })
 })
 
-describe('the cleanup_pending sweep scans for a lost cleanup', () => {
-  test('reaches a lost cleanup behind 100 newer deleted documents, whether theirs were recorded fast or slowly', async () => {
+describe('the cleanup_pending sweep lists only the pending cleanups', () => {
+  const never = new AbortController().signal
+  const at = (h: ReturnType<typeof createPipelineHarness>) => h.deps.clock.now().getTime()
+
+  test('one pending and 499 recorded cleanups make one vector-store cleanup in a tick', async () => {
     const h = createPipelineHarness()
-    const never = new AbortController().signal
-    // Created one millisecond apart, so the newest-first listing order is the creation order.
-    const fast = await h.upload('fast.txt', paragraphs(1, 'fast'))
-    await h.deps.time.advance(1)
-    const lost = await h.upload('lost.txt', paragraphs(2, 'lost'))
-    const others: string[] = []
-    for (let i = 0; i < 100; i++) {
-      await h.deps.time.advance(1)
-      others.push(await h.upload(`n${i}.txt`, paragraphs(1, `d${i}`)))
+    const deletedAt = at(h) - 10 * 60 * 1000
+    const documentId = (n: number) => `doc_${n.toString(16).padStart(32, '0')}`
+    for (let n = 1; n <= 500; n++) {
+      h.deps.database.seed({
+        id: documentId(n),
+        organization_id: h.organizationId,
+        state: 'deleted',
+        epoch: 1,
+        deletion_seq: 1,
+        vectors_removed_seq: n === 250 ? null : 1,
+        deleted_at: deletedAt,
+        created_at: deletedAt - n,
+      })
     }
-    for (const id of [fast, lost, ...others]) {
-      await Documents.remove(h.deps, h.context, id)
-    }
-    // One cleanup is recorded 200 ms after its delete, the rest more than a second after.
-    await h.deps.time.advance(200)
-    await cleanupDeletion(h.deps, h.organizationId, fast, 1, never)
-    await h.deps.time.advance(2_000)
-    for (const id of others) {
-      await cleanupDeletion(h.deps, h.organizationId, id, 1, never)
-    }
-    expect(h.document(lost)?.vectors_removed_seq).toBeNull()
-    await h.deps.time.advance(6 * 60 * 1000)
-    const old = await h.deps.vectors.upsert(h.organizationId, [
-      {
-        id: `${lost}:1:0`,
-        vector: Array.from({ length: h.deps.embedder.dimensions }, () => 0.5),
-        attributes: { document_id: lost, epoch: 1, chunk: 0, page: 1 },
-      },
-    ])
-    expect(old).toBeUndefined()
+    const del = spyOn(h.deps.vectors, 'deleteByFilter')
 
     await h.deps.workers.sweeps.run('cleanup')
 
-    expect(h.document(lost)?.vectors_removed_seq).toBe(1)
-    expect(await h.vectorIds(lost)).toEqual([])
+    expect(del.mock.calls.length).toBeGreaterThan(0)
+    expect(del.mock.calls.every(([, filter]) => filter.document_id === documentId(250))).toBe(true)
+    expect(
+      h.deps.database.documents(h.organizationId).find((d) => d.id === documentId(250))
+        ?.vectors_removed_seq
+    ).toBe(1)
+    // Nothing pending is left, so the next tick makes no vector call at all.
+    del.mockClear()
+    await h.deps.workers.sweeps.run('cleanup')
+    expect(del).not.toHaveBeenCalled()
+  })
+
+  test('reaches a lost cleanup behind more than a page of pending ones, oldest deletion first', async () => {
+    const h = createPipelineHarness()
+    const deletedAt = at(h) - 10 * 60 * 1000
+    for (let n = 1; n <= 150; n++) {
+      h.deps.database.seed({
+        id: `doc_${n.toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        state: 'deleted',
+        epoch: 1,
+        deletion_seq: 1,
+        vectors_removed_seq: null,
+        deleted_at: deletedAt + n,
+      })
+    }
+
+    const cleaned = await cleanupPending(h.deps, h.organizationId, never)
+
+    expect(cleaned).toBe(150)
+  })
+
+  test('keeps the five-minute floor: a document deleted a minute ago is left to its message', async () => {
+    const h = createPipelineHarness()
+    h.deps.database.seed({
+      id: `doc_${'a'.repeat(32)}`,
+      organization_id: h.organizationId,
+      state: 'deleted',
+      epoch: 1,
+      deletion_seq: 1,
+      vectors_removed_seq: null,
+      deleted_at: at(h) - 60_000,
+    })
+
+    expect(await cleanupPending(h.deps, h.organizationId, never)).toBe(0)
+  })
+})
+
+describe('one failing cleanup does not starve the ones behind it', () => {
+  test('the first pending document throws; the second is still cleaned in the same tick, and one error is reported', async () => {
+    const h = createPipelineHarness()
+    const deletedAt = h.deps.clock.now().getTime() - 10 * 60 * 1000
+    const first = `doc_${'1'.repeat(32)}`
+    const second = `doc_${'2'.repeat(32)}`
+    for (const [n, id] of [first, second].entries()) {
+      h.deps.database.seed({
+        id,
+        organization_id: h.organizationId,
+        state: 'deleted',
+        epoch: 1,
+        deletion_seq: 1,
+        vectors_removed_seq: null,
+        deleted_at: deletedAt + n,
+      })
+    }
+    const del = h.deps.vectors.deleteByFilter.bind(h.deps.vectors)
+    spyOn(h.deps.vectors, 'deleteByFilter').mockImplementation(async (org, filter) => {
+      if (filter.document_id === first) {
+        throw new Error('the vector store is down for this one')
+      }
+      return del(org, filter)
+    })
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(h.document(second)?.vectors_removed_seq).toBe(1)
+    expect(h.document(first)?.vectors_removed_seq).toBeNull()
+    expect(h.deps.reported).toHaveLength(1)
+  })
+})
+
+describe('a pass over pending cleanups with a vector store that stays down', () => {
+  const seedPending = (h: ReturnType<typeof createPipelineHarness>, count: number) => {
+    const deletedAt = h.deps.clock.now().getTime() - 10 * 60 * 1000
+    const ids: string[] = []
+    for (let n = 0; n < count; n++) {
+      const id = `doc_${n.toString(16).padStart(32, '0')}`
+      ids.push(id)
+      h.deps.database.seed({
+        id,
+        organization_id: h.organizationId,
+        state: 'deleted',
+        epoch: 0,
+        deletion_seq: 1,
+        vectors_removed_seq: null,
+        deleted_at: deletedAt + n,
+      })
+    }
+    return ids
+  }
+
+  test('20 pending documents give at most 3 attempts and 3 reports, and a second tick in the window reports none again', async () => {
+    const h = createPipelineHarness()
+    seedPending(h, 20)
+    const del = spyOn(h.deps.vectors, 'deleteByFilter').mockRejectedValue(new Error('down'))
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(del.mock.calls.length).toBeLessThanOrEqual(3)
+    expect(h.deps.reported).toHaveLength(3)
+
+    await h.deps.time.advance(30 * 1000)
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(h.deps.reported).toHaveLength(3)
+    expect(h.deps.logLines.join('\n')).toContain('failed again')
+  })
+
+  test('a failure followed by successes does not stop the pass', async () => {
+    const h = createPipelineHarness()
+    const ids = seedPending(h, 8)
+    const del = h.deps.vectors.deleteByFilter.bind(h.deps.vectors)
+    let calls = 0
+    spyOn(h.deps.vectors, 'deleteByFilter').mockImplementation(async (org, filter) => {
+      calls++
+      if (calls % 2 === 1 && calls < 8) {
+        throw new Error('flaky')
+      }
+      return del(org, filter)
+    })
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    const cleaned = ids.filter((id) => h.document(id)?.vectors_removed_seq === 1)
+    expect(cleaned.length).toBeGreaterThanOrEqual(4)
   })
 })

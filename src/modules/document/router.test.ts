@@ -672,7 +672,10 @@ describe('upload: idempotency key', () => {
     const refused = await h.upload('b.pdf', pdfBytes('b'), { key })
 
     expect(refused.status).toBe(409)
-    expect(h.deps.database.keys(h.organizationId)).toEqual([])
+    // The client's key is not kept (the attempt record of an upload that wrote a file is not it).
+    expect(
+      h.deps.database.keys(h.organizationId).filter((k) => k.route === 'documents.upload')
+    ).toEqual([])
   })
 })
 
@@ -824,7 +827,13 @@ describe('upload: the order of the three effects and what each crash leaves', ()
       [postgresError('08006'), true],
     ] as const) {
       const h = await createDocumentHarness()
-      h.deps.database.failNextCommit(error, { applied })
+      // Armed once the file is stored, so it is the second transaction's commit that fails (the
+      // attempt record committed before the write).
+      const put = h.deps.objects.put.bind(h.deps.objects)
+      spyOn(h.deps.objects, 'put').mockImplementation(async (org, key, body, options) => {
+        await put(org, key, body, options)
+        h.deps.database.failNextCommit(error, { applied })
+      })
 
       const response = await h.upload('a.pdf', pdfBytes('a'))
 
@@ -892,6 +901,18 @@ describe('upload: the order of the three effects and what each crash leaves', ()
   test('a lock timeout on the Organization quota lock is a retryable 503, with nothing left', async () => {
     const h = await createDocumentHarness()
     h.deps.database.failNext(QUOTA_LOCK, postgresError('55P03'))
+
+    const response = await h.upload('a.pdf', pdfBytes('a'))
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).toBe('1')
+    expect(await h.objectKeys()).toEqual([])
+  })
+
+  test('a lock timeout on the upload attempt record is a retryable 503 and no object is stored', async () => {
+    const h = await createDocumentHarness()
+    // The upload sends no Idempotency-Key, so the only IDEMPOTENCY_BEGIN is the attempt record.
+    h.deps.database.failNext(IDEMPOTENCY_BEGIN, postgresError('55P03'))
 
     const response = await h.upload('a.pdf', pdfBytes('a'))
 

@@ -4,9 +4,19 @@ import {
   DOCUMENT_LIST_SPENT_PURGES,
   IDEMPOTENCY_PURGE,
   IDEMPOTENCY_PURGE_AGE_MS,
+  ORPHAN_SWEEP_DONE,
 } from 'tula-closeline-db'
 import type { ProcessedStore } from 'tula-closeline-kit'
+import { isLockTimeout } from '~/adapters/postgres/retry'
 import { inTransaction, type PipelineDeps, within } from '~/modules/ingestion/runtime'
+
+/**
+ * The youngest an object with no document may be before the orphan sweep deletes it: 24 hours, the
+ * database's rule (the orphan sweep's 25-hour age and the 26-hour key purge are built on it), so it
+ * is a constant and not a setting: above it the sweep would skip objects and still declare them
+ * swept, below it a young upload's object could be deleted.
+ */
+export const ORPHAN_OBJECT_MIN_AGE_MS = 24 * 60 * 60 * 1000
 
 /** The rounds one purge repeats while its batches come back full. */
 const MAX_PURGE_ROUNDS = 20
@@ -15,8 +25,8 @@ const MAX_PURGE_ROUNDS = 20
 const SPENT_PAGE = 20
 
 /**
- * Purges the Organization's idempotency keys older than the orphan age (or
- * {@link IDEMPOTENCY_PURGE_AGE_MS} if that is longer) plus one housekeeping interval, a batch
+ * Purges the Organization's idempotency keys older than {@link IDEMPOTENCY_PURGE_AGE_MS}
+ * (26 hours: an hour more than the orphan sweep's age, which the statement enforces), a batch
  * at a time, repeating while a batch comes back full (a short batch means the backlog is done;
  * the database's own note says to repeat until one removes none, so a full batch repeats and a
  * short one is followed by one more look) up to {@link MAX_PURGE_ROUNDS} rounds. Returns the rows removed.
@@ -26,15 +36,10 @@ export async function purgeIdempotencyKeys(
   organizationId: string
 ): Promise<number> {
   const { env } = deps
-  // The key is what names an Organization to the orphan sweep (no work kind of its own exists), and
-  // the sweep skips an object younger than ORPHAN_MIN_AGE_MS. The key therefore outlives that age
-  // by one housekeeping interval, so a young orphan is seen again by the next pass.
-  const age =
-    Math.max(IDEMPOTENCY_PURGE_AGE_MS, env.ORPHAN_MIN_AGE_MS) + env.HOUSEKEEPING_INTERVAL_MS
   let removed = 0
   for (let round = 0; round < MAX_PURGE_ROUNDS; round++) {
     const result = await inTransaction(deps, organizationId, (run) =>
-      run(IDEMPOTENCY_PURGE, [organizationId, age, env.HOUSEKEEPING_BATCH])
+      run(IDEMPOTENCY_PURGE, [organizationId, IDEMPOTENCY_PURGE_AGE_MS, env.HOUSEKEEPING_BATCH])
     )
     removed += result.rowCount
     if (result.rowCount === 0) {
@@ -94,7 +99,7 @@ export function documentIdOfKey(key: string): string | undefined {
 
 /**
  * Deletes the Organization's objects under `documents/` that no document names and that are older
- * than `ORPHAN_MIN_AGE_MS` (an upload whose outcome was unknown leaves one). The listing is paged
+ * than {@link ORPHAN_OBJECT_MIN_AGE_MS} (an upload whose outcome was unknown leaves one). The listing is paged
  * (`ORPHAN_PAGE_SIZE`, at most `ORPHAN_MAX_PAGES` pages a pass); an object is deleted only when
  * its document id has no row and its last write is old, so an upload in progress, whose object
  * is young, is never touched. An object under another prefix, or with a key of another shape,
@@ -105,10 +110,28 @@ export async function sweepOrphanObjects(
   organizationId: string,
   signal: AbortSignal
 ): Promise<number> {
+  return (await sweepOrphanObjectsOnce(deps, organizationId, signal)).deleted
+}
+
+/** What one orphan sweep did. */
+export type OrphanSweepResult = {
+  /** Objects deleted. */
+  deleted: number
+  /** Whether every object under `documents/` was examined (the page bound and a cancel can cut it short). */
+  complete: boolean
+}
+
+/** {@link sweepOrphanObjects} that also says whether the whole listing was examined. */
+export async function sweepOrphanObjectsOnce(
+  deps: PipelineDeps,
+  organizationId: string,
+  signal: AbortSignal
+): Promise<OrphanSweepResult> {
   const { env } = deps
-  const oldest = deps.clock.now().getTime() - env.ORPHAN_MIN_AGE_MS
+  const oldest = deps.clock.now().getTime() - ORPHAN_OBJECT_MIN_AGE_MS
   let cursor: string | undefined
   let deleted = 0
+  let complete = false
   for (let page = 0; page < env.ORPHAN_MAX_PAGES && !signal.aborted; page++) {
     const listed = await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
       deps.objects.list(organizationId, {
@@ -141,11 +164,55 @@ export async function sweepOrphanObjects(
     }
     cursor = listed.nextCursor
     if (cursor === undefined) {
+      complete = true
       break
     }
   }
   if (deleted > 0) {
     deps.logger.info('objects with no document were deleted', { organizationId, objects: deleted })
   }
-  return deleted
+  return { deleted, complete: complete && !signal.aborted }
+}
+
+/** The statement every orphan-sweep completion starts with: it waits for open uploads, so only briefly. */
+const ORPHAN_DONE_LOCK_TIMEOUT_SQL = "set local lock_timeout = '1s'"
+
+/** How one visit to an Organization for the `orphan_sweep` kind ended. */
+export type OrphanVisit =
+  /** Swept and marked done; `more` says a newer upload attempt keeps the Organization named. */
+  | { status: 'done'; deleted: number; more: boolean }
+  /** The listing was cut short; nothing is marked, and the next tick sweeps again. */
+  | { status: 'incomplete'; deleted: number }
+  /** `ORPHAN_SWEEP_DONE` waited past its lock timeout (an upload or an erasure is open); the next tick tries again. */
+  | { status: 'busy'; deleted: number }
+
+/**
+ * One visit for the `orphan_sweep` work kind: sweeps the Organization's orphan objects, then records
+ * it with `ORPHAN_SWEEP_DONE`. The `$2` time is taken before the sweep starts, not when done is
+ * called: an object stored while the sweep ran may have been missed, and a later time would count
+ * it as examined. Done runs under a short `lock_timeout`; a timeout is `busy`, tried again at the
+ * next tick without an error report. A listing cut short is not marked.
+ */
+export async function visitOrphanSweep(
+  deps: PipelineDeps,
+  organizationId: string,
+  signal: AbortSignal
+): Promise<OrphanVisit> {
+  const startedAt = deps.clock.now()
+  const { deleted, complete } = await sweepOrphanObjectsOnce(deps, organizationId, signal)
+  if (!complete) {
+    return { status: 'incomplete', deleted }
+  }
+  try {
+    const done = await inTransaction(deps, organizationId, async (run) => {
+      await run(ORPHAN_DONE_LOCK_TIMEOUT_SQL, [])
+      return run(ORPHAN_SWEEP_DONE, [organizationId, startedAt.toISOString()])
+    })
+    return { status: 'done', deleted, more: done.rows[0]?.more === true }
+  } catch (error) {
+    if (isLockTimeout(error)) {
+      return { status: 'busy', deleted }
+    }
+    throw error
+  }
 }
