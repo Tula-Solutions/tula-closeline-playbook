@@ -363,3 +363,27 @@ describe('a purge removes the vectors of every epoch', () => {
     expect(await h.vectorIds(id)).toEqual([])
   })
 })
+
+describe('a young orphan is seen again before the key that names its Organization goes', () => {
+  test('an object 23 h 59 m old with a key 24 h old: the second housekeeping pass deletes it', async () => {
+    const h = createPipelineHarness()
+    await h.upload('notes.txt', paragraphs(2), { key: 'upload-1' })
+    // The key is created now; the orphan is a minute younger than the key's 24 hours.
+    await h.deps.time.advance(60_000)
+    const orphan = `documents/doc_${'e'.repeat(32)}/original.pdf`
+    await h.deps.objects.put(h.organizationId, orphan, new Uint8Array([1]))
+    await h.deps.time.advance(24 * 60 * 60 * 1000 - 120_000)
+    // The key is now exactly 24 hours old, the orphan 23 hours 59 minutes.
+    await h.deps.time.advance(60_000)
+
+    await h.deps.workers.sweeps.run('housekeeping')
+    expect(await h.deps.objects.head(h.organizationId, orphan)).toBeDefined()
+    expect(h.deps.database.keys(h.organizationId)).toHaveLength(1)
+
+    await h.deps.time.advance(h.deps.env.HOUSEKEEPING_INTERVAL_MS + 1_000)
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    expect(await h.deps.objects.head(h.organizationId, orphan)).toBeUndefined()
+    expect(h.deps.database.keys(h.organizationId)).toEqual([])
+  })
+})

@@ -15,7 +15,8 @@ const MAX_PURGE_ROUNDS = 20
 const SPENT_PAGE = 20
 
 /**
- * Purges the Organization's idempotency keys older than {@link IDEMPOTENCY_PURGE_AGE_MS}, a batch
+ * Purges the Organization's idempotency keys older than the orphan age (or
+ * {@link IDEMPOTENCY_PURGE_AGE_MS} if that is longer) plus one housekeeping interval, a batch
  * at a time, repeating while a batch comes back full (a short batch means the backlog is done;
  * the database's own note says to repeat until one removes none, so a full batch repeats and a
  * short one is followed by one more look) up to {@link MAX_PURGE_ROUNDS} rounds. Returns the rows removed.
@@ -25,10 +26,15 @@ export async function purgeIdempotencyKeys(
   organizationId: string
 ): Promise<number> {
   const { env } = deps
+  // The key is what names an Organization to the orphan sweep (no work kind of its own exists), and
+  // the sweep skips an object younger than ORPHAN_MIN_AGE_MS. The key therefore outlives that age
+  // by one housekeeping interval, so a young orphan is seen again by the next pass.
+  const age =
+    Math.max(IDEMPOTENCY_PURGE_AGE_MS, env.ORPHAN_MIN_AGE_MS) + env.HOUSEKEEPING_INTERVAL_MS
   let removed = 0
   for (let round = 0; round < MAX_PURGE_ROUNDS; round++) {
     const result = await inTransaction(deps, organizationId, (run) =>
-      run(IDEMPOTENCY_PURGE, [organizationId, IDEMPOTENCY_PURGE_AGE_MS, env.HOUSEKEEPING_BATCH])
+      run(IDEMPOTENCY_PURGE, [organizationId, age, env.HOUSEKEEPING_BATCH])
     )
     removed += result.rowCount
     if (result.rowCount === 0) {
