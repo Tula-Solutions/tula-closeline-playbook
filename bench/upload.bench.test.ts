@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { checkUploadFile, MAX_DOCUMENT_BYTES } from 'tula-closeline-contract'
 import { detectDocumentType } from '../src/modules/document/detect'
 import { sha256 } from '../src/modules/document/service'
+import { zipFixture } from '../src/modules/document/zip-fixture'
 import { measure, summary } from './measure'
 
 // The CPU-bound part of an upload: the file check, the content check and the SHA-256 of a file of
@@ -10,16 +11,20 @@ import { measure, summary } from './measure'
 // to the event loop between 4 MiB slices. The multipart parse, the object write and the database
 // are not here: the first two are the runtime's and the network's, the third is one transaction of
 // a handful of indexed statements that only the integration suite can show.
-// A PDF is the worst case for the content check (it looks at 1 KiB); a DOCX scans the whole file.
+// A PDF is the worst case for the content check (it looks at 1 KiB); a DOCX reads only the ZIP central directory at the end.
 // Typical best batch: 141 ms for 10 uploads (about 14 ms each). Budget: 5x, rounded up.
 const BUDGET_MS = 700
 const BATCH = 10
 
-const file = new Uint8Array(MAX_DOCUMENT_BYTES)
-file.set(new TextEncoder().encode('PK\u0003\u0004word/document.xml'))
-for (let offset = 64; offset < file.length; offset += 4096) {
-  file[offset] = offset % 251
+const media = new Uint8Array(MAX_DOCUMENT_BYTES - 1024)
+for (let offset = 0; offset < media.length; offset += 4096) {
+  media[offset] = offset % 251
 }
+const file = zipFixture([
+  { name: '[Content_Types].xml' },
+  { name: 'word/document.xml' },
+  { name: 'word/media/big.bin', data: media },
+])
 
 test(`upload check and hash: the best of 5 batches of ${BATCH} files of 25 MiB is within ${BUDGET_MS} ms`, async () => {
   let accepted = 0

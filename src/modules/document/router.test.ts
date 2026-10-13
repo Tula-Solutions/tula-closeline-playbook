@@ -18,6 +18,7 @@ import {
   personIn,
   strangerDocumentId,
 } from './test-support'
+import { zipFixture } from './zip-fixture'
 
 async function documentOf(response: Response): Promise<PlaybookDocument> {
   return documentSchema.parse(await response.json())
@@ -221,7 +222,7 @@ describe('upload: refused requests', () => {
     [
       'a PPTX that holds a Word folder',
       'a.pptx',
-      new TextEncoder().encode('PK\u0003\u0004 word/document.xml'),
+      zipFixture([{ name: '[Content_Types].xml' }, { name: 'word/document.xml' }]),
     ],
     ['a text file with a NUL byte', 'a.txt', new Uint8Array([104, 105, 0, 33])],
     ['a text file that is not UTF-8', 'a.md', new Uint8Array([0xff, 0xfe, 0xfd])],
