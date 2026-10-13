@@ -189,3 +189,46 @@ describe('shared bounds', () => {
     ).toThrow(/CONSUMER_STOP_DEADLINE_MS/)
   })
 })
+
+describe('numbers are whole numbers written in digits', () => {
+  const NUMERIC = [
+    'PORT',
+    'READINESS_TIMEOUT_MS',
+    'SHUTDOWN_TIMEOUT_MS',
+    'SHUTDOWN_GRACE_MS',
+    'MAX_REQUEST_BODY_BYTES',
+    'MAX_UPLOAD_BYTES',
+    'MAX_PAGES_PER_DOCUMENT',
+    'MAX_CONCURRENT_UPLOADS',
+    'CONSUMER_CONCURRENCY',
+    'CONSUMER_STOP_DEADLINE_MS',
+  ]
+  const BAD = ['', ' 5', '5 ', '0x10', '1e1', '-1', '1.5', '+5', '5\n', 'Infinity', 'NaN', '٣']
+
+  for (const key of NUMERIC) {
+    test.each(BAD)(`${key} rejects %j, naming the key and not the value`, (value) => {
+      let message = ''
+      try {
+        loadEnv({ ENVIRONMENT: 'local', [key]: value })
+      } catch (error) {
+        message = String(error)
+      }
+
+      expect(message).toContain(key)
+      // Plain digits would match numbers in the rule text; the odd spellings cannot.
+      if (/[a-z.]/i.test(value)) {
+        expect(message).not.toContain(value)
+      }
+    })
+  }
+
+  test('plain digits are accepted, leading zeros included', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local', PORT: '08080' }).PORT).toBe(8080)
+  })
+
+  test('a number too long to be exact is refused', () => {
+    expect(() => loadEnv({ ENVIRONMENT: 'local', MAX_UPLOAD_BYTES: '9'.repeat(30) })).toThrow(
+      /MAX_UPLOAD_BYTES/
+    )
+  })
+})

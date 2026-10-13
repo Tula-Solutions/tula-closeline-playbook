@@ -33,20 +33,33 @@ const REQUIRED_OUTSIDE_LOCAL = [
   'STORAGE_BUCKET',
 ] as const
 
+/**
+ * A whole number written as digits only, within bounds. Stricter than `z.coerce.number()`, which
+ * turns `''` into 0 and reads ` 5`, `0x10` and `1e1` as numbers. The messages name the rule, never
+ * the value.
+ */
+function integer(min: number, max: number) {
+  return z
+    .string()
+    .regex(/^[0-9]{1,15}$/, 'must be a whole number written in digits')
+    .transform(Number)
+    .pipe(z.number().min(min).max(max))
+}
+
 const schema = z
   .object({
     /** Which deployment this is. No default: a deploy that forgets it must fail at boot. */
     ENVIRONMENT: environmentSchema,
-    PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    PORT: integer(1, 65535).default(3000),
     LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'silent']).default('info'),
     /** The longest one readiness check may take before it counts as failed. */
-    READINESS_TIMEOUT_MS: z.coerce.number().int().min(1).max(30_000).default(2_000),
+    READINESS_TIMEOUT_MS: integer(1, 30_000).default(2_000),
     /** The longest shutdown waits for in-flight requests before closing them. */
-    SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(10_000),
+    SHUTDOWN_TIMEOUT_MS: integer(1, 120_000).default(10_000),
     /** How long `/readyz` reports 503 before the server stops accepting, so the balancer moves on. */
-    SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(60_000).default(5_000),
+    SHUTDOWN_GRACE_MS: integer(0, 60_000).default(5_000),
     /** The largest request body accepted, in bytes; anything bigger is a 413. */
-    MAX_REQUEST_BODY_BYTES: z.coerce.number().int().min(1).max(104_857_600).default(1_048_576),
+    MAX_REQUEST_BODY_BYTES: integer(1, 104_857_600).default(1_048_576),
 
     /** The Region this deployment serves; every Organization lives in the Region of its deployment. */
     REGION: regionSchema.optional(),
@@ -82,24 +95,19 @@ const schema = z
     STORAGE_ENDPOINT: z.url().max(2_048).optional(),
 
     /** The largest file accepted, in bytes. May lower the contract's limit (ADR 0016), never raise it. */
-    MAX_UPLOAD_BYTES: z.coerce.number().int().min(1).max(MAX_DOCUMENT_BYTES).optional(),
+    MAX_UPLOAD_BYTES: integer(1, MAX_DOCUMENT_BYTES).optional(),
     /** The most pages a document may have. May lower the contract's limit, never raise it. */
-    MAX_PAGES_PER_DOCUMENT: z.coerce.number().int().min(1).max(MAX_DOCUMENT_PAGES).optional(),
+    MAX_PAGES_PER_DOCUMENT: integer(1, MAX_DOCUMENT_PAGES).optional(),
     /**
      * The most uploads one instance handles at once. Each is held whole in memory (ADR 0016), so
      * this times `MAX_UPLOAD_BYTES` is the upload memory an instance may need.
      */
-    MAX_CONCURRENT_UPLOADS: z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(MAX_CONCURRENT_UPLOADS_LIMIT)
-      .default(4),
+    MAX_CONCURRENT_UPLOADS: integer(1, MAX_CONCURRENT_UPLOADS_LIMIT).default(4),
 
     /** The most queue messages handled at once by one instance. */
-    CONSUMER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
+    CONSUMER_CONCURRENCY: integer(1, 100).default(4),
     /** How long shutdown lets in-flight messages finish before it gives them back to the queue. */
-    CONSUMER_STOP_DEADLINE_MS: z.coerce.number().int().min(1).max(120_000).default(5_000),
+    CONSUMER_STOP_DEADLINE_MS: integer(1, 120_000).default(5_000),
   })
   .refine((env) => env.SHUTDOWN_GRACE_MS + env.SHUTDOWN_TIMEOUT_MS <= MAX_SHUTDOWN_TOTAL_MS, {
     message: `SHUTDOWN_GRACE_MS plus SHUTDOWN_TIMEOUT_MS must not exceed ${MAX_SHUTDOWN_TOTAL_MS} ms in total`,

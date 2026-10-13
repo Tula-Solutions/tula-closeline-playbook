@@ -10,7 +10,7 @@ export type OcrPage = {
 
 /** Options of one {@link OcrReader.recognise} call. */
 export type OcrOptions = {
-  /** Aborts the call; an adapter also bounds it with its own timeout. */
+  /** Aborts the call, over and above the adapter's own timeout. */
   signal: AbortSignal
 }
 
@@ -19,7 +19,10 @@ export type OcrOptions = {
  * result is untrusted text like any other document text.
  */
 export interface OcrReader {
-  /** Recognises the listed pages (numbers from 1) of `bytes`; returns one entry per page asked for. */
+  /**
+   * Recognises the listed pages (numbers from 1) of `bytes`; returns one entry per page asked for.
+   * Every call has its own timeout and a bounded, jittered retry inside the adapter (COMMON.md); the caller passes a signal to cancel it, and retries nothing itself.
+   */
   recognise(
     document: { bytes: Uint8Array; mediaType: DocumentMediaType; pages: readonly number[] },
     options: OcrOptions

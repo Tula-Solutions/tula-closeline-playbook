@@ -7,6 +7,7 @@ import {
   CONSUMED_PURGE,
   CONSUMED_RELEASE,
   CONSUMED_RENEW,
+  PLAYBOOK_MAX_BATCH,
 } from 'tula-closeline-db'
 import { GLOBAL_SCOPE_ORGANIZATION_ID } from 'tula-closeline-db/schema'
 import {
@@ -296,5 +297,40 @@ describe('inputs the table could not hold', () => {
     const store = createPostgresProcessedStore({ scope })
 
     await expect(store.purgeScope(ORG, new Date(Number.NaN), 10)).rejects.toThrow(/cutoff/)
+  })
+})
+
+describe('purge bounds and the global scope', () => {
+  test.each([
+    ['a limit above the library maximum', new Date(), 3_000_000_000, /limit/],
+    ['a limit one above the library maximum', new Date(), PLAYBOOK_MAX_BATCH + 1, /limit/],
+    ['a cutoff beyond the Date range limit of timestamptz', new Date(8.64e15), 10, /cutoff/],
+    ['a cutoff before the year 4713 BC', new Date(-8.64e15), 10, /cutoff/],
+  ])('purgeScope refuses %s before any query', async (_name, before, limit, message) => {
+    const { scope, calls } = scripted([])
+    const store = createPostgresProcessedStore({ scope })
+
+    await expect(store.purgeScope(ORG, before, limit)).rejects.toThrow(message)
+    expect(calls).toHaveLength(0)
+  })
+
+  test('the largest batch the library allows is accepted', async () => {
+    const { scope } = scripted([{ rows: [], rowCount: 0 }])
+    const store = createPostgresProcessedStore({ scope })
+
+    expect(await store.purgeScope(ORG, new Date(), PLAYBOOK_MAX_BATCH)).toBe(0)
+  })
+
+  test('only null is the global scope: the all-zero id as an Organization is refused', async () => {
+    const { scope, calls } = scripted([])
+    const store = createPostgresProcessedStore({ scope })
+    const zero = { ...key, organizationId: GLOBAL_SCOPE_ORGANIZATION_ID }
+    const token = '11111111-2222-4333-8444-555555555555'
+
+    await expect(store.claim(zero, 60)).rejects.toThrow(/Organization/)
+    expect(await store.renew(zero, token, 30)).toBe(false)
+    expect(await store.complete(zero, token)).toBe(false)
+    await store.release(zero, token)
+    expect(calls).toHaveLength(0)
   })
 })

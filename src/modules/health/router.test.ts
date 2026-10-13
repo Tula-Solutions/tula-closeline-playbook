@@ -168,7 +168,7 @@ describe('/readyz', () => {
     })
   })
 
-  test('is 200 with no checks, as in this service today', async () => {
+  test('is 200 when there are no checks to run', async () => {
     const { app } = appWith([])
 
     const response = await app.request('/readyz')

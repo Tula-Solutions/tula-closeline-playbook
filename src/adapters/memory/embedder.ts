@@ -1,4 +1,9 @@
-import type { Embedder, EmbeddingPurpose, EmbedOptions } from '~/ports/embedder'
+import {
+  type Embedder,
+  type EmbeddingPurpose,
+  type EmbedOptions,
+  MAX_EMBED_TEXTS,
+} from '~/ports/embedder'
 
 /** The model name the memory embedder reports. */
 export const MEMORY_EMBEDDING_MODEL = 'memory-embedder'
@@ -52,6 +57,9 @@ export function createMemoryEmbedder(options: MemoryEmbedderOptions = {}): Memor
     calls,
     embed: async (texts: readonly string[], embedOptions: EmbedOptions) => {
       embedOptions.signal.throwIfAborted()
+      if (texts.length > MAX_EMBED_TEXTS) {
+        throw new RangeError(`embed takes at most ${MAX_EMBED_TEXTS} texts per call`)
+      }
       calls.push({ texts: [...texts], purpose: embedOptions.purpose })
       return texts.map((text) => embedText(text, dimensions))
     },

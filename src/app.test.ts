@@ -194,3 +194,55 @@ describe('the Organization comes from the verified token only', () => {
     expect(one).not.toEqual(two)
   })
 })
+
+describe('no route is left outside the token check', () => {
+  const OPEN = new Set(['/healthz', '/readyz', '/openapi.json'])
+
+  /** Every registered route that answers anything but 401 auth.unauthenticated to a request with no token. */
+  async function unprotected(app: Awaited<ReturnType<typeof createTestApp>>['app']) {
+    const walked: string[] = []
+    const offenders: string[] = []
+    for (const route of app.routes) {
+      if (route.method === 'ALL' || OPEN.has(route.path)) {
+        continue
+      }
+      const path = route.path
+        .replace(/:[^/]+/g, 'x')
+        .replace(/\{[^}]+\}/g, 'x')
+        .replace(/\*/g, 'x')
+      walked.push(`${route.method} ${route.path}`)
+      const response = await app.request(path, { method: route.method })
+      const body = (await response.json().catch(() => ({}))) as Body
+      if (response.status !== 401 || body.error?.code !== 'auth.unauthenticated') {
+        offenders.push(`${route.method} ${route.path}`)
+      }
+    }
+    return { walked, offenders }
+  }
+
+  test('every route but health and the document answers 401 auth.unauthenticated without a token', async () => {
+    const { app } = await createTestApp()
+
+    expect((await unprotected(app)).offenders).toEqual([])
+  })
+
+  test('the walk sees the routes of the app, so an empty result means something', async () => {
+    const { app } = await createTestApp()
+
+    const paths = app.routes.map((route) => route.path)
+
+    expect(paths).toContain('/healthz')
+    expect(paths).toContain('/readyz')
+    expect(paths).toContain('/openapi.json')
+  })
+
+  test('a throwaway route mounted outside the token check is caught', async () => {
+    const { app } = await createTestApp()
+    app.get('/leak/:id', (c) => c.json({ leaked: true }))
+    app.post('/leak-too', (c) => c.json({ leaked: true }))
+
+    const { offenders } = await unprotected(app)
+
+    expect(offenders).toEqual(['GET /leak/:id', 'POST /leak-too'])
+  })
+})

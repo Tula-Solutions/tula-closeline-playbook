@@ -221,6 +221,20 @@ describe('what the table holds', () => {
   })
 })
 
+describe('the global scope', () => {
+  test('a null key and the all-zero Organization id are not interchangeable', async () => {
+    await clear()
+    const claimed = await postgres.claim(key(null), 60)
+    if (claimed.status !== 'claimed') {
+      throw new Error('expected a claim')
+    }
+
+    await expect(postgres.claim(key(GLOBAL_SCOPE_ORGANIZATION_ID), 60)).rejects.toThrow()
+    expect(await postgres.complete(key(GLOBAL_SCOPE_ORGANIZATION_ID), claimed.token)).toBe(false)
+    expect(await postgres.complete(key(null), claimed.token)).toBe(true)
+  })
+})
+
 describe('claiming', () => {
   test('of many concurrent claims for one message, exactly one wins and the rest see it busy', async () => {
     await clear()

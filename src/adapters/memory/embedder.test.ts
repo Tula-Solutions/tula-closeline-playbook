@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { MAX_EMBED_TEXTS } from '~/ports/embedder'
 import { embedderBehaviour } from '~/ports/embedder.behaviour'
 import { createMemoryEmbedder } from './embedder'
 
@@ -33,5 +34,36 @@ describe('memory embedder specifics', () => {
 
     expect(embedder.model).toBe('fake-v1')
     expect(embedder.calls).toEqual([{ texts: ['a', 'b'], purpose: 'query' }])
+  })
+})
+
+describe('the batch limit of the port', () => {
+  test('accepts exactly the largest batch', async () => {
+    const embedder = createMemoryEmbedder({ dimensions: 8 })
+
+    const vectors = await embedder.embed(
+      Array.from({ length: MAX_EMBED_TEXTS }, () => 'a'),
+      {
+        purpose: 'document',
+        signal,
+      }
+    )
+
+    expect(vectors).toHaveLength(MAX_EMBED_TEXTS)
+  })
+
+  test('refuses one text more, recording nothing', async () => {
+    const embedder = createMemoryEmbedder({ dimensions: 8 })
+
+    await expect(
+      embedder.embed(
+        Array.from({ length: MAX_EMBED_TEXTS + 1 }, () => 'a'),
+        {
+          purpose: 'document',
+          signal,
+        }
+      )
+    ).rejects.toThrow(RangeError)
+    expect(embedder.calls).toEqual([])
   })
 })

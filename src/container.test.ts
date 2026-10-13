@@ -218,3 +218,47 @@ test('closing the container twice is harmless', async () => {
   await container.close()
   await container.close()
 })
+
+const DEPLOYED = {
+  ENVIRONMENT: 'prod',
+  REGION: 'eu',
+  SENTRY_DSN: 'https://public@o1.ingest.de.sentry.io/1',
+  DATABASE_URL: 'postgres://closeline_playbook:secret@db.internal:5432/closeline',
+  AUTH_JWKS_URL: 'https://auth.example.test/.well-known/jwks.json',
+  AUTH_ISSUER: 'https://auth.example.test',
+  AUTH_AUDIENCE: 'closeline',
+  AWS_REGION: 'eu-west-1',
+  QUEUE_URL: 'https://sqs.eu-west-1.amazonaws.com/123456789012/playbook',
+  STORAGE_BUCKET: 'closeline-playbook-eu',
+}
+
+const fakeWarnings = (lines: string[]) =>
+  lines.map((line) => JSON.parse(line)).filter((entry) => entry.msg === 'ports still on fakes')
+
+test('outside local, one warning names every port still on a memory fake, and nothing else', async () => {
+  const lines: string[] = []
+  const container = createContainer(loadEnv(DEPLOYED), {
+    logDestination: { write: (l) => lines.push(l) },
+  })
+
+  try {
+    const warnings = fakeWarnings(lines)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatchObject({
+      level: 40, // warn
+      ports: ['embedder', 'parser', 'ocr', 'vector store'],
+    })
+    expect(Object.keys(warnings[0]).sort()).toEqual(['level', 'msg', 'ports', 'service', 'time'])
+  } finally {
+    await container.close()
+  }
+})
+
+test('a local container does not warn about its fakes', () => {
+  const lines: string[] = []
+  createContainer(loadEnv({ ENVIRONMENT: 'local' }), {
+    logDestination: { write: (l) => lines.push(l) },
+  })
+
+  expect(fakeWarnings(lines)).toEqual([])
+})

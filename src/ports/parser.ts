@@ -32,7 +32,7 @@ export class ParseError extends Error {
 
 /** Options of one {@link DocumentParser.parse} call. */
 export type ParseOptions = {
-  /** Aborts the call; an adapter also bounds it with its own timeout. */
+  /** Aborts the call, over and above the adapter's own timeout. */
   signal: AbortSignal
 }
 
@@ -42,7 +42,9 @@ export type ParseOptions = {
  * count limit is checked by the ingestion job from the result, not here.
  */
 export interface DocumentParser {
-  /** Parses `bytes` of the given media type, or throws a {@link ParseError}. */
+  /**
+   * Parses `bytes` of the given media type, or throws a {@link ParseError}. Every call has its own timeout and a bounded, jittered retry inside the adapter (COMMON.md); the caller passes a signal to cancel it, and retries nothing itself.
+   */
   parse(
     document: { bytes: Uint8Array; mediaType: DocumentMediaType },
     options: ParseOptions

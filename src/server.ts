@@ -1,5 +1,6 @@
 import { createApp } from '~/app'
-import { createContainer } from '~/container'
+import { createContainer, reportSafely } from '~/container'
+import { exitAfterClose, installCrashHandlers } from '~/exit'
 import { serveOptions } from '~/http/serve'
 import { shutdown, stoppableWith } from '~/shutdown'
 
@@ -21,15 +22,17 @@ function stop(signal: string): void {
     graceMs: container.env.SHUTDOWN_GRACE_MS,
     timeoutMs: container.env.SHUTDOWN_TIMEOUT_MS,
     // Pending error reports are delivered and the database connections released before the
-    // process ends, however shutdown ended.
-    exit: (code) => {
-      container.close().then(
-        () => process.exit(code),
-        () => process.exit(1)
-      )
-    },
+    // process ends; a forced stop gives that only a short deadline.
+    exit: (code) => exitAfterClose({ code, close: container.close, exit: (c) => process.exit(c) }),
   })
 }
 
 process.on('SIGTERM', () => stop('SIGTERM'))
 process.on('SIGINT', () => stop('SIGINT'))
+
+installCrashHandlers({
+  target: process,
+  report: (error, context) => reportSafely(container, error, context),
+  close: container.close,
+  exit: (code) => process.exit(code),
+})

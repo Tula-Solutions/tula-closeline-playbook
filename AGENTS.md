@@ -58,8 +58,12 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 
 - Every handler is idempotent: the processed store makes a message run once, but a crash between the
   effect and `complete` runs it again, so every step is a keyed upsert or a state check.
-- A queue message type is published only after its handler exists; a message with no handler is
-  hidden and ends in the dead-letter queue.
+- A queue message type is published only after its handler exists. A message with no handler is
+  loud, not silently lost: logged and reported at every delivery, hidden for the invalid delay
+  (60 s), and dead-lettered after the queue's `maxReceiveCount`.
+- Hub issue 14: the 1 MiB global body limit (`MAX_REQUEST_BODY_BYTES`, `createBaseApp`) and Bun's
+  `maxRequestBodySize` (`serveOptions`) block the 25 MiB upload until the upload route sets its own
+  limit and `serve.ts` raises Bun's to match.
 - Vector ids are deterministic (`<documentId>:<chunk>`) and each vector carries its job's epoch
   (db README, ADR 0016). Search drops results whose document is deleted or gone; that state check
   is the guarantee, the vector cleanup is not.
@@ -67,8 +71,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   page counts come from the contract's constants (`env.ts` may lower them, never raise them).
 - File content, extracted text and prompts are untrusted data. Never log or return them; no
   document text in an error message, a log field or a queue payload.
-- Every call to a vendor port takes an `AbortSignal` and has its own timeout and bounded, jittered
-  retry in the adapter, not in the caller.
+- Every call to a vendor port takes an `AbortSignal`. Every call has its own timeout and a bounded,
+  jittered retry inside the adapter (`COMMON.md`); the caller cancels with the signal and retries
+  nothing itself. `embed` takes at most `MAX_EMBED_TEXTS` texts; the caller splits.
 - `ProcessedStore.purge` throws `ProcessedStorePurgeUnavailableError` until hub issue 53 lets the
   service list the Organizations to purge; `purgeScope` works per scope. Do not make `purge` a
   quiet partial.

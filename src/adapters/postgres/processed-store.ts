@@ -7,6 +7,7 @@ import {
   CONSUMED_RELEASE,
   CONSUMED_RENEW,
   type Database,
+  PLAYBOOK_MAX_BATCH,
   withOrganization,
 } from 'tula-closeline-db'
 import { GLOBAL_SCOPE_ORGANIZATION_ID } from 'tula-closeline-db/schema'
@@ -106,6 +107,11 @@ const NAME_SHAPE = /^[A-Za-z0-9_.:-]{1,128}$/
 /** The shape of an Organization wire id. */
 const ORGANIZATION_SHAPE = /^org_[0-9a-f]{32}$/
 
+/** Whether `id` is a real Organization's wire id: well formed and not the global scope's all-zero id. */
+function isOrganizationId(id: string): boolean {
+  return ORGANIZATION_SHAPE.test(id) && id !== GLOBAL_SCOPE_ORGANIZATION_ID
+}
+
 /**
  * Whether a record could exist for `key` and `token`. A token that is not a uuid, or a key the
  * table's checks would refuse, names no record: `renew`, `complete` and `release` then answer as
@@ -121,7 +127,7 @@ function keyIsValid(key: ConsumedKey): boolean {
   return (
     NAME_SHAPE.test(key.consumer) &&
     NAME_SHAPE.test(key.messageId) &&
-    (key.organizationId === null || ORGANIZATION_SHAPE.test(key.organizationId))
+    (key.organizationId === null || isOrganizationId(key.organizationId))
   )
 }
 
@@ -133,8 +139,10 @@ function assertKey(key: ConsumedKey): void {
   if (!NAME_SHAPE.test(key.messageId)) {
     throw new RangeError('message id must be 1 to 128 of letters, digits and _ . : -')
   }
-  if (key.organizationId !== null && !ORGANIZATION_SHAPE.test(key.organizationId)) {
-    throw new RangeError('Organization id must be org_ and 32 lower-case hex digits')
+  if (key.organizationId !== null && !isOrganizationId(key.organizationId)) {
+    throw new RangeError(
+      'Organization id must be org_ and 32 lower-case hex digits, and not the global scope; use null for a global message'
+    )
   }
 }
 
@@ -236,11 +244,13 @@ export function createPostgresProcessedStore(
     },
 
     async purgeScope(organizationId, before, limit) {
-      if (Number.isNaN(before.getTime())) {
-        throw new RangeError('purge cutoff must be a valid date')
+      // Postgres reads the four-digit-year ISO form of a timestamptz; a Date beyond year 9999 (or
+      // before year 0) prints with a sign and an extended year that it refuses.
+      if (Number.isNaN(before.getTime()) || !/^\d{4}-/.test(before.toISOString())) {
+        throw new RangeError('purge cutoff must be a date between the years 0 and 9999')
       }
-      if (!Number.isInteger(limit) || limit < 1) {
-        throw new RangeError('purge limit must be a whole number of at least 1')
+      if (!Number.isInteger(limit) || limit < 1 || limit > PLAYBOOK_MAX_BATCH) {
+        throw new RangeError(`purge limit must be a whole number from 1 to ${PLAYBOOK_MAX_BATCH}`)
       }
       const result = await scope(organizationId, (run) =>
         run(CONSUMED_PURGE, [organizationId, before.toISOString(), limit])
