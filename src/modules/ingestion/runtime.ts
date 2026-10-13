@@ -180,8 +180,8 @@ export function retryDelayMs(deps: Pick<PipelineDeps, 'random' | 'env'>, attempt
 }
 
 /**
- * Whether trying again cannot help: a request the stores refuse as malformed, a vector of the
- * wrong length, an object over the limit. Everything else (timeouts, unavailable, a bad answer,
+ * Whether trying again cannot help: a request the stores refuse as malformed or reject outright (access denied,
+ * wrong index), a vector of the wrong length, an object over the limit. Everything else (timeouts, unavailable, a bad answer,
  * a database error) is worth another attempt, bounded by the attempt limit.
  */
 export function isPermanent(error: unknown): boolean {
@@ -189,7 +189,11 @@ export function isPermanent(error: unknown): boolean {
     return true
   }
   if (error instanceof VectorError) {
-    return error.code === 'vector.invalid_request' || error.code === 'vector.dimension_mismatch'
+    return (
+      error.code === 'vector.invalid_request' ||
+      error.code === 'vector.dimension_mismatch' ||
+      error.code === 'vector.rejected'
+    )
   }
   if (error instanceof StorageError) {
     return error.code === 'storage.invalid_request' || error.code === 'storage.object_too_large'

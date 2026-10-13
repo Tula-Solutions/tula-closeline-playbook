@@ -196,17 +196,19 @@ describe('a document that cannot be ingested fails with a reason', () => {
     expect(h.deps.reported).toHaveLength(1)
   })
 
-  test('a request the vector store refuses as malformed is permanent: no second attempt', async () => {
-    const h = createPipelineHarness()
-    spyOn(h.deps.vectors, 'upsert').mockRejectedValue(
-      new VectorError('vector.invalid_request', 'refused')
-    )
-    const id = await h.upload('notes.txt', paragraphs(2))
+  test.each(['vector.invalid_request', 'vector.rejected'] as const)(
+    'a request the vector store answers %s is permanent: no second attempt',
+    async (code) => {
+      const h = createPipelineHarness()
+      spyOn(h.deps.vectors, 'upsert').mockRejectedValue(new VectorError(code, 'refused'))
+      const id = await h.upload('notes.txt', paragraphs(2))
 
-    await h.pass()
+      await h.pass()
 
-    expect(h.document(id)).toMatchObject({ state: 'failed', failure_reason: 'processing_failed' })
-  })
+      expect(h.document(id)).toMatchObject({ state: 'failed', failure_reason: 'processing_failed' })
+      expect(jobOutcomes(h.deps)).toEqual(['failed'])
+    }
+  )
 
   test('a file missing from the object store is a loud, permanent failure', async () => {
     const h = createPipelineHarness()
@@ -849,7 +851,7 @@ describe('Organizations stay apart', () => {
     expect(a.deps.database.jobs(a.organizationId).map((j) => j.document_id)).toEqual([idA])
   })
 
-  test('a job statement run in another Organization finds nothing, as Postgres would', async () => {
+  test("the database double answers a job statement run in another Organization's scope with nothing (row-level security itself is proved by the integration suite)", async () => {
     const h = createPipelineHarness()
     await h.upload('a.txt', paragraphs(2))
     const parsing = gate()

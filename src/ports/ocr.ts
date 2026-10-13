@@ -16,7 +16,9 @@ export type OcrOptions = {
 
 /**
  * Reads pages with no text layer (ADR 0010: Mistral OCR 3), only the pages that need it. The
- * result is untrusted text like any other document text.
+ * result is untrusted text like any other document text. An adapter must bound its own output
+ * (text per page, memory) as it works: the pipeline's text limit is checked on the finished
+ * result and decides what is kept, not what the adapter allocated.
  */
 export interface OcrReader {
   /**
