@@ -428,6 +428,11 @@ async function embedStep(c: JobContext): Promise<void> {
       documentId: c.documentId,
       jobId: c.jobId,
     })
+    // `chunksDone` is recorded after a batch is written, so a write that landed and whose record
+    // was lost leaves vectors at the first chunk numbers; a smaller re-chunk would orphan the tail.
+    await within(deps, 'vector store', env.INGESTION_IO_TIMEOUT_MS, c.signal, () =>
+      deps.vectors.deleteByFilter(c.organizationId, { document_id: c.documentId, epoch: c.epoch })
+    )
     await chunkStep(c)
     chunks = (await readChunks()).chunks
   }

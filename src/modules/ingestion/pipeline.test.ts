@@ -258,6 +258,39 @@ describe('a chunks artifact written under larger settings', () => {
     ).toHaveLength(1)
   })
 
+  test('removes the vectors of a batch whose write landed but whose progress was never recorded', async () => {
+    const h = createPipelineHarness()
+    const upsert = h.deps.vectors.upsert.bind(h.deps.vectors)
+    let first = true
+    spyOn(h.deps.vectors, 'upsert').mockImplementation(async (org, items) => {
+      await upsert(org, items)
+      if (first) {
+        first = false
+        // The write landed; the answer (and so the advance that records it) was lost.
+        throw new Error('the connection dropped after the write')
+      }
+    })
+    const id = await h.upload('many.txt', bigParagraphs(100))
+    await h.pass()
+    expect(h.document(id)?.state).toBe('processing')
+    expect((await h.vectorIds(id)).length).toBe(96)
+    // Settings changed since: the stored chunks are refused and the pages now give fewer chunks.
+    await inflate(h, id)
+    await h.deps.objects.put(
+      h.organizationId,
+      `documents/${id}/pages-0.json`,
+      new TextEncoder().encode(JSON.stringify({ pages: [{ number: 1, text: bigParagraphs(50) }] }))
+    )
+
+    await h.deps.time.advance(60_000)
+    await h.pass()
+
+    expect(h.document(id)?.state).toBe('ready')
+    const ids = await h.vectorIds(id)
+    expect(ids.length).toBe(50)
+    expect(ids.every((vector) => Number(vector.split(':')[2]) < 50)).toBe(true)
+  })
+
   test('fails the document when some chunks were already embedded', async () => {
     const h = createPipelineHarness()
     const embed = h.deps.embedder.embed.bind(h.deps.embedder)
