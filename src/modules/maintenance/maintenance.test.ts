@@ -373,8 +373,8 @@ describe('a young orphan is seen again before the key that names its Organizatio
     const orphan = `documents/doc_${'e'.repeat(32)}/original.pdf`
     await h.deps.objects.put(h.organizationId, orphan, new Uint8Array([1]))
     await h.deps.time.advance(24 * 60 * 60 * 1000 - 120_000)
-    // The key is now exactly 24 hours old, the orphan 23 hours 59 minutes.
-    await h.deps.time.advance(60_000)
+    // The key is now just over 24 hours old, the orphan 23 hours 59 minutes.
+    await h.deps.time.advance(61_000)
 
     await h.deps.workers.sweeps.run('housekeeping')
     expect(await h.deps.objects.head(h.organizationId, orphan)).toBeDefined()
