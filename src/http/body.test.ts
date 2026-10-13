@@ -36,4 +36,31 @@ describe('capBody', () => {
 
     expect(capBody(plain, 10).request).toBe(plain)
   })
+
+  test('cuts off and cancels a body that stalls past its deadline, and says it was the deadline', async () => {
+    let cancelled = false
+    const stalled = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(3))
+        return new Promise<void>(() => {})
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const capped = capBody(request(stalled), 100, AbortSignal.timeout(50))
+
+    await expect(capped.request.arrayBuffer()).rejects.toBeDefined()
+
+    expect(capped.timedOut()).toBe(true)
+    expect(capped.exceeded()).toBe(false)
+    expect(cancelled).toBe(true)
+  })
+
+  test('a body that arrives before the deadline is not timed out', async () => {
+    const capped = capBody(request(streamOf([new Uint8Array(5)])), 10, AbortSignal.timeout(5000))
+
+    expect((await capped.request.arrayBuffer()).byteLength).toBe(5)
+    expect(capped.timedOut()).toBe(false)
+  })
 })

@@ -23,7 +23,7 @@ import { uploadBodyLimit } from '~/http/limits'
 import { idempotencyKeyHeader } from '~/http/responses'
 import { createRouter } from '~/http/router'
 import { PUBLIC_SECURITY } from '~/http/security'
-import { createConcurrencyGate } from './limiter'
+import { createConcurrencyGate, createOrganizationShare } from './limiter'
 import { contractRoute, failureResponses } from './openapi'
 import * as Documents from './service'
 
@@ -147,21 +147,28 @@ const upload = createRoute({
         'The content matches a document the Organization has: that document, as stored (a deleted one restored, a failed one queued again).',
       content: { 'application/json': { schema: documentSchema } },
     },
-    ...failureResponses('uploadDocument', ['server.unavailable']),
+    ...failureResponses('uploadDocument', ['server.unavailable', 'server.timeout', 'rate.limited']),
   },
 })
 
-/** The one `file` part of an upload, from a multipart body capped at the upload limit. */
-async function readFilePart(c: Context<AuthedEnv>, maxBody: number): Promise<File> {
+/** The one `file` part of an upload, from a multipart body capped at the upload limit and `timeoutMs`. */
+async function readFilePart(
+  c: Context<AuthedEnv>,
+  maxBody: number,
+  timeoutMs: number
+): Promise<File> {
   const contentType = c.req.header('content-type') ?? ''
   if (!/^multipart\/form-data\s*(;|$)/i.test(contentType)) {
     throw domainError(ERRORS['request.unsupported_media_type'])
   }
-  const capped = capBody(c.req.raw, maxBody)
+  const capped = capBody(c.req.raw, maxBody, AbortSignal.timeout(timeoutMs))
   let form: Awaited<ReturnType<Request['formData']>>
   try {
     form = await capped.request.formData()
   } catch {
+    if (capped.timedOut()) {
+      throw domainError(ERRORS['server.timeout'])
+    }
     throw domainError(capped.exceeded() ? ERRORS['request.too_large'] : ERRORS['request.invalid'])
   }
   const names = Array.from(form.keys())
@@ -190,31 +197,41 @@ function idempotencyKeyOf(c: Context<AuthedEnv>): string | undefined {
  * role, this instance's upload bound, the body size cap, the multipart parse, the file checks, the
  * idempotency key and the transaction (the service). When the instance already holds
  * `MAX_CONCURRENT_UPLOADS` uploads the answer is `server.unavailable` (503) with `Retry-After`,
- * because the contract has no code of its own for it, and the body is not read.
+ * because the contract has no code of its own for it, and the body is not read. One Organization
+ * may hold at most half of those places (rounded up, at least one): past that it is `rate.limited`
+ * (429) with `Retry-After`. A body not complete within `UPLOAD_BODY_TIMEOUT_MS` is cut off with
+ * `server.timeout` (504) and gives its place back, so a slow sender cannot hold the places.
  */
 export function createDocumentRouter(container: Container): OpenAPIHono<AuthedEnv> {
   const router = createRouter<AuthedEnv>()
   const gate = createConcurrencyGate(container.env.MAX_CONCURRENT_UPLOADS)
+  const shares = createOrganizationShare(container.env.MAX_CONCURRENT_UPLOADS)
   const maxBody = uploadBodyLimit(container.env)
 
   router.openAPIRegistry.registerPath(upload)
   router.post(
     PLAYBOOK_ROUTES.uploadDocument.path,
     requireRole(PLAYBOOK_WRITE_ROLES),
-    async (_c, next) => {
-      const release = gate.tryAcquire()
-      if (release === undefined) {
+    async (c, next) => {
+      const releaseGate = gate.tryAcquire()
+      if (releaseGate === undefined) {
         throw new RetryAfterError(ERRORS['server.unavailable'], 1)
+      }
+      const releaseShare = shares.tryAcquire(callerOf(c).organizationId)
+      if (releaseShare === undefined) {
+        releaseGate()
+        throw new RetryAfterError(ERRORS['rate.limited'], 1)
       }
       try {
         await next()
       } finally {
-        release()
+        releaseShare()
+        releaseGate()
       }
     },
     async (c) => {
       const key = idempotencyKeyOf(c)
-      const part = await readFilePart(c, maxBody)
+      const part = await readFilePart(c, maxBody, container.env.UPLOAD_BODY_TIMEOUT_MS)
       const file = {
         fileName: part.name,
         declaredMediaType: part.type === '' ? null : part.type,

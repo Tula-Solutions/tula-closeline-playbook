@@ -137,6 +137,12 @@ const schema = z
      * this times `MAX_UPLOAD_BYTES` is the upload memory an instance may need.
      */
     MAX_CONCURRENT_UPLOADS: integer(1, MAX_CONCURRENT_UPLOADS_LIMIT).default(4),
+    /**
+     * The longest an upload's body may take to arrive and be parsed, in milliseconds. A slow sender
+     * holds one of `MAX_CONCURRENT_UPLOADS` places until it finishes, so a body not complete by
+     * then is cut off with `server.timeout` (504) and the place is given back.
+     */
+    UPLOAD_BODY_TIMEOUT_MS: integer(100, 600_000).default(60_000),
 
     /**
      * The secrets the callers of the internal routes may present, comma separated (ADR 0013): more

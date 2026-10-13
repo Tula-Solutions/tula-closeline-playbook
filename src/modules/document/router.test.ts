@@ -8,10 +8,11 @@ import {
 import { DOCUMENT_INSERT, IDEMPOTENCY_BEGIN, QUOTA_LOCK } from 'tula-closeline-db'
 import { StorageError } from 'tula-closeline-kit'
 import { postgresError } from '~/adapters/memory/playbook-database'
-import { newOrganizationId } from '~/testing'
+import { newOrganizationId, type TestIdentity } from '~/testing'
 import {
   createDocumentHarness,
   DOCUMENTS,
+  type DocumentHarness,
   errorCode,
   newKey,
   pdfBytes,
@@ -22,6 +23,41 @@ import { zipFixture } from './zip-fixture'
 
 async function documentOf(response: Response): Promise<PlaybookDocument> {
   return documentSchema.parse(await response.json())
+}
+
+/** An upload whose body sends its first chunk and then waits; `abandon` ends it with an error. */
+async function stalledUpload(h: DocumentHarness, as: TestIdentity) {
+  const auth = await h.bearer(as)
+  const boundary = 'stallboundary'
+  const head = `--${boundary}\r\ncontent-disposition: form-data; name="file"; filename="a.pdf"\r\ncontent-type: application/pdf\r\n\r\n%PDF-1.7 partial`
+  const pulled = Promise.withResolvers<void>()
+  let open: ReadableStreamDefaultController<Uint8Array> | undefined
+  let sent = false
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      open = controller
+    },
+    pull(controller) {
+      if (!sent) {
+        sent = true
+        controller.enqueue(new TextEncoder().encode(head))
+        pulled.resolve()
+      }
+    },
+  })
+  const response = Promise.resolve(
+    h.app.request(DOCUMENTS, {
+      method: 'POST',
+      body,
+      duplex: 'half',
+      headers: { ...auth, 'content-type': `multipart/form-data; boundary=${boundary}` },
+    } as RequestInit)
+  )
+  await pulled.promise
+  return {
+    response,
+    abandon: () => open?.error(new Error('the sender went away')),
+  }
 }
 
 describe('who may call', () => {
@@ -658,6 +694,43 @@ describe('upload: the concurrent upload bound', () => {
     expect((await first).status).toBe(201)
     put.mockRestore()
     expect((await h.upload('c.pdf', pdfBytes('c'))).status).toBe(201)
+  })
+
+  test('a body that stalls after its first chunk is cut off with server.timeout (504) and gives its place back', async () => {
+    const h = await createDocumentHarness({
+      env: { MAX_CONCURRENT_UPLOADS: '1', UPLOAD_BODY_TIMEOUT_MS: '200' },
+    })
+    const stalled = await stalledUpload(h, h.people.owner)
+    const startedAt = performance.now()
+
+    const response = await stalled.response
+
+    expect(response.status).toBe(504)
+    expect(await errorCode(response)).toBe('server.timeout')
+    expect(performance.now() - startedAt).toBeLessThan(2000)
+    expect(await h.objectKeys()).toEqual([])
+    expect(h.deps.database.transactions).toEqual([])
+    expect((await h.upload('a.pdf', pdfBytes('a'))).status).toBe(201)
+  })
+
+  test('one Organization at its share is refused with rate.limited (429) while another is accepted', async () => {
+    const h = await createDocumentHarness({
+      env: { MAX_CONCURRENT_UPLOADS: '2', UPLOAD_BODY_TIMEOUT_MS: '60000' },
+    })
+    const stalled = await stalledUpload(h, h.people.owner)
+
+    const same = await h.upload('b.pdf', pdfBytes('b'), { as: h.people.admin })
+    const other = await h.upload('c.pdf', pdfBytes('c'), {
+      as: personIn(newOrganizationId(), 'owner'),
+    })
+
+    expect(same.status).toBe(429)
+    expect(await errorCode(same)).toBe('rate.limited')
+    expect(same.headers.get('retry-after')).toBe('1')
+    expect(other.status).toBe(201)
+    stalled.abandon()
+    await stalled.response
+    expect((await h.upload('d.pdf', pdfBytes('d'), { as: h.people.admin })).status).toBe(201)
   })
 
   test('a failed upload gives its place back', async () => {

@@ -32,6 +32,7 @@ describe('local defaults', () => {
       MAX_UPLOAD_BYTES: MAX_DOCUMENT_BYTES,
       MAX_PAGES_PER_DOCUMENT: MAX_DOCUMENT_PAGES,
       MAX_CONCURRENT_UPLOADS: 4,
+      UPLOAD_BODY_TIMEOUT_MS: 60_000,
       CONSUMER_CONCURRENCY: 4,
       CONSUMER_STOP_DEADLINE_MS: 5_000,
     })
@@ -138,6 +139,8 @@ describe('upload limits', () => {
       { MAX_CONCURRENT_UPLOADS: String(MAX_CONCURRENT_UPLOADS_LIMIT + 1) },
     ],
     ['a zero file size', { MAX_UPLOAD_BYTES: '0' }],
+    ['an upload body timeout under 100 ms', { UPLOAD_BODY_TIMEOUT_MS: '99' }],
+    ['an upload body timeout over ten minutes', { UPLOAD_BODY_TIMEOUT_MS: '600001' }],
   ])('%s is refused at boot', (_name, source) => {
     expect(() => loadEnv({ ENVIRONMENT: 'local', ...source })).toThrow()
   })
@@ -201,6 +204,7 @@ describe('numbers are whole numbers written in digits', () => {
     'MAX_UPLOAD_BYTES',
     'MAX_PAGES_PER_DOCUMENT',
     'MAX_CONCURRENT_UPLOADS',
+    'UPLOAD_BODY_TIMEOUT_MS',
     'CONSUMER_CONCURRENCY',
     'CONSUMER_STOP_DEADLINE_MS',
   ]

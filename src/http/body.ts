@@ -19,20 +19,39 @@ export function declaredLengthLimit(maxSize: number): MiddlewareHandler<AppEnv> 
   }
 }
 
-/** A request whose body is cut off once it has delivered more than the limit, and whether it was. */
-export type CappedRequest = { request: Request; exceeded: () => boolean }
+/** A request whose body is cut off once over its limit or its deadline, and which of the two it was. */
+export type CappedRequest = {
+  request: Request
+  exceeded: () => boolean
+  /** Whether the body was cut off because `signal` aborted before it was complete. */
+  timedOut: () => boolean
+}
 
 /**
  * The same request with a body that errors as soon as more than `maxBytes` have been read from
- * it, so a body with no declared length (or a lying one) is never read past the limit.
+ * it, so a body with no declared length (or a lying one) is never read past the limit. When
+ * `signal` aborts first, the body errors too and the source is cancelled, so a sender that stalls
+ * cannot hold the reader past the deadline.
  */
-export function capBody(request: Request, maxBytes: number): CappedRequest {
+export function capBody(request: Request, maxBytes: number, signal?: AbortSignal): CappedRequest {
   let size = 0
   let over = false
+  let late = false
   if (request.body === null) {
-    return { request, exceeded: () => false }
+    return { request, exceeded: () => false, timedOut: () => false }
   }
   const counter = new TransformStream<Uint8Array, Uint8Array>({
+    start(controller) {
+      const abort = () => {
+        late = true
+        controller.error(new Error('The request body did not arrive in time'))
+      }
+      if (signal?.aborted) {
+        abort()
+      } else {
+        signal?.addEventListener('abort', abort, { once: true })
+      }
+    },
     transform(chunk, controller) {
       size += chunk.byteLength
       if (size > maxBytes) {
@@ -44,5 +63,5 @@ export function capBody(request: Request, maxBytes: number): CappedRequest {
     },
   })
   const capped = new Request(request, { body: request.body.pipeThrough(counter), duplex: 'half' })
-  return { request: capped, exceeded: () => over }
+  return { request: capped, exceeded: () => over, timedOut: () => late }
 }
