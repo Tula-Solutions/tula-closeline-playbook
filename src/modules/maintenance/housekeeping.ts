@@ -211,9 +211,6 @@ export async function visitOrphanSweep(
     return { status: 'done', deleted, more: done.rows[0]?.more === true }
   } catch (error) {
     if (isLockTimeout(error)) {
-      deps.logger.debug('an orphan sweep could not be recorded yet; it will be tried again', {
-        organizationId,
-      })
       return { status: 'busy', deleted }
     }
     throw error

@@ -660,3 +660,59 @@ describe('the orphan age is the database rule (24 hours), not a setting', () => 
     expect(await h.deps.objects.head(h.organizationId, old)).toBeUndefined()
   })
 })
+
+describe('what the housekeeping sweep says about an orphan visit it could not finish', () => {
+  test('a listing longer than the page bound is logged at warn with the Organization and the bound, and never marked done', async () => {
+    const h = createPipelineHarness({ env: { ORPHAN_PAGE_SIZE: '2', ORPHAN_MAX_PAGES: '1' } })
+    await h.upload('a.txt', paragraphs(2), { key: 'first' })
+    for (let i = 0; i < 6; i++) {
+      await h.deps.objects.put(
+        h.organizationId,
+        `documents/doc_${String(i).repeat(32)}/original.pdf`,
+        new Uint8Array([1])
+      )
+    }
+    await h.deps.time.advance(26 * 60 * 60 * 1000)
+    const seen: string[] = []
+    const scope = h.deps.scope
+    h.deps.scope = (organizationId, fn) =>
+      scope(organizationId, (run) =>
+        fn(async (text, params) => {
+          seen.push(text)
+          return run(text, params)
+        })
+      )
+
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    expect(seen).not.toContain(ORPHAN_SWEEP_DONE)
+    const lines = h.deps.logLines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter(
+        (line) => line.msg === 'an orphan sweep did not cover the listing; it will start again'
+      )
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({
+      level: 40,
+      organizationId: h.organizationId,
+      maxPages: 1,
+    })
+  })
+
+  test('a busy completion is logged at info', async () => {
+    const h = createPipelineHarness()
+    await h.upload('a.txt', paragraphs(2), { key: 'first' })
+    await h.deps.time.advance(26 * 60 * 60 * 1000)
+    h.deps.database.failAlways(ORPHAN_SWEEP_DONE, postgresError('55P03'))
+
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    const lines = h.deps.logLines
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter(
+        (line) => line.msg === 'an orphan sweep could not be recorded yet; it will be tried again'
+      )
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ level: 30, organizationId: h.organizationId })
+  })
+})

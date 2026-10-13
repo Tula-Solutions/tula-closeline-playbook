@@ -68,7 +68,20 @@ export function createSweeps(deps: PipelineDeps, processed: ProcessedStore): Swe
     // 25 hours after it, and `ORPHAN_SWEEP_DONE` records the sweep.
     await attempt('orphan_sweep', () =>
       forEachOrganization(deps, 'orphan_sweep', signal, async (organizationId) => {
-        await visitOrphanSweep(deps, organizationId, signal)
+        const visit = await visitOrphanSweep(deps, organizationId, signal)
+        if (visit.status === 'incomplete' && !signal.aborted) {
+          // Listed again from the top next time, so an Organization with more objects than the
+          // bound covers is starved (a persisted cursor would fix it: it needs its own ticket).
+          deps.logger.warn('an orphan sweep did not cover the listing; it will start again', {
+            organizationId,
+            maxPages: env.ORPHAN_MAX_PAGES,
+            pageSize: env.ORPHAN_PAGE_SIZE,
+          })
+        } else if (visit.status === 'busy') {
+          deps.logger.info('an orphan sweep could not be recorded yet; it will be tried again', {
+            organizationId,
+          })
+        }
       })
     )
   }
