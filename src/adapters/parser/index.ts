@@ -22,6 +22,18 @@ export class ParserOverloaded extends Error {
   }
 }
 
+/**
+ * Thrown when handing the document to the worker failed (the transfer, not the file): worth
+ * another attempt, so it is not a {@link ParseError}.
+ */
+export class ParserTransferFailed extends Error {
+  /** Creates the error; the message never holds content. */
+  constructor() {
+    super('the document could not be handed to the parsing worker')
+    this.name = 'ParserTransferFailed'
+  }
+}
+
 /** Settings of {@link createDocumentParser}. */
 export type DocumentParserOptions = {
   /** The page and text limits handed to every parse. */
@@ -165,7 +177,8 @@ function runInWorker(
     try {
       worker.postMessage(request, [bytes.buffer])
     } catch {
-      fail('processing_failed')
+      // The transfer failed, not the file: let the job try again.
+      finish(() => reject(new ParserTransferFailed()))
     }
   })
 }

@@ -3,7 +3,12 @@ import { loadEnv } from '~/env'
 import { ParseError } from '~/ports/parser'
 import { parserBehaviour } from '~/ports/parser.behaviour'
 import { DOCX_MEDIA_TYPE, PPTX_MEDIA_TYPE } from './extract'
-import { createDocumentParser, createDocumentParserFor, ParserOverloaded } from './index'
+import {
+  createDocumentParser,
+  createDocumentParserFor,
+  ParserOverloaded,
+  ParserTransferFailed,
+} from './index'
 import { buildDocx, buildPdf, buildPptx } from './test-support'
 
 const limits = { maxPages: 300, maxTextChars: 5_000_000 }
@@ -149,15 +154,21 @@ describe('a parser that hangs, crashes or runs away fails the document, never th
     expect(error.reason).toBe('processing_failed')
   })
 
-  test('a postMessage that throws ends the parse at once as processing_failed', async () => {
+  test('a postMessage that throws ends the parse at once with a retryable error, not a verdict on the file', async () => {
     const post = spyOn(Worker.prototype, 'postMessage').mockImplementation(() => {
       throw new Error('cannot clone')
     })
     try {
       const started = performance.now()
-      const error = await failureOf(hostile().parse(misbehave('ok'), { signal: never }))
+      const error = await hostile()
+        .parse(misbehave('ok'), { signal: never })
+        .then(
+          () => undefined,
+          (thrown: unknown) => thrown
+        )
 
-      expect(error.reason).toBe('processing_failed')
+      expect(error).toBeInstanceOf(ParserTransferFailed)
+      expect(error).not.toBeInstanceOf(ParseError)
       expect(performance.now() - started).toBeLessThan(1_000)
     } finally {
       post.mockRestore()
