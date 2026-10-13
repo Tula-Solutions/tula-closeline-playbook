@@ -162,7 +162,7 @@ Each has a benchmark in `bench/` with a budget; a change to one states its compl
   statement per step, and the removed-Organization guard one more indexed read per consumed
   message (`ORGANIZATION_REMOVAL_STATUS`); a second bench times it over the database double.
 - **Chunking** (`chunkPages`): O(total characters) time, O(input + output) memory, bounded by
-  `MAX_CHUNKS_PER_DOCUMENT`: `bench/chunker.bench.test.ts`. **The claim loop** is O(`INGESTION_CONCURRENCY`)
+  `MAX_CHUNKS_PER_DOCUMENT`: `bench/chunker.bench.test.ts` (the ordinary budget has runner headroom; the hostile-input cases guard against super-linear time). **The claim loop** is O(`INGESTION_CONCURRENCY`)
   per Organization per pass plus O(Organizations with work) discovery, in pages of `DISCOVERY_BATCH`.
 - **The upload** (`upload` in `src/modules/document/service.ts`): O(file size) for the file check,
   the content check and the SHA-256, with no copy of the file, plus one transaction of O(1) indexed

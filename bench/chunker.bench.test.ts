@@ -5,8 +5,11 @@ import { measure, summary } from './measure'
 // The chunker on a 300-page document (about 3 000 paragraphs, 1.2 MB of text). Complexity is
 // O(total characters) in time and O(input + output) in memory; the scan never looks back, and a
 // sentence search is bounded by the chunk size. Budget: about 5x the best batch, rounded up.
-// Typical best batch: 25 ms for 20 documents (about 1.3 ms each). Budget: 5x, rounded up.
-const BUDGET_MS = 125
+// Typical best batch: 76 ms for 20 documents (about 3.8 ms each) locally, identical alone and with
+// the other benches and across commits. Shared CI runners have measured 75 to 157 ms for the same
+// code, so this budget (250 ms) carries runner headroom: it is a regression guard for the ordinary
+// document, and the hostile-input benchmarks below are what guard against super-linear behaviour.
+const BUDGET_MS = 250
 const pages = Array.from({ length: 300 }, (_, i) => ({
   number: i + 1,
   text: Array.from(

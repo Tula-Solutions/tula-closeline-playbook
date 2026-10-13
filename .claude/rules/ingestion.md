@@ -47,3 +47,5 @@ paths:
 - Lowering a limit (`CHUNK_MAX_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`) can
   fail documents in flight: a stored artifact the new schema refuses is cut again from the pages
   when no chunk of that epoch is embedded yet, and otherwise ends the document `processing_failed`.
+- Until db v0.13.0's `DOCUMENT_LIST_PENDING_CLEANUP` replaces the scan, a named Organization costs up
+  to 500 cleanups per instance per tick.
