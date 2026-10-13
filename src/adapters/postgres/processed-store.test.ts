@@ -397,3 +397,29 @@ describe('purge bounds and the global scope', () => {
     expect(calls).toHaveLength(0)
   })
 })
+
+describe('purge is a retention purge', () => {
+  test.each([
+    ['now', () => new Date()],
+    ['fourteen days ago', () => new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)],
+  ])('a cutoff of %s is refused, as discovery cannot name younger records', async (_name, make) => {
+    const discover: Discover = async () => []
+    const store = createPostgresProcessedStore({ scope: scripted([]).scope, discover })
+
+    await expect(store.purge(make(), 10)).rejects.toThrow(RangeError)
+  })
+
+  test('a cutoff of exactly the retention age is allowed', async () => {
+    const discover: Discover = async () => []
+    const now = new Date('2026-06-01T00:00:00Z')
+    const store = createPostgresProcessedStore({
+      scope: scripted([]).scope,
+      discover,
+      now: () => now,
+    })
+
+    await expect(store.purge(new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000), 10)).resolves.toBe(
+      0
+    )
+  })
+})

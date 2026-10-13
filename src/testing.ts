@@ -122,7 +122,11 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
   const database = createMemoryPlaybookDatabase({ clock: time.clock })
   const scope = overrides.scope ?? database.scope
   const processed = withoutRemovedOrganizations(
-    createPostgresProcessedStore({ scope, discover: database.discover }),
+    createPostgresProcessedStore({
+      scope,
+      discover: database.discover,
+      now: () => time.clock.now(),
+    }),
     (organizationId) => organizationIsRemoved(scope, organizationId)
   )
 

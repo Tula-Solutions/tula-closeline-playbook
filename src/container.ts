@@ -241,7 +241,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     })
   // A message of a removed Organization is acknowledged without a record (see the wrapper).
   const processed = withoutRemovedOrganizations(
-    createPostgresProcessedStore({ scope, discover }),
+    createPostgresProcessedStore({ scope, discover, now: () => systemClock.now() }),
     (organizationId) => organizationIsRemoved(scope, organizationId)
   )
   const vectors = createMemoryVectorStore({ dimensions: embedder.dimensions })

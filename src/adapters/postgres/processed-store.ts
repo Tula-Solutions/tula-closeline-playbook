@@ -4,6 +4,7 @@ import {
   CONSUMED_COMPLETE,
   CONSUMED_LOOKUP,
   CONSUMED_PURGE,
+  CONSUMED_PURGE_AGE_MS,
   CONSUMED_RELEASE,
   CONSUMED_RENEW,
   type Database,
@@ -104,6 +105,14 @@ export interface PostgresProcessedStore extends ProcessedStore {
    * Returns how many went. This is the building block of the periodic purge.
    */
   purgeScope(organizationId: string, before: Date, limit: number): Promise<number>
+  /**
+   * A retention purge across every Organization and the global scope, found through work
+   * discovery: `done` records completed before `before` and lapsed claims, at most `limit`. The
+   * database names an Organization only once its records are `CONSUMED_PURGE_AGE_MS` old, so a
+   * `before` later than now minus that throws `RangeError` instead of quietly purging less than
+   * the contract promises. The kit's `purge(before)` for an arbitrary cutoff is `purgeScope`.
+   */
+  purge(before: Date, limit: number): Promise<number>
 }
 
 /** Options of {@link createPostgresProcessedStore}. */
@@ -115,6 +124,8 @@ export type PostgresProcessedStoreOptions = {
   maxClaimAttempts?: number
   /** Work discovery (unscoped, alone in its transaction), so `purge` can find the Organizations; without it `purge` throws. */
   discover?: Discover
+  /** The current time, for the `purge` cutoff check; defaults to the system clock. */
+  now?: () => Date
 }
 
 /** A claim token is a uuid in the table, so only a uuid can be one this store issued. */
@@ -285,6 +296,14 @@ export function createPostgresProcessedStore(
       }
       if (!Number.isInteger(limit) || limit < 1) {
         throw new RangeError('purge limit must be a whole number from 1')
+      }
+      // Discovery names Organizations only once a record is past the database's own retention
+      // (CONSUMED_PURGE_AGE_MS), so a later cutoff would silently under-purge. Use purgeScope for it.
+      const latest = (options.now?.() ?? new Date()).getTime() - CONSUMED_PURGE_AGE_MS
+      if (!(before.getTime() <= latest)) {
+        throw new RangeError(
+          'purge is a retention purge: the cutoff must be at least CONSUMED_PURGE_AGE_MS in the past; use purgeScope for a known Organization'
+        )
       }
       // The Organizations come from the database's own list of who has old records, the global
       // scope included, so none is skipped; each is purged inside its own scope.
