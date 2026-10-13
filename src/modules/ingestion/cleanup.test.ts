@@ -130,6 +130,28 @@ describe('the vector cleanup of a deleted document', () => {
     expect(h.deps.database.discoveries.map((d) => d.kind)).toContain('cleanup_pending')
   })
 
+  test('the sweep does not run the cleanup again for deletions already recorded as cleaned', async () => {
+    const h = createPipelineHarness()
+    const ids: string[] = []
+    for (let i = 0; i < 3; i++) {
+      ids.push(await h.upload(`n${i}.txt`, paragraphs(2, `d${i}`)))
+    }
+    await h.pass()
+    for (const id of ids) {
+      await Documents.remove(h.deps, h.context, id)
+    }
+    for (let round = 0; round < 3; round++) {
+      await h.deps.consumer.pollOnce()
+    }
+    expect(ids.map((id) => h.document(id)?.vectors_removed_seq)).toEqual([1, 1, 1])
+    await h.deps.time.advance(10 * 60 * 1000)
+    const del = spyOn(h.deps.vectors, 'deleteByFilter')
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(del).not.toHaveBeenCalled()
+  })
+
   test("one Organization's cleanup never touches another's vectors, even for the same document id", async () => {
     const h = createPipelineHarness()
     const id = await h.upload('notes.txt', paragraphs(2))

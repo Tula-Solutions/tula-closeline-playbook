@@ -225,7 +225,6 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     // nothing real. Remove a name from here as its real adapter lands.
     logger.warn('ports still on fakes', {
       ports: PIPELINE_FAKE_PORTS,
-      workers: env.WORKERS_ENABLED,
     })
   }
 

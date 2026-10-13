@@ -7,19 +7,35 @@ import {
   type PipelineDeps,
 } from '~/modules/ingestion/runtime'
 
+/** A timestamp column as a date, or `undefined` when the row has none. */
+function pgTime(value: unknown): Date | undefined {
+  return value instanceof Date
+    ? value
+    : typeof value === 'string'
+      ? parsePgTimestamp(value)
+      : undefined
+}
+
 /** The listing pages of deleted documents one Organization's cleanup pass reads. */
 export const CLEANUP_SCAN_PAGES = 5
 
 /** The documents on a listing page: the most the list statement returns. */
 const LIST_PAGE = 100
 
+/** How far after `deleted_at` a document's `updated_at` may be and still read as untouched since the delete (microseconds of one statement; a second is generous). */
+const UNTOUCHED_WITHIN_MS = 1_000
+
 /**
  * Runs the vector cleanup of the Organization's deleted documents whose message may have been lost
- * (the `cleanup_pending` sweep). The database has no statement that lists only the deletions whose
- * cleanup is not recorded, so this reads the deleted documents (newest first, at most
- * {@link CLEANUP_SCAN_PAGES} pages of 100) and runs the same cleanup as the message handler on
- * each one that was deleted more than five minutes ago, which is a no-op for the deletions
- * already recorded as cleaned. Returns how many cleanups it completed.
+ * (the `cleanup_pending` sweep, called only for an Organization that discovery named for that
+ * kind). The database has no statement that lists only the pending cleanups, so this reads the
+ * deleted documents (newest first, at most {@link CLEANUP_SCAN_PAGES} pages of 100) and cleans
+ * those deleted more than five minutes ago that still look pending. A recorded cleanup bumps
+ * `updated_at`, so a document whose `updated_at` is later than its `deleted_at` is skipped as
+ * already cleaned; the cleanup itself is idempotent, so a wrong guess costs one redundant call
+ * and the purge runs the cleanup again as the backstop. The scan stops after the first page on
+ * which nothing needed cleaning. A listing of pending cleanups in the db library replaces this.
+ * Returns how many cleanups it completed.
  */
 export async function cleanupPending(
   deps: PipelineDeps,
@@ -35,19 +51,23 @@ export async function cleanupPending(
         run(DOCUMENT_LIST_FILTERED, [organizationId, cursor.t, cursor.i, LIST_PAGE, 'deleted'])
       )
     ).rows
+    let needed = 0
     for (const row of rows) {
       if (signal.aborted) {
         return cleaned
       }
-      const deletedAt =
-        row.deleted_at instanceof Date
-          ? row.deleted_at
-          : typeof row.deleted_at === 'string'
-            ? parsePgTimestamp(row.deleted_at)
-            : undefined
+      const deletedAt = pgTime(row.deleted_at)
       if (deletedAt === undefined || deletedAt.getTime() > oldEnough) {
         continue
       }
+      const updatedAt = pgTime(row.updated_at)
+      if (
+        updatedAt !== undefined &&
+        updatedAt.getTime() - deletedAt.getTime() > UNTOUCHED_WITHIN_MS
+      ) {
+        continue
+      }
+      needed++
       const result = await cleanupDeletion(
         deps,
         organizationId,
@@ -58,6 +78,9 @@ export async function cleanupPending(
       if (result === 'done') {
         cleaned++
       }
+    }
+    if (needed === 0) {
+      break
     }
     const last = rows.at(-1)
     if (rows.length < LIST_PAGE || last === undefined) {
