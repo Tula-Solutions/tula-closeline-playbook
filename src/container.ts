@@ -26,7 +26,11 @@ import {
 import { createMemoryEmbedder } from '~/adapters/memory/embedder'
 import { createMemoryOcrReader } from '~/adapters/memory/ocr'
 import { createMemoryParser } from '~/adapters/memory/parser'
-import { createPostgresProcessedStore, scopeOver } from '~/adapters/postgres/processed-store'
+import {
+  createPostgresProcessedStore,
+  type InScope,
+  scopeOver,
+} from '~/adapters/postgres/processed-store'
 import { createHandlers, createPlaybookConsumer } from '~/consumer'
 import { describeError } from '~/describe-error'
 import { type Env, loadEnv } from '~/env'
@@ -68,6 +72,12 @@ export type Container = {
    * database: a bare connection is never handed out.
    */
   withOrganization: <T>(organizationId: string, fn: (tx: Transaction) => Promise<T>) => Promise<T>
+  /**
+   * `withOrganization` for the db library's parameterised statements: opens the same
+   * Organization-scoped transaction and hands `fn` a function that runs one statement text with
+   * its values. Every module reaches the database through this or `withOrganization`.
+   */
+  scope: InScope
   /** The ingestion queue: SQS when `QUEUE_URL` is set, otherwise in memory (local and tests only). */
   queue: Queue<PlaybookEnvelope>
   /** Uploaded files: S3 when `STORAGE_BUCKET` is set, otherwise in memory (local and tests only). */
@@ -196,7 +206,8 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
   const queue = createQueue(env)
   const objects = createObjects(env, logger)
   const embedder = createMemoryEmbedder()
-  const processed = createPostgresProcessedStore({ scope: scopeOver(database.db) })
+  const scope = scopeOver(database.db)
+  const processed = createPostgresProcessedStore({ scope })
 
   const consumer = createPlaybookConsumer({
     queue,
@@ -218,6 +229,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
       clock: systemClock,
     }),
     withOrganization: (organizationId, fn) => withOrganization(database.db, organizationId, fn),
+    scope,
     queue,
     objects,
     vectors: createMemoryVectorStore({ dimensions: embedder.dimensions }),

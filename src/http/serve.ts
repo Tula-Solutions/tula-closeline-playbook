@@ -1,5 +1,6 @@
 import { type Container, reportSafely } from '~/container'
 import { internalErrorResponse } from '~/http/errors'
+import { largestBodyLimit } from '~/http/limits'
 import { resolveRequestId } from '~/http/request-id'
 
 /** The part of the app that the server needs. */
@@ -11,6 +12,11 @@ type Fetcher = { fetch: (request: Request) => Response | Promise<Response> }
  * one. The app's check reads the `content-length` header, so it is advisory; the bytes are held
  * to the limit by the stream cut-off in the body-limit middleware (a body with no length) and by
  * Bun, which refuses anything over its own limit and never reads past a declared length.
+ *
+ *
+ * Bun's limit is one number for the whole process, so it is the largest limit of any route (the
+ * upload's); the app's own limits then hold each other route to `MAX_REQUEST_BODY_BYTES`, by the
+ * `content-length` header and by the stream cut-off.
  *
  * Accepted residual: a body larger than the app limit plus this margin never reaches the app. Bun
  * answers it with its own bare 413, with no body and no request id, whether the body is chunked
@@ -28,7 +34,7 @@ export function serveOptions(container: Container, app: Fetcher) {
   return {
     port: container.env.PORT,
     fetch: app.fetch,
-    maxRequestBodySize: container.env.MAX_REQUEST_BODY_BYTES + BODY_LIMIT_MARGIN_BYTES,
+    maxRequestBodySize: largestBodyLimit(container.env) + BODY_LIMIT_MARGIN_BYTES,
     development: container.env.ENVIRONMENT === 'local',
     error: (error: unknown): Response => {
       const requestId = resolveRequestId(undefined)

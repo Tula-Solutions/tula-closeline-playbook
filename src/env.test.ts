@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { MAX_DOCUMENT_BYTES, MAX_DOCUMENT_PAGES } from 'tula-closeline-contract'
-import { loadEnv, MAX_CONCURRENT_UPLOADS_LIMIT } from './env'
+import { LOCAL_INTERNAL_API_TOKEN, loadEnv, MAX_CONCURRENT_UPLOADS_LIMIT } from './env'
 
 /** Every key that has no default outside `local`, set to a valid value. */
 const DEPLOYED: Record<string, string> = {
@@ -13,6 +13,7 @@ const DEPLOYED: Record<string, string> = {
   AWS_REGION: 'eu-west-1',
   QUEUE_URL: 'https://sqs.eu-west-1.amazonaws.com/123456789012/playbook',
   STORAGE_BUCKET: 'closeline-playbook-eu',
+  INTERNAL_API_TOKENS: 'a-deployed-secret-of-at-least-32-characters',
 }
 
 describe('local defaults', () => {
@@ -230,5 +231,61 @@ describe('numbers are whole numbers written in digits', () => {
     expect(() => loadEnv({ ENVIRONMENT: 'local', MAX_UPLOAD_BYTES: '9'.repeat(30) })).toThrow(
       /MAX_UPLOAD_BYTES/
     )
+  })
+})
+
+describe('internal API secrets', () => {
+  const SECRET_A = 'a-deployed-secret-of-at-least-32-characters'
+  const SECRET_B = 'the-next-secret-of-at-least-32-characters-x'
+
+  test('a local process falls back to the public local secret', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).INTERNAL_API_TOKENS).toEqual([
+      LOCAL_INTERNAL_API_TOKEN,
+    ])
+  })
+
+  test('the public local secret is refused outside local, and the message does not repeat it', () => {
+    const attempt = () =>
+      loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod', INTERNAL_API_TOKENS: LOCAL_INTERNAL_API_TOKEN })
+
+    expect(attempt).toThrow(/INTERNAL_API_TOKENS/)
+    try {
+      attempt()
+    } catch (error) {
+      expect(String(error)).not.toContain(LOCAL_INTERNAL_API_TOKEN)
+    }
+  })
+
+  test('two secrets are a rotation, in order', () => {
+    const env = loadEnv({
+      ...DEPLOYED,
+      ENVIRONMENT: 'prod',
+      INTERNAL_API_TOKENS: `${SECRET_A},${SECRET_B}`,
+    })
+
+    expect(env.INTERNAL_API_TOKENS).toEqual([SECRET_A, SECRET_B])
+  })
+
+  test.each([
+    ['too short', 'short'],
+    ['an empty entry', `${SECRET_A},`],
+    ['a space', `${SECRET_A} x`],
+    ['more than five', Array.from({ length: 6 }, (_, i) => `${SECRET_A}-${i}`).join(',')],
+  ])('a list with %s is refused', (_label, value) => {
+    expect(() => loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod', INTERNAL_API_TOKENS: value })).toThrow(
+      /INTERNAL_API_TOKENS/
+    )
+  })
+})
+
+describe('quotas', () => {
+  test('default to the contract numbers and may be lowered by configuration', () => {
+    const env = loadEnv({ ENVIRONMENT: 'local' })
+    expect(env.MAX_DOCUMENTS_PER_ORGANIZATION).toBe(500)
+    expect(env.MAX_BYTES_PER_ORGANIZATION).toBe(2 * 1024 * 1024 * 1024)
+    expect(
+      loadEnv({ ENVIRONMENT: 'local', MAX_DOCUMENTS_PER_ORGANIZATION: '2' })
+        .MAX_DOCUMENTS_PER_ORGANIZATION
+    ).toBe(2)
   })
 })

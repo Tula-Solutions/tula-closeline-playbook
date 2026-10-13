@@ -1,4 +1,10 @@
-import { MAX_DOCUMENT_BYTES, MAX_DOCUMENT_PAGES, regionSchema } from 'tula-closeline-contract'
+import {
+  DEFAULT_MAX_DOCUMENT_BYTES_TOTAL,
+  DEFAULT_MAX_DOCUMENTS,
+  MAX_DOCUMENT_BYTES,
+  MAX_DOCUMENT_PAGES,
+  regionSchema,
+} from 'tula-closeline-contract'
 import { environmentSchema, requireSentryDsn, sentryDsnSchema } from 'tula-closeline-kit'
 import { z } from 'zod'
 
@@ -21,6 +27,24 @@ const LOCAL_AWS_REGION = 'us-east-1'
 /** The most uploads one instance handles at once, whatever is configured: each is held in memory. */
 export const MAX_CONCURRENT_UPLOADS_LIMIT = 16
 
+/** The shortest internal API secret accepted, in characters. */
+export const MIN_INTERNAL_TOKEN_LENGTH = 32
+
+/** The most internal API secrets accepted at once; two is a rotation, more is a mistake. */
+const MAX_INTERNAL_TOKENS = 5
+
+/** The longest one internal API secret may be, so a pasted blob cannot be mistaken for one. */
+const MAX_INTERNAL_TOKEN_LENGTH = 512
+
+/** A secret is printable ASCII with no space, so it travels in a bearer header unchanged. */
+const PRINTABLE_ASCII = /^[!-~]+$/
+
+/**
+ * The internal secret a local run uses when none is set (ADR 0013). It is public: it is refused
+ * in every environment but `local`, so a deploy that forgot to set a secret fails at boot.
+ */
+export const LOCAL_INTERNAL_API_TOKEN = 'local-playbook-internal-secret-not-for-deploys'
+
 /** The keys that must be set in every environment but `local`, where they have defaults. */
 const REQUIRED_OUTSIDE_LOCAL = [
   'REGION',
@@ -31,6 +55,7 @@ const REQUIRED_OUTSIDE_LOCAL = [
   'AWS_REGION',
   'QUEUE_URL',
   'STORAGE_BUCKET',
+  'INTERNAL_API_TOKENS',
 ] as const
 
 /**
@@ -58,7 +83,10 @@ const schema = z
     SHUTDOWN_TIMEOUT_MS: integer(1, 120_000).default(10_000),
     /** How long `/readyz` reports 503 before the server stops accepting, so the balancer moves on. */
     SHUTDOWN_GRACE_MS: integer(0, 60_000).default(5_000),
-    /** The largest request body accepted, in bytes; anything bigger is a 413. */
+    /**
+     * The largest request body accepted by any route but the upload, in bytes; anything bigger is
+     * a 413. The upload route has its own, larger limit (`MAX_UPLOAD_BYTES` plus multipart overhead).
+     */
     MAX_REQUEST_BODY_BYTES: integer(1, 104_857_600).default(1_048_576),
 
     /** The Region this deployment serves; every Organization lives in the Region of its deployment. */
@@ -96,6 +124,12 @@ const schema = z
 
     /** The largest file accepted, in bytes. May lower the contract's limit (ADR 0016), never raise it. */
     MAX_UPLOAD_BYTES: integer(1, MAX_DOCUMENT_BYTES).optional(),
+    /** Documents an Organization may hold, soft-deleted ones included until purged (ADR 0016). */
+    MAX_DOCUMENTS_PER_ORGANIZATION: integer(1, 1_000_000).default(DEFAULT_MAX_DOCUMENTS),
+    /** Bytes an Organization may hold, soft-deleted documents included until purged (ADR 0016). */
+    MAX_BYTES_PER_ORGANIZATION: integer(1, 1_000_000_000_000).default(
+      DEFAULT_MAX_DOCUMENT_BYTES_TOTAL
+    ),
     /** The most pages a document may have. May lower the contract's limit, never raise it. */
     MAX_PAGES_PER_DOCUMENT: integer(1, MAX_DOCUMENT_PAGES).optional(),
     /**
@@ -103,6 +137,16 @@ const schema = z
      * this times `MAX_UPLOAD_BYTES` is the upload memory an instance may need.
      */
     MAX_CONCURRENT_UPLOADS: integer(1, MAX_CONCURRENT_UPLOADS_LIMIT).default(4),
+
+    /**
+     * The secrets the callers of the internal routes may present, comma separated (ADR 0013): more
+     * than one lets a secret be rotated without downtime. Each is 32 to 512 printable characters.
+     * Required outside `local`, where the public local default is refused.
+     */
+    INTERNAL_API_TOKENS: z
+      .string()
+      .max(MAX_INTERNAL_TOKENS * (MAX_INTERNAL_TOKEN_LENGTH + 1))
+      .optional(),
 
     /** The most queue messages handled at once by one instance. */
     CONSUMER_CONCURRENCY: integer(1, 100).default(4),
@@ -136,6 +180,37 @@ const schema = z
         }
       }
     }
+    if (env.INTERNAL_API_TOKENS !== undefined) {
+      const entries = env.INTERNAL_API_TOKENS.split(',')
+      // Messages name the position, never the secret.
+      if (entries.length > MAX_INTERNAL_TOKENS) {
+        context.addIssue({
+          code: 'custom',
+          path: ['INTERNAL_API_TOKENS'],
+          message: `at most ${MAX_INTERNAL_TOKENS} secrets`,
+        })
+      }
+      entries.forEach((entry, index) => {
+        if (
+          entry.length < MIN_INTERNAL_TOKEN_LENGTH ||
+          entry.length > MAX_INTERNAL_TOKEN_LENGTH ||
+          !PRINTABLE_ASCII.test(entry)
+        ) {
+          context.addIssue({
+            code: 'custom',
+            path: ['INTERNAL_API_TOKENS'],
+            message: `secret ${index + 1} must be ${MIN_INTERNAL_TOKEN_LENGTH} to ${MAX_INTERNAL_TOKEN_LENGTH} characters, with no empty entry or spaces`,
+          })
+        }
+        if (env.ENVIRONMENT !== 'local' && entry === LOCAL_INTERNAL_API_TOKEN) {
+          context.addIssue({
+            code: 'custom',
+            path: ['INTERNAL_API_TOKENS'],
+            message: `secret ${index + 1} is the public local default, which is accepted only when ENVIRONMENT is local`,
+          })
+        }
+      })
+    }
     if (env.QUEUE_ENDPOINT !== undefined && env.QUEUE_URL === undefined) {
       context.addIssue({
         code: 'custom',
@@ -161,6 +236,8 @@ const schema = z
     AWS_REGION: env.AWS_REGION ?? LOCAL_AWS_REGION,
     MAX_UPLOAD_BYTES: env.MAX_UPLOAD_BYTES ?? MAX_DOCUMENT_BYTES,
     MAX_PAGES_PER_DOCUMENT: env.MAX_PAGES_PER_DOCUMENT ?? MAX_DOCUMENT_PAGES,
+    INTERNAL_API_TOKENS: (env.INTERNAL_API_TOKENS?.split(',') ??
+      (env.ENVIRONMENT === 'local' ? [LOCAL_INTERNAL_API_TOKEN] : [])) as readonly string[],
   }))
 
 /** The validated process configuration. */

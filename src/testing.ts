@@ -27,6 +27,11 @@ import {
 import { createMemoryEmbedder, type MemoryEmbedder } from '~/adapters/memory/embedder'
 import { createMemoryOcrReader } from '~/adapters/memory/ocr'
 import { createMemoryParser } from '~/adapters/memory/parser'
+import {
+  createMemoryPlaybookDatabase,
+  type MemoryPlaybookDatabase,
+} from '~/adapters/memory/playbook-database'
+import type { InScope } from '~/adapters/postgres/processed-store'
 import { createApp } from '~/app'
 import { createPlaybookConsumer } from '~/consumer'
 import type { Container, ErrorContext, ReadinessCheck } from '~/container'
@@ -39,6 +44,9 @@ import { type PlaybookDefinition, type PlaybookEnvelope, registry } from '~/mess
 const TEST_ISSUER = 'https://auth.test'
 const TEST_AUDIENCE = 'closeline'
 
+/** The internal secret the test environment accepts; fine for any `ENVIRONMENT`. */
+export const TEST_INTERNAL_SECRET = 'test-internal-secret-of-at-least-32-characters'
+
 /** The container plus the observable side effects a test asserts on. */
 export type TestDeps = Container & {
   clock: FixedClock
@@ -46,6 +54,8 @@ export type TestDeps = Container & {
   time: VirtualTime
   queue: MemoryQueue<PlaybookDefinition>
   embedder: MemoryEmbedder
+  /** The database double behind `scope`: it runs the db library's statements in memory. */
+  database: MemoryPlaybookDatabase
   /** The kit's memory error reporter: what the consumer and the error handler would send to Sentry. */
   errors: MemoryErrorReporter
   /** Every JSON log line written, in order. */
@@ -60,6 +70,8 @@ export type TestDepsOverrides = {
   env?: Record<string, string>
   /** The access-token verifier; defaults to one that rejects every token. */
   tokenVerifier?: TokenVerifier
+  /** The Organization-scoped statement runner; defaults to the in-memory database double. */
+  scope?: InScope
   /** The queue handlers; default none, as in the service today. */
   handlers?: Handlers<PlaybookEnvelope>
   /** Messages handled at once; defaults to the environment's setting. */
@@ -96,11 +108,13 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     AWS_REGION: 'us-east-1',
     QUEUE_URL: 'https://sqs.test/000000000000/playbook',
     STORAGE_BUCKET: 'playbook-test',
+    INTERNAL_API_TOKENS: TEST_INTERNAL_SECRET,
     ...overrides.env,
   })
   const queue = createMemoryQueue({ registry, clock: time.clock, sleep: time.sleep })
   const embedder = createMemoryEmbedder({ dimensions: 64 })
   const processed = createMemoryProcessedStore({ clock: time.clock })
+  const database = createMemoryPlaybookDatabase({ clock: time.clock })
 
   return {
     env,
@@ -111,6 +125,8 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     withOrganization: () => {
       throw new Error('this test container has no database; use the integration harness')
     },
+    scope: overrides.scope ?? database.scope,
+    database,
     queue,
     objects: createMemoryObjectStore({ clock: time.clock }),
     vectors: createMemoryVectorStore({ dimensions: embedder.dimensions }),

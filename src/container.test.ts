@@ -230,6 +230,7 @@ const DEPLOYED = {
   AWS_REGION: 'eu-west-1',
   QUEUE_URL: 'https://sqs.eu-west-1.amazonaws.com/123456789012/playbook',
   STORAGE_BUCKET: 'closeline-playbook-eu',
+  INTERNAL_API_TOKENS: 'a-deployed-secret-of-at-least-32-characters',
 }
 
 const fakeWarnings = (lines: string[]) =>
