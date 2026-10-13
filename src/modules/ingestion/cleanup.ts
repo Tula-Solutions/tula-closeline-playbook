@@ -1,6 +1,6 @@
 import { DOCUMENT_CLEANUP_BEGIN, DOCUMENT_CLEANUP_DONE } from 'tula-closeline-db'
 import { inTransaction, type PipelineDeps } from './runtime'
-import { deleteVectorsUpTo } from './vectors'
+import { deleteAllVectorsOf, deleteVectorsUpTo } from './vectors'
 
 /** How a cleanup of one deletion ended. */
 export type CleanupResult =
@@ -19,14 +19,15 @@ const WAIT_STEP_MS = 2_000
  * (the database answers only while the document is deleted at exactly that sequence), refuses to
  * go on while a cancelled or running job's lease has not ended (that job cannot write vectors
  * after it), deletes the document's vectors up to the epoch the database returned, and records it.
- * Idempotent, and it does nothing for a deletion that a restore or a later delete has outdated.
+ * With `allEpochs` (a purge only) every vector of the document goes. Idempotent, and it does nothing for a deletion that a restore or a later delete has outdated.
  */
 export async function cleanupDeletion(
   deps: PipelineDeps,
   organizationId: string,
   documentId: string,
   deletionSeq: number,
-  signal: AbortSignal
+  signal: AbortSignal,
+  options: { allEpochs?: boolean } = {}
 ): Promise<CleanupResult> {
   const begin = await inTransaction(deps, organizationId, (run) =>
     run(DOCUMENT_CLEANUP_BEGIN, [organizationId, documentId, deletionSeq])
@@ -38,7 +39,12 @@ export async function cleanupDeletion(
   if (row.clear !== true) {
     return 'waiting'
   }
-  await deleteVectorsUpTo(deps, organizationId, documentId, Number(row.epoch), signal)
+  if (options.allEpochs === true) {
+    // A purge: restore is impossible, so every epoch goes, however many times it was restored.
+    await deleteAllVectorsOf(deps, organizationId, documentId, signal)
+  } else {
+    await deleteVectorsUpTo(deps, organizationId, documentId, Number(row.epoch), signal)
+  }
   const done = await inTransaction(deps, organizationId, (run) =>
     run(DOCUMENT_CLEANUP_DONE, [organizationId, documentId, deletionSeq])
   )

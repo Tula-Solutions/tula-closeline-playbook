@@ -74,6 +74,23 @@ export async function deleteVectorsUpTo(
   return calls
 }
 
+/**
+ * Deletes every vector of a document, whatever its epoch (the kit's filter matches every entry
+ * given, so `{ document_id }` alone covers all epochs). Only for a purge, after the claim that
+ * ends restores: a live cleanup must keep the vectors a restore wrote, and uses
+ * {@link deleteVectorsUpTo}.
+ */
+export async function deleteAllVectorsOf(
+  deps: PipelineDeps,
+  organizationId: string,
+  documentId: string,
+  signal: AbortSignal
+): Promise<void> {
+  await within(deps, 'vector store', deps.env.INGESTION_IO_TIMEOUT_MS, signal, () =>
+    deps.vectors.deleteByFilter(organizationId, { document_id: documentId })
+  )
+}
+
 /** Deletes the pipeline's own objects of a document for epochs up to `upToEpoch` (best effort per object). */
 export async function deleteArtifactsUpTo(
   deps: PipelineDeps,

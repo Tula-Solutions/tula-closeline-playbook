@@ -334,3 +334,32 @@ describe('what discovery counts as due (as the database does)', () => {
     expect(await names('purge_due')).toContain(h.organizationId)
   })
 })
+
+describe('a purge removes the vectors of every epoch', () => {
+  test('a document restored more than 64 times leaves nothing behind, a vector at epoch 1 included', async () => {
+    const h = createPipelineHarness()
+    const id = await h.upload('notes.txt', paragraphs(2))
+    await h.pass()
+    // An old vector from epoch 1, past the 64 epochs a live cleanup looks back over.
+    const old = Array.from({ length: h.deps.embedder.dimensions }, (_, i) => (i === 0 ? 1 : 0.5))
+    await h.deps.vectors.upsert(h.organizationId, [
+      {
+        id: `${id}:1:99`,
+        vector: old,
+        attributes: { document_id: id, epoch: 1, chunk: 99, page: 1 },
+      },
+    ])
+    for (let i = 0; i < 70; i++) {
+      await Documents.remove(h.deps, h.context, id)
+      await Documents.restore(h.deps, h.context, id)
+    }
+    await Documents.remove(h.deps, h.context, id)
+    expect(await h.vectorIds(id)).toContain(`${id}:1:99`)
+
+    await h.deps.time.advance(31 * DAY)
+    await h.deps.workers.sweeps.run('purge')
+
+    expect(h.document(id)).toBeUndefined()
+    expect(await h.vectorIds(id)).toEqual([])
+  })
+})

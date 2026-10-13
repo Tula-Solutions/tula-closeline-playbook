@@ -1,7 +1,7 @@
 import { DOCUMENT_PURGE_CLAIM, DOCUMENT_PURGE_COMPLETE } from 'tula-closeline-db'
 import { cleanupDeletion } from '~/modules/ingestion/cleanup'
 import { inTransaction, type PipelineDeps, within } from '~/modules/ingestion/runtime'
-import { deleteDocumentObjects } from '~/modules/ingestion/vectors'
+import { deleteAllVectorsOf, deleteDocumentObjects } from '~/modules/ingestion/vectors'
 
 /** What one purge pass of an Organization did. */
 export type PurgeResult = {
@@ -13,8 +13,8 @@ export type PurgeResult = {
 
 /**
  * Purges the Organization's documents that are due (ADR 0016): claims a bounded batch under a
- * lease (the claim ends restores for good), makes sure the current deletion's vector cleanup is
- * recorded (running it if not), removes the document's objects, and only then removes the row. A
+ * lease (the claim ends restores for good), deletes every vector of the document at any epoch (recording the
+ * cleanup if it was not), removes the document's objects, and only then removes the row. A
  * document whose cleanup cannot run yet (a cancelled job's lease has not ended), or whose row
  * the database will not complete, stays deleted with its lease; the next pass takes it when the
  * lease ends. A document that was restored first is never claimed. When the last document of an
@@ -37,7 +37,9 @@ export async function purgeDue(
     const documentId = String(row.id)
     const deletionSeq = Number(row.deletion_seq)
     if (row.vectors_removed_seq === null || Number(row.vectors_removed_seq) !== deletionSeq) {
-      const cleanup = await cleanupDeletion(deps, organizationId, documentId, deletionSeq, signal)
+      const cleanup = await cleanupDeletion(deps, organizationId, documentId, deletionSeq, signal, {
+        allEpochs: true,
+      })
       if (cleanup !== 'done') {
         deps.logger.info('a purge waits for its vector cleanup', {
           organizationId,
@@ -47,6 +49,9 @@ export async function purgeDue(
         result.deferred++
         continue
       }
+    } else {
+      // Recorded earlier, perhaps only up to a recent epoch; the claim ended restores, so sweep all.
+      await deleteAllVectorsOf(deps, organizationId, documentId, signal)
     }
     await deleteDocumentObjects(deps, organizationId, documentId, signal)
     // The original's own key too, in case it was written outside the document's prefix.
