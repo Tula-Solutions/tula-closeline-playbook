@@ -1,0 +1,28 @@
+# Local Postgres for the integration tests: `bun run test:integration` expects it.
+#   docker compose up -d --wait          (set POSTGRES_PORT if 5432 is taken, e.g. POSTGRES_PORT=5436)
+#   docker compose down                  (the data is in memory, so this also resets it)
+# It is the database library's compose setup, using that library's own role bootstrap from
+# node_modules, so the roles and the minimum Postgres version cannot drift from the migrations.
+# The passwords are LOCAL TEST ONLY. The port binds to 127.0.0.1 because Docker bypasses firewalls.
+services:
+  postgres:
+    image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_local
+      POSTGRES_DB: closeline
+      CLOSELINE_OWNER_PASSWORD: closeline_owner_local
+      CLOSELINE_AUTH_PASSWORD: closeline_auth_local
+      CLOSELINE_CORE_PASSWORD: closeline_core_local
+      CLOSELINE_PLAYBOOK_PASSWORD: closeline_playbook_local
+    ports: ['127.0.0.1:${POSTGRES_PORT:-5432}:5432']
+    tmpfs:
+      - /var/lib/postgresql
+    volumes:
+      - ./node_modules/tula-closeline-db/docker/postgres/init.sh:/docker-entrypoint-initdb.d/01-roles.sh:ro
+      - ./node_modules/tula-closeline-db/docker/postgres/init.sql:/etc/closeline/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d closeline']
+      interval: 5s
+      timeout: 3s
+      retries: 10
