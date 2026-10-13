@@ -33,11 +33,15 @@ paths:
   `purge` every `SWEEP_INTERVAL_MS`, `housekeeping` (consumed and idempotency purges, spent purges
   logged for a person and never claimed, orphan objects) every `HOUSEKEEPING_INTERVAL_MS`. Orphan
   rule: delete an object under `documents/doc_<id>/` only if the id has no row and the object is
-  older than `ORPHAN_MIN_AGE_MS` (24 h). The db has no orphan work kind, so only Organizations
-  named by `consumed_purge`, `idempotency_purge` or `purge_due` are visited, and a key outlives the
-  orphan age by one housekeeping interval so a young orphan is seen again. `cleanup_pending` has
-  no list of its own: the sweep scans all deleted documents (5 pages of 100) and re-runs the
-  idempotent cleanup on each (TODO: `DOCUMENT_LIST_PENDING_CLEANUP`, hub issue 58). A delete message whose cleanup waits on a lease is
+  older than `ORPHAN_MIN_AGE_MS` (24 h). Orphans have the `orphan_sweep` work kind (an Organization
+  is named 25 h after its oldest unswept upload attempt): `visitOrphanSweep` sweeps, then records
+  it with `ORPHAN_SWEEP_DONE` using the time the sweep started (not when done is called), under a
+  1 s `lock_timeout`; a timeout is tried again next tick, unreported, and a listing cut short by
+  `ORPHAN_MAX_PAGES` is not marked. Keys are purged at `IDEMPOTENCY_PURGE_AGE_MS` (26 h). Upload
+  transactions insert their idempotency key before `QUOTA_LOCK` (the db's lock-order rule).
+  `cleanup_pending` lists exactly the pending cleanups (`DOCUMENT_LIST_PENDING_CLEANUP`, keyset
+  `(deleted_at, id)`, at most 5 pages of 100 a tick) and keeps a five-minute floor so a fresh
+  delete is left to its message. A delete message whose cleanup waits on a lease is
   acknowledged (the kit cannot retry without an error report) and that sweep finishes it.
 - A message for a removed Organization (no documents, settings or usage left) is acknowledged and
   not recorded (`withoutRemovedOrganizations`), so the remove-all can reach `removed`.
@@ -47,5 +51,3 @@ paths:
 - Lowering a limit (`CHUNK_MAX_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`) can
   fail documents in flight: a stored artifact the new schema refuses is cut again from the pages
   when no chunk of that epoch is embedded yet, and otherwise ends the document `processing_failed`.
-- Until db v0.13.0's `DOCUMENT_LIST_PENDING_CLEANUP` replaces the scan, a named Organization costs up
-  to 500 cleanups per instance per tick.
