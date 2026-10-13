@@ -293,3 +293,56 @@ describe('quotas', () => {
     ).toBe(2)
   })
 })
+
+describe('worker settings', () => {
+  test('default to settings that satisfy their own relations', () => {
+    const env = loadEnv({ ENVIRONMENT: 'local' })
+    expect(env.WORKERS_ENABLED).toBe(true)
+    expect(env.INGESTION_HEARTBEAT_MS * 3).toBeLessThanOrEqual(env.INGESTION_LEASE_MS)
+    expect(env.CHUNK_TARGET_CHARS).toBeLessThanOrEqual(env.CHUNK_MAX_CHARS)
+  })
+
+  test.each([
+    ['a heartbeat too slow for the lease', { INGESTION_HEARTBEAT_MS: '40000' }],
+    ['an I/O timeout too long for the lease', { INGESTION_IO_TIMEOUT_MS: '60000' }],
+    ['a target above the maximum chunk size', { CHUNK_TARGET_CHARS: '2000' }],
+    ['an overlap above half the target', { CHUNK_OVERLAP_CHARS: '600' }],
+    ['no room for target plus overlap', { CHUNK_TARGET_CHARS: '1600', CHUNK_OVERLAP_CHARS: '100' }],
+    ['a worker stop deadline past the shutdown timeout', { WORKERS_STOP_DEADLINE_MS: '600000' }],
+    ['a concurrency of zero', { INGESTION_CONCURRENCY: '0' }],
+    ['an orphan age under an hour', { ORPHAN_MIN_AGE_MS: '60000' }],
+  ])('refuses %s', (_label, overrides) => {
+    expect(() => loadEnv({ ENVIRONMENT: 'local', ...overrides })).toThrow()
+  })
+})
+
+describe('workers outside local while the pipeline ports are fakes', () => {
+  test('are refused when switched on, naming the fake ports', () => {
+    expect(() => loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev', WORKERS_ENABLED: 'true' })).toThrow(
+      /WORKERS_ENABLED[\s\S]*embedder, parser, ocr, vector store/
+    )
+  })
+
+  test('are off by default and may be switched off explicitly', () => {
+    expect(loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev' }).WORKERS_ENABLED).toBe(false)
+    expect(
+      loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod', WORKERS_ENABLED: 'false' }).WORKERS_ENABLED
+    ).toBe(false)
+  })
+
+  test('are unchanged in local: on by default, either way allowed', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).WORKERS_ENABLED).toBe(true)
+    expect(loadEnv({ ENVIRONMENT: 'local', WORKERS_ENABLED: 'false' }).WORKERS_ENABLED).toBe(false)
+  })
+})
+
+describe('SWEEPS_ENABLED', () => {
+  test('defaults to true in every environment, independent of WORKERS_ENABLED', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).SWEEPS_ENABLED).toBe(true)
+    expect(loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod' }).SWEEPS_ENABLED).toBe(true)
+    expect(
+      loadEnv({ ...DEPLOYED, ENVIRONMENT: 'prod', WORKERS_ENABLED: 'false' }).SWEEPS_ENABLED
+    ).toBe(true)
+    expect(loadEnv({ ENVIRONMENT: 'local', SWEEPS_ENABLED: 'false' }).SWEEPS_ENABLED).toBe(false)
+  })
+})

@@ -2,7 +2,6 @@ import type { OpenAPIHono } from '@hono/zod-openapi'
 import { formatId, type OrganizationId, type Role, type UserId } from 'tula-closeline-contract'
 import {
   createLogger,
-  createMemoryProcessedStore,
   createStaticKeySet,
   createTokenVerifier,
   type FixedClock,
@@ -25,20 +24,26 @@ import {
   type VirtualTime,
 } from 'tula-closeline-kit/testing'
 import { createMemoryEmbedder, type MemoryEmbedder } from '~/adapters/memory/embedder'
-import { createMemoryOcrReader } from '~/adapters/memory/ocr'
+import { createMemoryOcrReader, type MemoryOcrReader } from '~/adapters/memory/ocr'
 import { createMemoryParser } from '~/adapters/memory/parser'
 import {
   createMemoryPlaybookDatabase,
   type MemoryPlaybookDatabase,
 } from '~/adapters/memory/playbook-database'
-import type { InScope } from '~/adapters/postgres/processed-store'
+import {
+  createPostgresProcessedStore,
+  type InScope,
+  organizationIsRemoved,
+  withoutRemovedOrganizations,
+} from '~/adapters/postgres/processed-store'
 import { createApp } from '~/app'
-import { createPlaybookConsumer } from '~/consumer'
+import { createHandlers, createPlaybookConsumer } from '~/consumer'
 import type { Container, ErrorContext, ReadinessCheck } from '~/container'
 import { loadEnv } from '~/env'
 import type { AppEnv } from '~/http/types'
 import { SERVICE } from '~/info'
 import { type PlaybookDefinition, type PlaybookEnvelope, registry } from '~/messages'
+import { createWorkers } from '~/workers'
 
 /** The issuer and audience the test environment's tokens carry. */
 const TEST_ISSUER = 'https://auth.test'
@@ -54,6 +59,7 @@ export type TestDeps = Container & {
   time: VirtualTime
   queue: MemoryQueue<PlaybookDefinition>
   embedder: MemoryEmbedder
+  ocr: MemoryOcrReader
   /** The database double behind `scope`: it runs the db library's statements in memory. */
   database: MemoryPlaybookDatabase
   /** The kit's memory error reporter: what the consumer and the error handler would send to Sentry. */
@@ -72,7 +78,7 @@ export type TestDepsOverrides = {
   tokenVerifier?: TokenVerifier
   /** The Organization-scoped statement runner; defaults to the in-memory database double. */
   scope?: InScope
-  /** The queue handlers; default none, as in the service today. */
+  /** The queue handlers; default the service's own (the uploaded nudge and the deleted cleanup). */
   handlers?: Handlers<PlaybookEnvelope>
   /** Messages handled at once; defaults to the environment's setting. */
   consumerConcurrency?: number
@@ -113,10 +119,18 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
   })
   const queue = createMemoryQueue({ registry, clock: time.clock, sleep: time.sleep })
   const embedder = createMemoryEmbedder({ dimensions: 64 })
-  const processed = createMemoryProcessedStore({ clock: time.clock })
   const database = createMemoryPlaybookDatabase({ clock: time.clock })
+  const scope = overrides.scope ?? database.scope
+  const processed = withoutRemovedOrganizations(
+    createPostgresProcessedStore({
+      scope,
+      discover: database.discover,
+      now: () => time.clock.now(),
+    }),
+    (organizationId) => organizationIsRemoved(scope, organizationId)
+  )
 
-  return {
+  const deps: TestDeps = {
     env,
     logger,
     clock: time.clock,
@@ -125,7 +139,10 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     withOrganization: () => {
       throw new Error('this test container has no database; use the integration harness')
     },
-    scope: overrides.scope ?? database.scope,
+    scope,
+    discover: database.discover,
+    sleep: time.sleep,
+    random: () => 0.5,
     database,
     queue,
     objects: createMemoryObjectStore({ clock: time.clock }),
@@ -134,15 +151,9 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     embedder,
     parser: createMemoryParser(),
     ocr: createMemoryOcrReader(),
-    consumer: createPlaybookConsumer({
-      queue,
-      store: processed,
-      logger,
-      errorReporter: errors,
-      handlers: overrides.handlers ?? {},
-      concurrency: overrides.consumerConcurrency ?? env.CONSUMER_CONCURRENCY,
-      sleep: time.sleep,
-    }),
+    // Replaced just below: the workers and the consumer read the rest of these fields by name.
+    workers: undefined as never,
+    consumer: undefined as never,
     readinessChecks: overrides.readinessChecks ?? [],
     lifecycle: { draining: false },
     reportError: (error, context) => {
@@ -153,6 +164,17 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     logLines,
     reported,
   }
+  deps.workers = createWorkers(deps, processed)
+  deps.consumer = createPlaybookConsumer({
+    queue,
+    store: processed,
+    logger,
+    errorReporter: errors,
+    handlers: overrides.handlers ?? createHandlers(deps, deps.workers.ingestion.nudge),
+    concurrency: overrides.consumerConcurrency ?? env.CONSUMER_CONCURRENCY,
+    sleep: time.sleep,
+  })
+  return deps
 }
 
 /** Who a minted access token names. */

@@ -1,17 +1,19 @@
 import type { ErrorReporter, Logger, ProcessedStore, Queue, Sleep } from 'tula-closeline-kit'
 import { type Consumer, createConsumer, type Handlers } from 'tula-closeline-kit/queue'
 import type { PlaybookEnvelope } from '~/messages'
+import { ingestionHandlers, type Nudge } from '~/modules/ingestion/handlers'
+import type { PipelineDeps } from '~/modules/ingestion/runtime'
 
 /** The consumer's name: part of every idempotency key in `playbook.consumed_message`. */
 export const CONSUMER_NAME = 'playbook.ingestion'
 
 /**
- * The handler of each message type. Empty on purpose until the ingestion pipeline (hub issue 14)
- * registers its steps here: a message with no handler is hidden and ends in the dead-letter queue,
- * so nothing may publish a message type before its handler exists.
+ * The handler of each message type: the uploaded nudge and the deleted cleanup (hub issue 14).
+ * A message type with no handler is hidden and ends in the dead-letter queue, so nothing may
+ * publish a type before its handler is registered here.
  */
-export function createHandlers(): Handlers<PlaybookEnvelope> {
-  return {}
+export function createHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<PlaybookEnvelope> {
+  return ingestionHandlers(deps, nudge)
 }
 
 /** What {@link createPlaybookConsumer} wires together. */

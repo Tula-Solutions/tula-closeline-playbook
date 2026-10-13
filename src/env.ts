@@ -5,6 +5,7 @@ import {
   MAX_DOCUMENT_PAGES,
   regionSchema,
 } from 'tula-closeline-contract'
+import { PLAYBOOK_MAX_BATCH } from 'tula-closeline-db'
 import { environmentSchema, requireSentryDsn, sentryDsnSchema } from 'tula-closeline-kit'
 import { z } from 'zod'
 
@@ -35,6 +36,13 @@ const MAX_INTERNAL_TOKENS = 5
 
 /** The longest one internal API secret may be, so a pasted blob cannot be mistaken for one. */
 const MAX_INTERNAL_TOKEN_LENGTH = 512
+
+/**
+ * The pipeline ports that have no real adapter yet (ADR 0010; the vector store waits on hub issue
+ * 48). Remove a name as its real adapter lands; while any remains, the workers may not run outside
+ * `local`, because they would mark real uploads `ready` over vectors that live in one process.
+ */
+export const PIPELINE_FAKE_PORTS = ['embedder', 'parser', 'ocr', 'vector store'] as const
 
 /** A secret is printable ASCII with no space, so it travels in a bearer header unchanged. */
 const PRINTABLE_ASCII = /^[!-~]+$/
@@ -158,6 +166,73 @@ const schema = z
     CONSUMER_CONCURRENCY: integer(1, 100).default(4),
     /** How long shutdown lets in-flight messages finish before it gives them back to the queue. */
     CONSUMER_STOP_DEADLINE_MS: integer(1, 120_000).default(5_000),
+
+    /**
+     * Whether this instance runs the ingestion job loop (parse, chunk, embed, index). Off gives an
+     * API-only instance: uploads stay `uploaded` and nothing claims them. The sweeps are
+     * `SWEEPS_ENABLED`, not this. Defaults to true in
+     * `local` and false elsewhere, and true is refused outside `local` while a pipeline port is a
+     * fake ({@link PIPELINE_FAKE_PORTS}).
+     */
+    WORKERS_ENABLED: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((value) => (value === undefined ? undefined : value === 'true')),
+    /**
+     * Whether this instance runs the sweeps: the purge, `cleanup_pending`, housekeeping and orphan
+     * objects. On by default everywhere, and independent of `WORKERS_ENABLED`: without them
+     * nothing is ever purged and the remove-all route never reaches 200.
+     */
+    SWEEPS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+    /** Ingestion jobs one instance runs at once; it claims no more than this per round. */
+    INGESTION_CONCURRENCY: integer(1, 16).default(2),
+    /** How long a claimed job is safe from another instance, in ms; a heartbeat renews it. */
+    INGESTION_LEASE_MS: integer(5_000, 600_000).default(90_000),
+    /** How often a running job renews its lease, in ms; at most a third of the lease. */
+    INGESTION_HEARTBEAT_MS: integer(500, 120_000).default(15_000),
+    /** The longest one call to the object store, the embedder or the vector store may take, in ms; at most half the lease. */
+    INGESTION_IO_TIMEOUT_MS: integer(1_000, 120_000).default(30_000),
+    /** The longest the parser or OCR may take for one document, in ms (the lease is renewed meanwhile). */
+    INGESTION_PARSE_TIMEOUT_MS: integer(1_000, 600_000).default(180_000),
+    /** Claims of one job before the service fails it (the database's own bound is 20). */
+    INGESTION_MAX_ATTEMPTS: integer(1, 19).default(8),
+    /** The first retry delay of a failed attempt, in ms; it doubles per attempt up to ten minutes, with full jitter. */
+    INGESTION_RETRY_BASE_MS: integer(100, 600_000).default(5_000),
+    /** How long the job loop sleeps when it found nothing due, in ms, jittered by up to a quarter. */
+    INGESTION_POLL_INTERVAL_MS: integer(100, 300_000).default(5_000),
+    /** The size a chunk is cut towards, in characters (about 250 tokens). */
+    CHUNK_TARGET_CHARS: integer(200, 8_000).default(1_000),
+    /** The size no chunk exceeds, in characters (about 400 tokens). */
+    CHUNK_MAX_CHARS: integer(300, 16_000).default(1_600),
+    /** The tail of a chunk repeated at the start of the next one of a long section, in characters. */
+    CHUNK_OVERLAP_CHARS: integer(0, 2_000).default(150),
+    /** The most chunks one document may produce; more fails the document with `processing_failed`. */
+    MAX_CHUNKS_PER_DOCUMENT: integer(1, 100_000).default(5_000),
+    /** The most text characters one document may hold after parsing; more fails it with `processing_failed`. */
+    MAX_TEXT_CHARS_PER_DOCUMENT: integer(1_000, 20_000_000).default(5_000_000),
+    /** Organizations one work-discovery page returns (1 to the database's batch maximum). */
+    DISCOVERY_BATCH: integer(1, PLAYBOOK_MAX_BATCH).default(100),
+    /** Documents one Organization's cleanup or purge pass takes at once. */
+    SWEEP_BATCH: integer(1, PLAYBOOK_MAX_BATCH).default(20),
+    /** Rows one consumed-message or idempotency purge statement removes (it repeats while full, a few times). */
+    HOUSEKEEPING_BATCH: integer(1, PLAYBOOK_MAX_BATCH).default(200),
+    /** Between two vector-cleanup and purge sweeps, in ms, jittered by up to a quarter. */
+    SWEEP_INTERVAL_MS: integer(1_000, 3_600_000).default(30_000),
+    /** Between two housekeeping sweeps (consumed messages, idempotency keys, orphan objects, spent purges), in ms, jittered. */
+    HOUSEKEEPING_INTERVAL_MS: integer(1_000, 86_400_000).default(600_000),
+    /** How long a purge claim is held while the vectors and files go, in ms. */
+    PURGE_LEASE_MS: integer(5_000, 3_600_000).default(120_000),
+    /** The youngest an object with no document may be before the orphan sweep deletes it, in ms (at least one hour). */
+    ORPHAN_MIN_AGE_MS: integer(3_600_000, 2_592_000_000).default(86_400_000),
+    /** Objects one orphan-sweep listing page holds (1 to 1000). */
+    ORPHAN_PAGE_SIZE: integer(1, 1_000).default(200),
+    /** Listing pages the orphan sweep reads per Organization per pass. */
+    ORPHAN_MAX_PAGES: integer(1, 1_000).default(25),
+    /** How long shutdown lets jobs and sweeps reach a step boundary before it moves on, in ms. */
+    WORKERS_STOP_DEADLINE_MS: integer(1, 120_000).default(5_000),
   })
   .refine((env) => env.SHUTDOWN_GRACE_MS + env.SHUTDOWN_TIMEOUT_MS <= MAX_SHUTDOWN_TOTAL_MS, {
     message: `SHUTDOWN_GRACE_MS plus SHUTDOWN_TIMEOUT_MS must not exceed ${MAX_SHUTDOWN_TOTAL_MS} ms in total`,
@@ -167,7 +242,44 @@ const schema = z
     message: 'CONSUMER_STOP_DEADLINE_MS must not exceed SHUTDOWN_TIMEOUT_MS',
     path: ['CONSUMER_STOP_DEADLINE_MS'],
   })
+  .refine((env) => env.INGESTION_HEARTBEAT_MS * 3 <= env.INGESTION_LEASE_MS, {
+    message: 'INGESTION_HEARTBEAT_MS must be at most a third of INGESTION_LEASE_MS',
+    path: ['INGESTION_HEARTBEAT_MS'],
+  })
+  .refine((env) => env.INGESTION_IO_TIMEOUT_MS * 2 <= env.INGESTION_LEASE_MS, {
+    message: 'INGESTION_IO_TIMEOUT_MS must be at most half of INGESTION_LEASE_MS',
+    path: ['INGESTION_IO_TIMEOUT_MS'],
+  })
+  .refine((env) => env.CHUNK_TARGET_CHARS <= env.CHUNK_MAX_CHARS, {
+    message: 'CHUNK_TARGET_CHARS must not exceed CHUNK_MAX_CHARS',
+    path: ['CHUNK_TARGET_CHARS'],
+  })
+  .refine((env) => env.CHUNK_OVERLAP_CHARS * 2 <= env.CHUNK_TARGET_CHARS, {
+    message: 'CHUNK_OVERLAP_CHARS must be at most half of CHUNK_TARGET_CHARS',
+    path: ['CHUNK_OVERLAP_CHARS'],
+  })
+  .refine((env) => env.CHUNK_TARGET_CHARS + env.CHUNK_OVERLAP_CHARS + 1 <= env.CHUNK_MAX_CHARS, {
+    message: 'CHUNK_TARGET_CHARS plus CHUNK_OVERLAP_CHARS plus one must not exceed CHUNK_MAX_CHARS',
+    path: ['CHUNK_MAX_CHARS'],
+  })
+  .refine((env) => env.WORKERS_STOP_DEADLINE_MS <= env.SHUTDOWN_TIMEOUT_MS, {
+    message: 'WORKERS_STOP_DEADLINE_MS must not exceed SHUTDOWN_TIMEOUT_MS',
+    path: ['WORKERS_STOP_DEADLINE_MS'],
+  })
   .superRefine(requireSentryDsn)
+  .superRefine((env, context) => {
+    if (
+      env.ENVIRONMENT !== 'local' &&
+      env.WORKERS_ENABLED === true &&
+      PIPELINE_FAKE_PORTS.length > 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['WORKERS_ENABLED'],
+        message: `WORKERS_ENABLED cannot be true outside local while these ports are fakes: ${PIPELINE_FAKE_PORTS.join(', ')}`,
+      })
+    }
+  })
   .superRefine((env, context) => {
     // Messages name the key and the rule, never the value: a URL can carry credentials.
     if (env.ENVIRONMENT !== 'local') {
@@ -234,6 +346,7 @@ const schema = z
   })
   .transform((env) => ({
     ...env,
+    WORKERS_ENABLED: env.WORKERS_ENABLED ?? env.ENVIRONMENT === 'local',
     REGION: env.REGION ?? regionSchema.parse('us'),
     DATABASE_URL: env.DATABASE_URL ?? LOCAL_DATABASE_URL,
     AUTH_JWKS_URL: env.AUTH_JWKS_URL ?? `${LOCAL_AUTH_ORIGIN}/.well-known/jwks.json`,

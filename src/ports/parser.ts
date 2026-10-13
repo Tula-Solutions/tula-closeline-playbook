@@ -38,8 +38,10 @@ export type ParseOptions = {
 
 /**
  * Extracts the text layer of a document inside this service (ADR 0010, ADR 0016). The file is
- * untrusted: a parser must not run anything in it and must bound the work it does on it. The page
- * count limit is checked by the ingestion job from the result, not here.
+ * untrusted: a parser must not run anything in it and must bound the work it does on it, and it
+ * must bound its own output (pages, text size, memory) while it works. The pipeline's limits
+ * (page count, `MAX_TEXT_CHARS_PER_DOCUMENT`) are checked on the finished result: they decide what
+ * is kept, not what the adapter allocated to get there.
  */
 export interface DocumentParser {
   /**
