@@ -25,9 +25,7 @@ import {
   DOCUMENT_ERASE_BATCH,
   DOCUMENT_GET,
   DOCUMENT_INSERT,
-  DOCUMENT_LIST,
-  DOCUMENT_LIST_DELETED,
-  DOCUMENT_LIST_MAX_PAGE,
+  DOCUMENT_LIST_FILTERED,
   DOCUMENT_REQUEUE,
   DOCUMENT_RESTORE,
   DOCUMENT_RESTORE_FOR_UPLOAD,
@@ -94,12 +92,6 @@ export const ERASE_BATCH_SIZE = 100
 
 /** The erase batches one remove-all request runs: a constant, so the request is bounded whatever the Organization holds. */
 export const ERASE_BATCHES_PER_REQUEST = 5
-
-/** The most list pages scanned to fill one page that is filtered by a state the database cannot filter on. */
-export const MAX_FILTER_SCAN_PAGES = 6
-
-/** What a list statement is asked for on a scan: the biggest page the database gives. */
-const SCAN_PAGE = DOCUMENT_LIST_MAX_PAGE
 
 const ALL_ERRORS = { ...ERRORS, ...PLAYBOOK_ERRORS }
 
@@ -552,10 +544,9 @@ function cursorAfter(row: ListRow): string {
 
 /**
  * Lists the Organization's documents, newest first, one page at a time, at most 100. Deleted
- * documents only when `state=deleted` is asked for. The database can filter on "deleted or not"
- * but not on one state, so a page filtered by another state scans up to {@link MAX_FILTER_SCAN_PAGES}
- * pages of 100 (a constant, covering the default quota) and may return fewer than `limit` with a
- * cursor to continue from the last row it looked at.
+ * documents only when `state=deleted` is asked for. One call to `DOCUMENT_LIST_FILTERED` serves a
+ * page for any filter, each row carrying every column a read does, so no document is read again.
+ * A full page has a cursor (the last row's `created_at` text and id); a short one is the end.
  */
 export async function list(
   deps: DocumentDeps,
@@ -571,56 +562,28 @@ export async function list(
     }
   }
   const { limit } = query
-  const wantDeleted = query.state === 'deleted'
-  const filter = query.state !== undefined && !wantDeleted ? query.state : undefined
-  const statement = wantDeleted ? DOCUMENT_LIST_DELETED : DOCUMENT_LIST
   const organizationId = context.organizationId
 
-  return transaction(deps, organizationId, async (run) => {
-    const picked: ListRow[] = []
-    let position = after
-    let scanned: ListRow | undefined
-    let more = false
-    const pages = filter === undefined ? 1 : MAX_FILTER_SCAN_PAGES
-    for (let page = 0; page < pages && picked.length < limit; page++) {
-      const size = filter === undefined ? limit : SCAN_PAGE
-      const result = await run(statement, [
-        organizationId,
-        position?.t ?? 'infinity',
-        position?.i ?? '',
-        size,
-      ])
-      const rows = result.rows.map((row) => listRowSchema.parse(row))
-      more = rows.length === size
-      for (const row of rows) {
-        scanned = row
-        if (filter === undefined || row.state === filter) {
-          picked.push(row)
-          if (picked.length === limit) {
-            break
-          }
-        }
-      }
-      const last = rows.at(-1)
-      if (last === undefined || picked.length === limit) {
-        break
-      }
-      position = { t: last.created_at, i: last.id }
-    }
-    const items: PlaybookDocument[] = []
-    for (const row of picked) {
-      const read = await readDocument(run, organizationId, row.id)
-      if (read !== undefined) {
-        items.push(read.document)
-      }
-    }
-    const full = picked.length === limit
-    const resumeFrom = full ? picked.at(-1) : scanned
-    return {
-      items,
-      nextCursor: (full || more) && resumeFrom !== undefined ? cursorAfter(resumeFrom) : null,
-    }
-  })
+  const rows = await transaction(
+    deps,
+    organizationId,
+    async (run) =>
+      (
+        await run(DOCUMENT_LIST_FILTERED, [
+          organizationId,
+          after?.t ?? 'infinity',
+          after?.i ?? '',
+          limit,
+          query.state ?? null,
+        ])
+      ).rows
+  )
+  const last = rows.at(-1)
+  return {
+    items: rows.map((row) => toDocument(row)),
+    nextCursor:
+      rows.length === limit && last !== undefined ? cursorAfter(listRowSchema.parse(last)) : null,
+  }
 }
 
 /**

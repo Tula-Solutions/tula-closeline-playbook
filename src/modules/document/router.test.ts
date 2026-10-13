@@ -5,7 +5,13 @@ import {
   listDocumentsResponseSchema,
   type PlaybookDocument,
 } from 'tula-closeline-contract'
-import { DOCUMENT_INSERT, IDEMPOTENCY_BEGIN, QUOTA_LOCK } from 'tula-closeline-db'
+import {
+  DOCUMENT_GET,
+  DOCUMENT_INSERT,
+  DOCUMENT_LIST_FILTERED,
+  IDEMPOTENCY_BEGIN,
+  QUOTA_LOCK,
+} from 'tula-closeline-db'
 import { StorageError } from 'tula-closeline-kit'
 import { postgresError } from '~/adapters/memory/playbook-database'
 import { newOrganizationId, type TestIdentity } from '~/testing'
@@ -1026,42 +1032,126 @@ describe('list', () => {
     expect(deleted.items[0]?.purgeAt).not.toBeNull()
   })
 
-  test('filters by one state, scanning on past other documents to fill the page', async () => {
+  test('a list is one statement call, with no second read for any row', async () => {
     const h = await createDocumentHarness()
-    for (let i = 0; i < 130; i++) {
-      h.deps.database.seed({
-        id: `doc_${(i + 1000).toString(16).padStart(32, '0')}`,
-        organization_id: h.organizationId,
-        created_at: 1_700_000_000_000 + i * 1000,
-      })
-    }
-    h.deps.database.seed({
-      id: `doc_${'0'.repeat(31)}1`,
-      organization_id: h.organizationId,
-      state: 'failed',
-      failure_reason: 'no_text',
-      created_at: 1_600_000_000_000,
-    })
+    seedTied(h, 5)
+    const before = h.deps.database.statements.length
 
-    const page = await pageOf(h, '?state=failed&limit=5')
+    await pageOf(h, '?limit=5')
+    await pageOf(h, '?limit=5&state=failed')
 
-    expect(page.items).toMatchObject([{ state: 'failed', failureReason: 'no_text' }])
+    const ran = h.deps.database.statements.slice(before)
+    expect(ran.filter((text) => text === DOCUMENT_LIST_FILTERED)).toHaveLength(2)
+    expect(ran.filter((text) => text === DOCUMENT_GET)).toEqual([])
   })
 
-  test('a state filter that cannot fill a page still hands back a cursor to continue from', async () => {
+  test.each(['uploaded', 'processing', 'ready', 'failed', 'deleted'] as const)(
+    'state=%s lists only documents in that state',
+    async (state) => {
+      const h = await createDocumentHarness()
+      for (const [i, each] of (
+        ['uploaded', 'processing', 'ready', 'failed', 'deleted'] as const
+      ).entries()) {
+        h.deps.database.seed({
+          id: `doc_${(i + 1).toString(16).padStart(32, '0')}`,
+          organization_id: h.organizationId,
+          state: each,
+          ...(each === 'failed' ? { failure_reason: 'no_text' } : {}),
+          ...(each === 'deleted'
+            ? { deleted_at: Date.now(), purge_due_at: Date.now() + 86_400_000, deletion_seq: 1 }
+            : {}),
+        })
+      }
+
+      const page = await pageOf(h, `?state=${state}`)
+
+      expect(page.items.map((d) => d.state)).toEqual([state])
+    }
+  )
+
+  test('with no filter, every state but deleted is listed', async () => {
     const h = await createDocumentHarness()
-    for (let i = 0; i < 650; i++) {
+    for (const [i, each] of (['uploaded', 'processing', 'ready', 'deleted'] as const).entries()) {
       h.deps.database.seed({
-        id: `doc_${(i + 1000).toString(16).padStart(32, '0')}`,
+        id: `doc_${(i + 1).toString(16).padStart(32, '0')}`,
         organization_id: h.organizationId,
-        created_at: 1_700_000_000_000 + i * 1000,
+        state: each,
+        ...(each === 'deleted'
+          ? { deleted_at: Date.now(), purge_due_at: Date.now() + 86_400_000, deletion_seq: 1 }
+          : {}),
       })
     }
 
-    const page = await pageOf(h, '?state=failed&limit=5')
+    const page = await pageOf(h, '')
 
-    expect(page.items).toEqual([])
-    expect(page.nextCursor).not.toBeNull()
+    expect(page.items.map((d) => d.state).sort()).toEqual(['processing', 'ready', 'uploaded'])
+  })
+
+  test('a filtered list pages across documents created in the same instant, with none lost or repeated', async () => {
+    const h = await createDocumentHarness()
+    const ids: string[] = []
+    for (let i = 0; i < 5; i++) {
+      const id = `doc_${(i + 1).toString(16).padStart(32, '0')}`
+      ids.push(id)
+      h.deps.database.seed({
+        id,
+        organization_id: h.organizationId,
+        state: 'failed',
+        failure_reason: 'no_text',
+        created_at: 1_700_000_000_000,
+      })
+      // A ready document in the same instant must not take a place in the failed list.
+      h.deps.database.seed({
+        id: `doc_${(i + 100).toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        created_at: 1_700_000_000_000,
+      })
+    }
+
+    const seen: string[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+      const page = await pageOf(
+        h,
+        `?state=failed&limit=2${cursor === null ? '' : `&cursor=${cursor}`}`
+      )
+      seen.push(...page.items.map((d) => d.id))
+      cursor = page.nextCursor
+      pages++
+    } while (cursor !== null && pages < 10)
+
+    expect(seen).toEqual([...ids].sort().reverse())
+    expect(pages).toBe(3)
+  })
+
+  test('returns the page count when the ingestion job has recorded one, and null before', async () => {
+    const h = await createDocumentHarness()
+    const created = await documentOf(await h.upload('a.pdf', pdfBytes('a')))
+    const [row] = h.deps.database.documents(h.organizationId)
+
+    const before = await h.call('GET', `${DOCUMENTS}/${created.id}`)
+    h.deps.database.update(h.organizationId, created.id, { page_count: 7 })
+    const read = await h.call('GET', `${DOCUMENTS}/${created.id}`)
+    const listed = await pageOf(h, '')
+
+    expect(row?.page_count).toBeNull()
+    expect((await documentOf(before)).pageCount).toBeNull()
+    expect((await documentOf(read)).pageCount).toBe(7)
+    expect(listed.items[0]?.pageCount).toBe(7)
+  })
+
+  test('a listed document carries its updated time without a second read', async () => {
+    const h = await createDocumentHarness()
+    const created = await documentOf(await h.upload('a.pdf', pdfBytes('a')))
+    h.deps.database.update(h.organizationId, created.id, {
+      state: 'ready',
+      updated_at: Date.parse('2030-01-02T03:04:05.000Z'),
+    })
+
+    const page = await pageOf(h, '')
+
+    expect(page.items[0]?.updatedAt).toBe('2030-01-02T03:04:05.000Z')
   })
 
   test.each([

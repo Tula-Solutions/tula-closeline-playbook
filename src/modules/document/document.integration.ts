@@ -201,6 +201,62 @@ describe('list, delete and restore against Postgres', () => {
     expect(seen).toEqual([...ids].sort().reverse())
   })
 
+  test('a filtered list pages across a created_at tie with none lost or repeated ', async () => {
+    const h = await harness()
+    const failed: string[] = []
+    for (let i = 0; i < 5; i++) {
+      for (const kind of ['failed', 'ready'] as const) {
+        const id = `doc_${crypto.randomUUID().replaceAll('-', '')}`
+        if (kind === 'failed') {
+          failed.push(id)
+        }
+        await withOrganization(service.db, h.organizationId, (tx) =>
+          tx.execute(sql`
+            insert into playbook.documents
+              (id, organization_id, name, content_hash, size_bytes, declared_type, detected_type, uploaded_by, object_key, created_at)
+            values (${id}, ${h.organizationId}, ${`${kind}${i}.pdf`}, decode(${createHash('sha256').update(`tie-${kind}-${i}`).digest('hex')}, 'hex'),
+              10, 'application/pdf', 'pdf', ${h.people.owner.userId}, ${`${kind}${i}`}, '2026-01-01 00:00:00.000001+00')`)
+        )
+      }
+    }
+    await asOwner(
+      h.organizationId,
+      sql`update playbook.documents set state = 'failed', failure_reason = 'no_text' where name like 'failed%'`
+    )
+    await asOwner(
+      h.organizationId,
+      sql`update playbook.documents set state = 'ready' where name like 'ready%'`
+    )
+
+    const seen: string[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+      const response = await h.call(
+        'GET',
+        `${DOCUMENTS}?state=failed&limit=2${cursor === null ? '' : `&cursor=${cursor}`}`
+      )
+      const page = listDocumentsResponseSchema.parse(await response.json())
+      expect(page.items.every((d) => d.state === 'failed' && d.failureReason === 'no_text')).toBe(
+        true
+      )
+      seen.push(...page.items.map((d) => d.id))
+      cursor = page.nextCursor
+      pages++
+    } while (cursor !== null && pages < 10)
+    const ready = listDocumentsResponseSchema.parse(
+      await (await h.call('GET', `${DOCUMENTS}?state=ready&limit=100`)).json()
+    )
+    const unfiltered = listDocumentsResponseSchema.parse(
+      await (await h.call('GET', `${DOCUMENTS}?limit=100`)).json()
+    )
+
+    expect(seen).toEqual([...failed].sort().reverse())
+    expect(pages).toBe(3)
+    expect(ready.items).toHaveLength(5)
+    expect(unfiltered.items).toHaveLength(10)
+  })
+
   test('filters by state and leaves deleted documents out unless asked', async () => {
     const h = await harness()
     const kept = await documentOf(await h.upload('a.pdf', pdfBytes('state-a')))

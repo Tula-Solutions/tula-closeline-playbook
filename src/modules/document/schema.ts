@@ -32,7 +32,7 @@ const timestampColumn = z.union([z.string(), z.date()]).transform((value, contex
   return date.toISOString()
 })
 
-/** The columns of `DOCUMENT_GET` that the public document is made from, checked as they leave the database. */
+/** The columns of `DOCUMENT_GET` and of every list row (`DOCUMENT_ROW_FIELDS`) that the public document is made from, checked as they leave the database. */
 const documentRowSchema = z.object({
   id: documentIdSchema,
   name: z.string(),
@@ -43,14 +43,15 @@ const documentRowSchema = z.object({
   failure_reason: z.enum(DOCUMENT_FAILURE_REASONS).nullable(),
   deleted_at: timestampColumn.nullable(),
   purge_due_at: timestampColumn.nullable(),
+  page_count: z.number().int().min(0).nullable(),
   created_at: timestampColumn,
   updated_at: timestampColumn,
 })
 
 /**
- * Turns a `DOCUMENT_GET` row into the contract's document. The contract says to send the output of
- * `documentSchema.parse`, never the row. `pageCount` is always null: no statement of the db library
- * returns a page count for a document (see the hub issue 14 notes).
+ * Turns a `DOCUMENT_GET` or list row into the contract's document. The contract says to send the
+ * output of `documentSchema.parse`, never the row. `pageCount` is the row's `page_count`, null
+ * until the ingestion job records it.
  */
 export function toDocument(row: Record<string, unknown>): PlaybookDocument {
   const r = documentRowSchema.parse(row)
@@ -59,7 +60,7 @@ export function toDocument(row: Record<string, unknown>): PlaybookDocument {
     fileName: r.name,
     mediaType: MEDIA_TYPE_BY_EXTENSION[`.${r.detected_type}`],
     sizeBytes: r.size_bytes,
-    pageCount: null,
+    pageCount: r.page_count,
     state: r.state,
     failureReason: r.failure_reason,
     deletedAt: r.deleted_at,
@@ -83,7 +84,7 @@ export const listCursorSchema = z.strictObject({
 /** What a list cursor carries. */
 export type ListCursor = z.infer<typeof listCursorSchema>
 
-/** The row of a list statement: just enough to continue the listing and to read each document in full. */
+/** The part of a list row the cursor is made from; the rest of the row is read by {@link toDocument}. */
 export const listRowSchema = z.object({
   id: documentIdSchema,
   state: documentStateSchema,

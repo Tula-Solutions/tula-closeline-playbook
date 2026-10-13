@@ -12,6 +12,7 @@ const row = {
   failure_reason: null,
   deleted_at: null,
   purge_due_at: null,
+  page_count: null,
   created_at: '2026-10-13 12:34:56.123456+00',
   updated_at: '2026-10-13 12:35:00+00',
 }

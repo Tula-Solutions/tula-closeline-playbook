@@ -3,8 +3,7 @@ import {
   DOCUMENT_ERASE_BATCH,
   DOCUMENT_GET,
   DOCUMENT_INSERT,
-  DOCUMENT_LIST,
-  DOCUMENT_LIST_DELETED,
+  DOCUMENT_LIST_FILTERED,
   DOCUMENT_LIST_MAX_PAGE,
   DOCUMENT_MIN_RETENTION_MS,
   DOCUMENT_REQUEUE,
@@ -42,6 +41,8 @@ export type MemoryDocumentRow = {
   deleted_by: string | null
   purge_due_at: number | null
   purge_started_at: number | null
+  /** The pages the ingestion job counted; null until it records them. */
+  page_count: number | null
   restore_barred_at: number | null
   created_at: number
   updated_at: number
@@ -110,6 +111,8 @@ export type MemoryPlaybookDatabase = {
   failNextCommit(error: Error, options: { applied: boolean }): void
   /** Forgets every injected failure. */
   clearFailures(): void
+  /** The text of every statement run, in order, so a test can count the reads a call made. */
+  readonly statements: string[]
   /** How many transactions were opened, per Organization. */
   readonly transactions: string[]
 }
@@ -150,6 +153,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
   const failures: { statement: string; error: Error; once: boolean }[] = []
   const commitFailures: { error: Error; applied: boolean }[] = []
   const transactions: string[] = []
+  const statements: string[] = []
   let queue: Promise<unknown> = Promise.resolve()
   const now = () => options.clock.now().getTime()
 
@@ -209,6 +213,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       deleted_by: d.deleted_by,
       purge_due_at: d.purge_due_at === null ? null : pgTimestamp(d.purge_due_at),
       purge_started_at: d.purge_started_at === null ? null : pgTimestamp(d.purge_started_at),
+      page_count: d.page_count,
       created_at: pgTimestamp(d.created_at),
       updated_at: pgTimestamp(d.updated_at),
       not_restorable:
@@ -245,6 +250,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     }
 
     return async (text, params) => {
+      statements.push(text)
       const injected = failures.find((f) => f.statement === text)
       if (injected !== undefined) {
         if (injected.once) {
@@ -322,6 +328,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             deleted_by: null,
             purge_due_at: null,
             purge_started_at: null,
+            page_count: null,
             restore_barred_at: null,
             created_at: at,
             updated_at: at,
@@ -347,17 +354,17 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           const d = find(organization, id)
           return d === undefined ? none : rows([view(d)])
         }
-        case DOCUMENT_LIST:
-        case DOCUMENT_LIST_DELETED: {
-          const [organization, createdAfter, idAfter, size] = params as [
+        case DOCUMENT_LIST_FILTERED: {
+          const [organization, createdAfter, idAfter, size, wanted] = params as [
             string,
             string,
             string,
-            number,
+            number | null,
+            string | null,
           ]
-          const wantDeleted = text === DOCUMENT_LIST_DELETED
+          // Null is every document that is not deleted; a state is that state; anything else is nothing.
           const page = documentsOf(organization)
-            .filter((d) => (d.state === 'deleted') === wantDeleted)
+            .filter((d) => (wanted === null ? d.state !== 'deleted' : d.state === wanted))
             .map((d) => ({ d, created: pgTimestamp(d.created_at) }))
             .filter(
               ({ d, created }) =>
@@ -369,21 +376,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
               a.created === b.created ? (a.d.id < b.d.id ? 1 : -1) : a.created < b.created ? 1 : -1
             )
             .slice(0, batch(size, DOCUMENT_LIST_MAX_PAGE))
-          return rows(
-            page.map(({ d, created }) => ({
-              id: d.id,
-              name: d.name,
-              state: d.state,
-              size_bytes: String(d.size_bytes),
-              detected_type: d.detected_type,
-              failure_reason: d.failure_reason,
-              uploaded_by: d.uploaded_by,
-              deletion_seq: d.deletion_seq,
-              deleted_at: d.deleted_at === null ? null : pgTimestamp(d.deleted_at),
-              purge_due_at: d.purge_due_at === null ? null : pgTimestamp(d.purge_due_at),
-              created_at: created,
-            }))
-          )
+          return rows(page.map(({ d }) => view(d)))
         }
         case DOCUMENT_SOFT_DELETE: {
           const [organization, id, by, retentionMs] = params as [string, string, string, number]
@@ -642,6 +635,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         deleted_by: null,
         purge_due_at: null,
         purge_started_at: null,
+        page_count: null,
         restore_barred_at: null,
         created_at: at,
         updated_at: at,
@@ -698,5 +692,6 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       commitFailures.splice(0, commitFailures.length)
     },
     transactions,
+    statements,
   }
 }
