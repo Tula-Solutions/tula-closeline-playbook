@@ -1,8 +1,9 @@
 import type { DocumentMediaType } from 'tula-closeline-contract'
+import { z } from 'zod'
 import type { Env } from '~/env'
 import { type DocumentParser, type ParsedDocument, ParseError } from '~/ports/parser'
 import type { ParserLimits } from './limits'
-import type { WorkerReply, WorkerRequest } from './worker'
+import type { WorkerRequest } from './worker'
 
 /** How often the host looks at the process's memory while a parse runs, in ms. */
 const MEMORY_POLL_MS = 50
@@ -21,9 +22,27 @@ export type DocumentParserOptions = {
   residentBytes?: () => number
 }
 
-/** The reply as the host receives it, checked, since it crossed a thread boundary. */
-function isReply(value: unknown): value is WorkerReply {
-  return typeof value === 'object' && value !== null && 'ok' in value
+/** The schema a worker's reply must satisfy under `limits`: it crossed a thread boundary, so it is untrusted. */
+function replySchema(limits: ParserLimits) {
+  const page = z.object({
+    number: z.number().int().min(1),
+    text: z.string(),
+    needsOcr: z.boolean(),
+  })
+  const accepted = z.object({
+    ok: z.literal(true),
+    document: z
+      .object({ pages: z.array(page).max(limits.maxPages) })
+      .refine(
+        ({ pages }) => pages.reduce((sum, p) => sum + p.text.length, 0) <= limits.maxTextChars
+      ),
+  })
+  const refused = z.object({
+    ok: z.literal(false),
+    reason: z.enum(['unreadable', 'password_protected', 'too_many_pages', 'processing_failed']),
+    pageCount: z.number().int().min(0).optional(),
+  })
+  return z.discriminatedUnion('ok', [accepted, refused])
 }
 
 /**
@@ -58,6 +77,7 @@ function runInWorker(
 ): Promise<ParsedDocument> {
   return new Promise<ParsedDocument>((resolve, reject) => {
     const worker = new Worker(url.href, { smol: true })
+    const schema = replySchema(options.limits)
     const baseline = resident()
     let settled = false
     const finish = (settle: () => void) => {
@@ -83,13 +103,15 @@ function runInWorker(
     signal.addEventListener('abort', onAbort, { once: true })
 
     worker.onmessage = (event: MessageEvent<unknown>) => {
-      const reply = event.data
-      if (!isReply(reply)) {
+      const checked = schema.safeParse(event.data)
+      if (!checked.success) {
         fail('processing_failed')
-      } else if (reply.ok) {
-        finish(() => resolve(reply.document))
+      } else if (checked.data.ok) {
+        const { document: parsed } = checked.data
+        finish(() => resolve(parsed))
       } else {
-        finish(() => reject(new ParseError(reply.reason, { pageCount: reply.pageCount })))
+        const { reason, pageCount } = checked.data
+        finish(() => reject(new ParseError(reason, { pageCount })))
       }
     }
     // A thrown error, a message that cannot be cloned and a worker that exits are all the file's doing.
@@ -103,7 +125,11 @@ function runInWorker(
     // The worker gets its own copy: the caller keeps its bytes for the OCR call.
     const bytes = document.bytes.slice()
     const request: WorkerRequest = { bytes, mediaType: document.mediaType, limits: options.limits }
-    worker.postMessage(request, [bytes.buffer])
+    try {
+      worker.postMessage(request, [bytes.buffer])
+    } catch {
+      fail('processing_failed')
+    }
   })
 }
 

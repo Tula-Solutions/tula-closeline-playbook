@@ -19,6 +19,29 @@ self.onmessage = (event) => {
     throw new Error('SECRET-FILE-CONTENT')
   } else if (mode === 'exit') {
     process.exit(3)
+  } else if (mode === 'document-not-an-object') {
+    self.postMessage({ ok: true, document: 7 })
+  } else if (mode === 'unknown-reason') {
+    self.postMessage({ ok: false, reason: 'x' })
+  } else if (mode === 'too-many-pages') {
+    const pages = Array.from({ length: 400 }, (_v, i) => ({
+      number: i + 1,
+      text: 'a',
+      needsOcr: false,
+    }))
+    self.postMessage({ ok: true, document: { pages } })
+  } else if (mode === 'too-much-text') {
+    self.postMessage({
+      ok: true,
+      document: { pages: [{ number: 1, text: 'a'.repeat(6_000_000), needsOcr: false }] },
+    })
+  } else if (mode === 'bad-page') {
+    self.postMessage({
+      ok: true,
+      document: { pages: [{ number: 1.5, text: 'a', needsOcr: 'yes' }] },
+    })
+  } else if (mode === 'bad-page-count') {
+    self.postMessage({ ok: false, reason: 'too_many_pages', pageCount: -3 })
   } else if (mode === 'garbage') {
     self.postMessage('not a reply')
   } else {

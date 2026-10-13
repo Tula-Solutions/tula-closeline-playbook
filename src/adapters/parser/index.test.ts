@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import { loadEnv } from '~/env'
 import { ParseError } from '~/ports/parser'
 import { parserBehaviour } from '~/ports/parser.behaviour'
@@ -133,6 +133,34 @@ describe('a parser that hangs, crashes or runs away fails the document, never th
       const error = await failureOf(hostile().parse(misbehave(mode), { signal: never }))
       expect(error.reason).toBe('processing_failed')
       expect(String(error) + String(error.cause)).not.toContain('SECRET')
+    }
+  })
+
+  test.each([
+    'document-not-an-object',
+    'unknown-reason',
+    'too-many-pages',
+    'too-much-text',
+    'bad-page',
+    'bad-page-count',
+  ])('a reply that breaks the contract (%s) is a permanent processing_failed', async (mode) => {
+    const error = await failureOf(hostile().parse(misbehave(mode), { signal: never }))
+
+    expect(error.reason).toBe('processing_failed')
+  })
+
+  test('a postMessage that throws ends the parse at once as processing_failed', async () => {
+    const post = spyOn(Worker.prototype, 'postMessage').mockImplementation(() => {
+      throw new Error('cannot clone')
+    })
+    try {
+      const started = performance.now()
+      const error = await failureOf(hostile().parse(misbehave('ok'), { signal: never }))
+
+      expect(error.reason).toBe('processing_failed')
+      expect(performance.now() - started).toBeLessThan(1_000)
+    } finally {
+      post.mockRestore()
     }
   })
 
