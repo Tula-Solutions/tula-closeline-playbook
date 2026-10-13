@@ -5,6 +5,7 @@ import {
   CLEANUP_PENDING_AFTER_MS,
   inTransaction,
   type PipelineDeps,
+  reportWorkerError,
 } from '~/modules/ingestion/runtime'
 
 /** A timestamp column as a date, or `undefined` when the row has none. */
@@ -63,15 +64,20 @@ export async function cleanupPending(
         // Oldest first: everything after this is younger still.
         return cleaned
       }
-      const result = await cleanupDeletion(
-        deps,
-        organizationId,
-        String(row.id),
-        Number(row.deletion_seq),
-        signal
-      )
-      if (result === 'done') {
-        cleaned++
+      try {
+        const result = await cleanupDeletion(
+          deps,
+          organizationId,
+          String(row.id),
+          Number(row.deletion_seq),
+          signal
+        )
+        if (result === 'done') {
+          cleaned++
+        }
+      } catch (error) {
+        // One document must not starve the ones behind it: report it and go on.
+        reportWorkerError(deps, error, { worker: 'cleanup_pending', organizationId })
       }
     }
     const last = rows.at(-1)

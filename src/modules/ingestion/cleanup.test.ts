@@ -260,3 +260,36 @@ describe('the cleanup_pending sweep lists only the pending cleanups', () => {
     expect(await cleanupPending(h.deps, h.organizationId, never)).toBe(0)
   })
 })
+
+describe('one failing cleanup does not starve the ones behind it', () => {
+  test('the first pending document throws; the second is still cleaned in the same tick, and one error is reported', async () => {
+    const h = createPipelineHarness()
+    const deletedAt = h.deps.clock.now().getTime() - 10 * 60 * 1000
+    const first = `doc_${'1'.repeat(32)}`
+    const second = `doc_${'2'.repeat(32)}`
+    for (const [n, id] of [first, second].entries()) {
+      h.deps.database.seed({
+        id,
+        organization_id: h.organizationId,
+        state: 'deleted',
+        epoch: 1,
+        deletion_seq: 1,
+        vectors_removed_seq: null,
+        deleted_at: deletedAt + n,
+      })
+    }
+    const del = h.deps.vectors.deleteByFilter.bind(h.deps.vectors)
+    spyOn(h.deps.vectors, 'deleteByFilter').mockImplementation(async (org, filter) => {
+      if (filter.document_id === first) {
+        throw new Error('the vector store is down for this one')
+      }
+      return del(org, filter)
+    })
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(h.document(second)?.vectors_removed_seq).toBe(1)
+    expect(h.document(first)?.vectors_removed_seq).toBeNull()
+    expect(h.deps.reported).toHaveLength(1)
+  })
+})
