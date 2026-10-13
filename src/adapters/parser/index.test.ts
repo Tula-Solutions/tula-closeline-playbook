@@ -7,6 +7,9 @@ import {
   createDocumentParser,
   createDocumentParserFor,
   EXCLUSIVE_LANE_MS,
+  enterLane,
+  type LiveParses,
+  laneWaitCap,
   ParserOverloaded,
   ParserTransferFailed,
 } from './index'
@@ -202,9 +205,10 @@ describe('a parser that hangs, crashes or runs away fails the document, never th
   })
 
   /** A parser whose memory reading the test moves by hand and whose clock it also holds. */
-  function steered() {
+  function steered(extra: { maxLaneWaitMs?: number } = {}) {
     const state = { level: 0, time: 1_000_000 }
     const parser = createDocumentParser({
+      ...extra,
       limits,
       timeoutMs: 10_000,
       memoryLimitBytes: 100,
@@ -283,6 +287,60 @@ describe('a parser that hangs, crashes or runs away fails the document, never th
     await expect(waiting).rejects.toThrow('shutting down')
     await expect(holder).resolves.toBeDefined()
   }, 20_000)
+
+  test('a parse that waits for the lane past the cap ends ParserOverloaded, not a call timeout', async () => {
+    const { state, parser } = steered({ maxLaneWaitMs: 200 })
+    const trip = Promise.allSettled([
+      parser.parse(misbehave('slow'), { signal: never }),
+      parser.parse(misbehave('spin'), { signal: never }),
+    ])
+    await Bun.sleep(150)
+    state.level += 1_000_000
+    await trip
+    const holder = parser.parse(misbehave('slow'), { signal: never })
+    const started = performance.now()
+
+    const error = await parser.parse(misbehave('slow'), { signal: never }).then(
+      () => undefined,
+      (thrown: unknown) => thrown
+    )
+
+    expect(error).toBeInstanceOf(ParserOverloaded)
+    expect(performance.now() - started).toBeLessThan(500)
+    await holder
+  }, 20_000)
+
+  test('the wait cap leaves room for the parser limit inside the job timeout, whatever the settings', () => {
+    for (const [job, parser] of [
+      [180_000, 162_000],
+      [1_000, 900],
+      [600_000, 540_000],
+      [5_000, 4_500],
+    ] as const) {
+      expect(laneWaitCap(job, parser)).toBeGreaterThan(0)
+      expect(laneWaitCap(job, parser) + parser).toBeLessThan(job)
+      expect(laneWaitCap(job, parser)).toBeLessThanOrEqual(15_000)
+    }
+  })
+
+  test('an abort between a wake-up and the next wait ends the wait', async () => {
+    const parses: LiveParses = {
+      live: 1,
+      contendedUntil: 0,
+      exclusiveUntil: 10,
+      waiters: new Set(),
+    }
+    const controller = new AbortController()
+    const waiting = enterLane(parses, controller.signal, () => 0, 60_000)
+    await Bun.sleep(10)
+    // The lane is woken but still busy, and the abort lands before the waiter looks again.
+    for (const wake of [...parses.waiters]) {
+      wake()
+    }
+    controller.abort(new Error('shutting down'))
+
+    await expect(waiting).rejects.toThrow('shutting down')
+  }, 5_000)
 
   test('a parse that trips the memory limit alone is permanent', async () => {
     let grown = false

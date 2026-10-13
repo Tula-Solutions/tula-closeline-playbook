@@ -43,6 +43,19 @@ export class ParserTransferFailed extends Error {
  */
 export const EXCLUSIVE_LANE_MS = 30_000
 
+/**
+ * The longest a parse waits for the exclusive lane, in ms. The parser limit is 90% of the job's
+ * call timeout, so a parse that waits and then runs to the parser limit must still end before the
+ * job's own timeout (which is retried, unlike the parser's verdict): the wait is capped at this or
+ * at {@link laneWaitCap}, whichever is smaller.
+ */
+export const LANE_WAIT_MAX_MS = 15_000
+
+/** The wait cap for a parser limit of `parserTimeoutMs` under a job call timeout of `jobTimeoutMs`: 80% of the margin between them, at most {@link LANE_WAIT_MAX_MS}. */
+export function laneWaitCap(jobTimeoutMs: number, parserTimeoutMs: number): number {
+  return Math.min(LANE_WAIT_MAX_MS, Math.floor(0.8 * (jobTimeoutMs - parserTimeoutMs)))
+}
+
 /** Settings of {@link createDocumentParser}. */
 export type DocumentParserOptions = {
   /** The page and text limits handed to every parse. */
@@ -55,6 +68,8 @@ export type DocumentParserOptions = {
   workerUrl?: URL
   /** Reads the process's resident memory; tests replace it. */
   residentBytes?: () => number
+  /** The longest to wait for the exclusive lane, in ms; defaults to {@link LANE_WAIT_MAX_MS}. */
+  maxLaneWaitMs?: number
   /** The clock of the exclusive lane, in ms; tests replace it. */
   now?: () => number
 }
@@ -103,7 +118,7 @@ export function createDocumentParser(options: DocumentParserOptions): DocumentPa
       signal.throwIfAborted()
       // Waiting for the lane is not parse time: the document's own time limit starts when its
       // worker does. The job's call timeout covers the wait too, and a timeout there is retried.
-      await enterLane(parses, signal, now)
+      await enterLane(parses, signal, now, options.maxLaneWaitMs ?? LANE_WAIT_MAX_MS)
       try {
         return await runInWorker(document, signal, url, resident, options, parses, now)
       } finally {
@@ -114,7 +129,7 @@ export function createDocumentParser(options: DocumentParserOptions): DocumentPa
 }
 
 /** The parses running in one parser: the memory poll measures the whole process, so it must know who else is running. */
-type LiveParses = {
+export type LiveParses = {
   /** Parses with a worker running. */
   live: number
   /** Until this time (ms, real clock) a memory trip counts as shared, so the parses of one episode are judged alike. */
@@ -125,22 +140,42 @@ type LiveParses = {
   waiters: Set<() => void>
 }
 
-/** Waits until the parse may start: at once outside the exclusive window, else when none is running; honours `signal`. */
-async function enterLane(
+/**
+ * Waits until the parse may start: at once outside the exclusive window, else when none is
+ * running. Honours `signal` (checked on every pass, since an abort between a wake-up and the next
+ * wait has no listener to hear it) and gives up with {@link ParserOverloaded} after `maxWaitMs`.
+ */
+export async function enterLane(
   parses: LiveParses,
   signal: AbortSignal,
-  now: () => number
+  now: () => number,
+  maxWaitMs: number
 ): Promise<void> {
+  const giveUpAt = performance.now() + maxWaitMs
   while (now() < parses.exclusiveUntil && parses.live > 0) {
+    signal.throwIfAborted()
+    const remaining = giveUpAt - performance.now()
+    if (remaining <= 0) {
+      throw new ParserOverloaded()
+    }
     await new Promise<void>((resolve, reject) => {
-      const wake = () => {
+      const done = () => {
+        clearTimeout(timer)
         signal.removeEventListener('abort', onAbort)
+        parses.waiters.delete(wake)
+      }
+      const wake = () => {
+        done()
         resolve()
       }
       const onAbort = () => {
-        parses.waiters.delete(wake)
+        done()
         reject(signal.reason)
       }
+      const timer = setTimeout(() => {
+        done()
+        reject(new ParserOverloaded())
+      }, remaining)
       parses.waiters.add(wake)
       signal.addEventListener('abort', onAbort, { once: true })
     })
@@ -253,12 +288,14 @@ export function createDocumentParserFor(
     | 'PARSER_MEMORY_LIMIT_BYTES'
   >
 ): DocumentParser {
+  const timeoutMs = Math.floor(env.INGESTION_PARSE_TIMEOUT_MS * 0.9)
   return createDocumentParser({
+    maxLaneWaitMs: laneWaitCap(env.INGESTION_PARSE_TIMEOUT_MS, timeoutMs),
     limits: {
       maxPages: env.MAX_PAGES_PER_DOCUMENT,
       maxTextChars: env.MAX_TEXT_CHARS_PER_DOCUMENT,
     },
-    timeoutMs: Math.floor(env.INGESTION_PARSE_TIMEOUT_MS * 0.9),
+    timeoutMs,
     memoryLimitBytes: env.PARSER_MEMORY_LIMIT_BYTES,
   })
 }

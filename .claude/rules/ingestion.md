@@ -72,7 +72,10 @@ paths:
   healthy file finishes and a runaway trips the limit by itself and fails for good, at its next
   attempt. Waiting for the lane does not count against the parser's own time limit (it starts with
   the worker) but does count against the job's call timeout, which is retried; the wait honours the
-  abort signal and the job's heartbeat keeps running meanwhile. A throw while handing the document
+  abort signal (checked on every pass) and the job's heartbeat keeps running meanwhile. The wait
+  is capped at `LANE_WAIT_MAX_MS` (15 s) or 80% of the margin between the parser limit and the job
+  timeout (`laneWaitCap`), whichever is less, and past it the parse ends `ParserOverloaded`, so a
+  hostile file that waited can still reach the parser's own verdict before the job's timeout. A throw while handing the document
   to the worker is `ParserTransferFailed`, also retried. The Worker's
   reply is checked with a Zod schema against the limits before use. Hang, crash, runaway and nonsense replies are `ParseError('processing_failed')`,
   never retried (the file is the cause). No error message or log holds file content.
@@ -100,3 +103,7 @@ paths:
   the text pages until real OCR lands; PDFs that rely on predefined CJK CMaps may extract little
   text because no CMap source is configured; a hostile page that spins the CPU is stopped only by
   the host's time limit; job slots are shared across Organizations with no per-Organization share.
+- Known gap (parser memory): measured with the stand-in runaway Worker, the 50 ms poll lags a fast
+  allocator by hundreds of megabytes (a kill at about 765 MB of growth for a 256 MB limit), and a
+  killed Worker's memory stays resident. With the default 1 GiB limit the process can reach roughly
+  1.5 to 2 GiB above its baseline: size the container for that.
