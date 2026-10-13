@@ -5,6 +5,15 @@ import { serveOptions } from '~/http/serve'
 import { shutdown, stoppableWith } from '~/shutdown'
 
 const container = createContainer()
+// Crash handlers come first, so a failure while booting is reported and exits too.
+installCrashHandlers({
+  target: process,
+  report: (error, context) => reportSafely(container, error, context),
+  stopReceiving: (deadlineMs) => container.consumer.stop(deadlineMs),
+  close: container.close,
+  exit: (code) => process.exit(code),
+})
+
 const app = createApp(container)
 const server = Bun.serve(serveOptions(container, app))
 container.consumer.start()
@@ -29,10 +38,3 @@ function stop(signal: string): void {
 
 process.on('SIGTERM', () => stop('SIGTERM'))
 process.on('SIGINT', () => stop('SIGINT'))
-
-installCrashHandlers({
-  target: process,
-  report: (error, context) => reportSafely(container, error, context),
-  close: container.close,
-  exit: (code) => process.exit(code),
-})

@@ -244,10 +244,11 @@ export function createPostgresProcessedStore(
     },
 
     async purgeScope(organizationId, before, limit) {
-      // Postgres reads the four-digit-year ISO form of a timestamptz; a Date beyond year 9999 (or
-      // before year 0) prints with a sign and an extended year that it refuses.
-      if (Number.isNaN(before.getTime()) || !/^\d{4}-/.test(before.toISOString())) {
-        throw new RangeError('purge cutoff must be a date between the years 0 and 9999')
+      // Postgres has no year 0 and reads only the four-digit-year ISO form; a Date outside years
+      // 1 to 9999 prints as year 0 or with a sign and an extended year, which it refuses.
+      const year = before.getUTCFullYear()
+      if (Number.isNaN(year) || year < 1 || year > 9999) {
+        throw new RangeError('purge cutoff must be a date between the years 1 and 9999')
       }
       if (!Number.isInteger(limit) || limit < 1 || limit > PLAYBOOK_MAX_BATCH) {
         throw new RangeError(`purge limit must be a whole number from 1 to ${PLAYBOOK_MAX_BATCH}`)

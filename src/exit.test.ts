@@ -77,6 +77,39 @@ describe('exitAfterClose', () => {
   })
 })
 
+describe('a close that throws before returning a promise', () => {
+  test('a forced exit still exits with the original code', async () => {
+    const exits: number[] = []
+
+    exitAfterClose({
+      code: 3,
+      close: () => {
+        throw new Error('sync failure')
+      },
+      exit: (c) => exits.push(c),
+      deadlineMs: 5_000,
+    })
+    await Bun.sleep(10)
+
+    expect(exits).toEqual([3])
+  })
+
+  test('a clean exit exits 1', async () => {
+    const exits: number[] = []
+
+    exitAfterClose({
+      code: 0,
+      close: () => {
+        throw new Error('sync failure')
+      },
+      exit: (c) => exits.push(c),
+    })
+    await Bun.sleep(10)
+
+    expect(exits).toEqual([1])
+  })
+})
+
 describe('installCrashHandlers', () => {
   function setup() {
     const target = new EventEmitter()
@@ -123,6 +156,49 @@ describe('installCrashHandlers', () => {
     await Bun.sleep(10)
 
     expect(reported).toHaveLength(1)
+    expect(exits).toEqual([1])
+  })
+
+  test('the consumer stops receiving, with no deadline, after the report and before the exit', async () => {
+    const target = new EventEmitter()
+    const order: string[] = []
+    installCrashHandlers({
+      target,
+      report: () => order.push('report'),
+      stopReceiving: (deadlineMs) => {
+        order.push(`stop ${deadlineMs}`)
+        return new Promise(() => {})
+      },
+      close: async () => {
+        order.push('close')
+      },
+      exit: () => order.push('exit'),
+      deadlineMs: 20,
+    })
+
+    target.emit('uncaughtException', new Error('boom'))
+    await Bun.sleep(30)
+
+    expect(order).toEqual(['report', 'stop 0', 'close', 'exit'])
+  })
+
+  test('a consumer that cannot stop does not stop the exit', async () => {
+    const target = new EventEmitter()
+    const exits: number[] = []
+    installCrashHandlers({
+      target,
+      report: () => undefined,
+      stopReceiving: () => {
+        throw new Error('already stopped')
+      },
+      close: async () => undefined,
+      exit: (c) => exits.push(c),
+      deadlineMs: 20,
+    })
+
+    target.emit('unhandledRejection', new Error('boom'))
+    await Bun.sleep(10)
+
     expect(exits).toEqual([1])
   })
 

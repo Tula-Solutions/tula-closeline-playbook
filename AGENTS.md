@@ -61,6 +61,8 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 - A queue message type is published only after its handler exists. A message with no handler is
   loud, not silently lost: logged and reported at every delivery, hidden for the invalid delay
   (60 s), and dead-lettered after the queue's `maxReceiveCount`.
+- An unhandled rejection or uncaught exception is fatal by design: it is reported, the consumer
+  stops receiving, and the process exits 1 (`src/exit.ts`). Catch what a step can recover from.
 - Hub issue 14: the 1 MiB global body limit (`MAX_REQUEST_BODY_BYTES`, `createBaseApp`) and Bun's
   `maxRequestBodySize` (`serveOptions`) block the 25 MiB upload until the upload route sets its own
   limit and `serve.ts` raises Bun's to match.

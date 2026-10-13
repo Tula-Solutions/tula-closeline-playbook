@@ -1,6 +1,8 @@
 /**
- * The most texts one {@link Embedder.embed} call takes. Cohere Embed v4 accepts 96 texts per
- * request (ADR 0010), and a batch is the unit of one outbound call, timeout and retry.
+ * The most texts one {@link Embedder.embed} call takes; a batch is the unit of one outbound call,
+ * timeout and retry. Provisional: 96 is a guess from memory, not from ADR 0010 or the vendor's
+ * documentation. Confirm it against the documented limit of the vendor's embedding API when the
+ * real adapter is written, and change it here.
  */
 export const MAX_EMBED_TEXTS = 96
 

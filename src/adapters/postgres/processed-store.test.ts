@@ -306,12 +306,27 @@ describe('purge bounds and the global scope', () => {
     ['a limit one above the library maximum', new Date(), PLAYBOOK_MAX_BATCH + 1, /limit/],
     ['a cutoff beyond the Date range limit of timestamptz', new Date(8.64e15), 10, /cutoff/],
     ['a cutoff before the year 4713 BC', new Date(-8.64e15), 10, /cutoff/],
+    [
+      'a cutoff in year 0, which Postgres does not have',
+      new Date('0000-06-01T00:00:00Z'),
+      10,
+      /cutoff/,
+    ],
+    ['a cutoff in year 9999 plus one', new Date('+010000-01-01T00:00:00Z'), 10, /cutoff/],
   ])('purgeScope refuses %s before any query', async (_name, before, limit, message) => {
     const { scope, calls } = scripted([])
     const store = createPostgresProcessedStore({ scope })
 
     await expect(store.purgeScope(ORG, before, limit)).rejects.toThrow(message)
     expect(calls).toHaveLength(0)
+  })
+
+  test('the first and last accepted years are accepted', async () => {
+    const { scope } = scripted([none, none])
+    const store = createPostgresProcessedStore({ scope })
+
+    expect(await store.purgeScope(ORG, new Date('0001-01-01T00:00:00Z'), 10)).toBe(0)
+    expect(await store.purgeScope(ORG, new Date('9999-12-31T23:59:59Z'), 10)).toBe(0)
   })
 
   test('the largest batch the library allows is accepted', async () => {

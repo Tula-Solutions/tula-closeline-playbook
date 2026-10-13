@@ -24,17 +24,24 @@ export type ExitOptions = {
 export function exitAfterClose(options: ExitOptions): void {
   const { code, close, exit } = options
   if (code === 0) {
-    close().then(
-      () => exit(0),
-      () => exit(1)
-    )
+    Promise.resolve()
+      .then(close)
+      .then(
+        () => exit(0),
+        () => exit(1)
+      )
     return
   }
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, options.deadlineMs ?? FORCED_CLOSE_DEADLINE_MS)
   })
-  Promise.race([close().catch(() => undefined), deadline]).then(() => {
+  Promise.race([
+    Promise.resolve()
+      .then(close)
+      .catch(() => undefined),
+    deadline,
+  ]).then(() => {
     clearTimeout(timer)
     exit(code)
   })
@@ -51,6 +58,8 @@ export type CrashHandlerOptions = {
   }
   /** Reports through the container's error seam; it must not throw but a throw is survived. */
   report: (error: unknown, context: ErrorContext) => void
+  /** Stops the queue consumer receiving; called with a zero deadline and never awaited past the exit deadline. */
+  stopReceiving?: (deadlineMs: number) => unknown
   close: () => Promise<void>
   exit: (code: number) => void
   deadlineMs?: number
@@ -77,6 +86,13 @@ export function installCrashHandlers(options: CrashHandlerOptions): void {
       })
     } catch {
       // A failing reporter must not keep a crashed process alive.
+    }
+    try {
+      // No new work after a crash; what is in flight goes back to the queue, and the exit does
+      // not wait for it beyond the close deadline.
+      Promise.resolve(options.stopReceiving?.(0)).catch(() => undefined)
+    } catch {
+      // A consumer that cannot stop must not keep a crashed process alive.
     }
     exitAfterClose({
       code: 1,
