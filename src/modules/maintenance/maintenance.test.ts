@@ -1,6 +1,11 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { formatId } from 'tula-closeline-contract'
-import { ORGANIZATIONS_WITH_WORK, ORPHAN_SWEEP_DONE } from 'tula-closeline-db'
+import {
+  DOCUMENT_INSERT,
+  IDEMPOTENCY_BEGIN,
+  ORGANIZATIONS_WITH_WORK,
+  ORPHAN_SWEEP_DONE,
+} from 'tula-closeline-db'
 import { postgresError } from '~/adapters/memory/playbook-database'
 import { registry } from '~/messages'
 import * as Documents from '~/modules/document/service'
@@ -207,8 +212,8 @@ describe('the orphan object sweep', () => {
     expect(await h.deps.objects.head(h.organizationId, orphan)).toBeUndefined()
     expect(h.deps.database.discoveries.map((d) => d.kind)).toContain('orphan_sweep')
     expect(await names()).not.toContain(h.organizationId)
-    // The key is kept for 26 hours, an hour past the sweep, then purged.
-    expect(h.deps.database.keys(h.organizationId)).toHaveLength(1)
+    // The keys (the client's and the attempt record) are kept for 26 hours, then purged.
+    expect(h.deps.database.keys(h.organizationId)).toHaveLength(2)
   })
 
   test('an attempt newer than the sweep keeps the Organization named until its own sweep (more)', async () => {
@@ -305,7 +310,7 @@ describe('the orphan object sweep', () => {
     await h.upload('a.txt', paragraphs(2), { key: 'first' })
     await h.deps.time.advance(25 * 60 * 60 * 1000)
     await h.deps.workers.sweeps.run('housekeeping')
-    expect(h.deps.database.keys(h.organizationId)).toHaveLength(1)
+    expect(h.deps.database.keys(h.organizationId)).toHaveLength(2)
 
     await h.deps.time.advance(2 * 60 * 60 * 1000)
     await h.deps.workers.sweeps.run('housekeeping')
@@ -535,5 +540,105 @@ describe('the sweeps run without the job loop (outside local, workers off)', () 
     await h.deps.workers.stop(1_000)
 
     expect(h.document(id)?.state).toBe('ready')
+  })
+})
+
+describe('an upload that may leave an object is visible to the orphan sweep before the object is written', () => {
+  const HOURS = 60 * 60 * 1000
+  const names = async (h: ReturnType<typeof createPipelineHarness>) =>
+    (await h.deps.discover('orphan_sweep', '', 100)).map((row) => row.organization_id)
+
+  /** A put whose write lands and whose answer is lost. */
+  const landThenFail = (h: ReturnType<typeof createPipelineHarness>) => {
+    const put = h.deps.objects.put.bind(h.deps.objects)
+    spyOn(h.deps.objects, 'put').mockImplementation(async (org, key, body, options) => {
+      await put(org, key, body, options)
+      throw new Error('the connection dropped after the write')
+    })
+  }
+  const objectsOf = async (h: ReturnType<typeof createPipelineHarness>) =>
+    (await h.deps.objects.list(h.organizationId, { prefix: 'documents/' })).items
+
+  test.each([
+    ['with a client Idempotency-Key', { key: 'client-key' }],
+    ['without one', {}],
+  ])('a put with an unknown outcome is swept after 26 hours (%s)', async (_name, options) => {
+    const h = createPipelineHarness()
+    landThenFail(h)
+    await expect(h.upload('notes.txt', paragraphs(2), options)).rejects.toBeDefined()
+    expect(await objectsOf(h)).toHaveLength(1)
+    expect(h.document(h.deps.database.documents(h.organizationId)[0]?.id ?? '')).toBeUndefined()
+
+    await h.deps.time.advance(26 * HOURS)
+    expect(await names(h)).toContain(h.organizationId)
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    expect(await objectsOf(h)).toEqual([])
+    expect(await names(h)).not.toContain(h.organizationId)
+  })
+
+  test('the second transaction failing and the cleanup delete failing leaves an orphan the sweep finds', async () => {
+    const h = createPipelineHarness()
+    h.deps.database.failNext(DOCUMENT_INSERT, new Error('the database went away'))
+    spyOn(h.deps.objects, 'delete').mockRejectedValue(new Error('storage is down'))
+
+    await expect(h.upload('notes.txt', paragraphs(2))).rejects.toBeDefined()
+    expect(await objectsOf(h)).toHaveLength(1)
+    spyOn(h.deps.objects, 'delete').mockRestore()
+
+    await h.deps.time.advance(26 * HOURS)
+    await h.deps.workers.sweeps.run('housekeeping')
+
+    expect(await objectsOf(h)).toEqual([])
+  })
+
+  test('the attempt record is a key under its own route, never completed, with no response or file name', async () => {
+    const h = createPipelineHarness()
+    await h.upload('secret-name.txt', paragraphs(2))
+
+    const [attempt, ...rest] = h.deps.database.keys(h.organizationId)
+
+    expect(rest).toEqual([])
+    expect(attempt).toMatchObject({
+      route: 'documents.upload_attempt',
+      status: null,
+      response: null,
+    })
+    expect(JSON.stringify(attempt)).not.toContain('secret-name')
+  })
+
+  test('an upload that writes no object (the same content again) records no attempt', async () => {
+    const h = createPipelineHarness()
+    await h.upload('a.txt', 'same content here')
+    const before = h.deps.database.keys(h.organizationId).length
+
+    await h.upload('b.txt', 'same content here')
+
+    expect(h.deps.database.keys(h.organizationId)).toHaveLength(before)
+  })
+
+  test('a client retry with the same key after a failed attempt still behaves as before', async () => {
+    const h = createPipelineHarness()
+    const put = h.deps.objects.put.bind(h.deps.objects)
+    spyOn(h.deps.objects, 'put').mockRejectedValueOnce(new Error('storage is down'))
+    await expect(h.upload('a.txt', paragraphs(2), { key: 'retry-me' })).rejects.toBeDefined()
+    spyOn(h.deps.objects, 'put').mockImplementation(put)
+
+    const id = await h.upload('a.txt', paragraphs(2), { key: 'retry-me' })
+    const again = await h.upload('a.txt', paragraphs(2), { key: 'retry-me' })
+
+    expect(h.document(id)?.state).toBe('uploaded')
+    expect(again).toBe(id)
+    const routes = h.deps.database.keys(h.organizationId).map((k) => k.route)
+    expect(routes.filter((r) => r === 'documents.upload')).toHaveLength(1)
+  })
+
+  test('if the attempt cannot be recorded the object is not written', async () => {
+    const h = createPipelineHarness()
+    h.deps.database.failNext(IDEMPOTENCY_BEGIN, new Error('the database went away'))
+    // The client sent no key, so the only IDEMPOTENCY_BEGIN is the attempt record.
+    await expect(h.upload('a.txt', paragraphs(2))).rejects.toBeDefined()
+
+    expect(await objectsOf(h)).toEqual([])
   })
 })

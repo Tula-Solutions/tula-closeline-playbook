@@ -30,6 +30,7 @@ import {
   DOCUMENT_RESTORE,
   DOCUMENT_RESTORE_FOR_UPLOAD,
   DOCUMENT_SOFT_DELETE,
+  IDEMPOTENCY_BEGIN,
   ORGANIZATION_REMOVAL_STATUS,
   ORGANIZATION_REMOVE_REST,
   QUOTA_LOCK,
@@ -368,6 +369,9 @@ export async function upload(
       outcome = await transaction(deps, organizationId, decide)
     } catch (error) {
       if (error instanceof ObjectRequired && attempt === 0) {
+        // Make the attempt visible to the orphan sweep before any object can exist: the key of the
+        // transaction above rolled back with it, and a client may have sent none.
+        await recordUploadAttempt(deps, context)
         try {
           await deps.objects.put(organizationId, objectKey, input.bytes, {
             contentType: MEDIA_TYPE_BY_EXTENSION[`.${fileType}`],
@@ -407,6 +411,34 @@ export async function upload(
     }
     return { status: outcome.status, document: outcome.document }
   }
+}
+
+/** The internal route of the attempt records: never a client's, never looked up, replayed or completed. */
+export const UPLOAD_ATTEMPT_ROUTE = 'documents.upload_attempt'
+
+/**
+ * Commits an upload-attempt record in its own short transaction, immediately before an object is
+ * written. It is an idempotency key row under {@link UPLOAD_ATTEMPT_ROUTE} with a random key and a
+ * zero request hash, so it holds nothing of the request (no file name, content hash or response)
+ * and nothing can find or complete it. Its commit fires the database trigger that notes the
+ * `orphan_sweep` hint, so an object left by a write of unknown outcome is swept 25 hours later; the
+ * key is purged at 26 hours. It takes no lock but the row's own, and not the upload lock. If it
+ * cannot be recorded the upload fails before anything is stored. Cost: one short transaction and
+ * one row per upload that writes an object.
+ */
+async function recordUploadAttempt(
+  deps: Pick<DocumentDeps, 'scope'>,
+  context: CallContext
+): Promise<void> {
+  await transaction(deps, context.organizationId, async (run) => {
+    await run(IDEMPOTENCY_BEGIN, [
+      context.organizationId,
+      context.userId,
+      UPLOAD_ATTEMPT_ROUTE,
+      crypto.randomUUID(),
+      Buffer.alloc(32),
+    ])
+  })
 }
 
 /** Removes the object of an upload that left no row, when that is certain; otherwise leaves it and says so. */
