@@ -215,7 +215,7 @@ export function createDocumentRouter(container: Container): OpenAPIHono<AuthedEn
         declaredMediaType: part.type === '' ? null : part.type,
       }
       // Size and type first, from what the parser counted, before the bytes are copied out.
-      Documents.assertUploadable({ ...file, sizeBytes: part.size })
+      Documents.assertUploadable({ ...file, sizeBytes: part.size }, container.env.MAX_UPLOAD_BYTES)
       const bytes = new Uint8Array(await part.arrayBuffer())
       const result = await Documents.upload(container, contextOf(c), {
         ...file,

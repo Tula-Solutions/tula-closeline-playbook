@@ -128,6 +128,18 @@ describe('upload: refused requests', () => {
     expect(h.deps.database.transactions).toEqual([])
   })
 
+  test('a file over the lowered size limit is refused before its bytes are copied out of the part', async () => {
+    const h = await createDocumentHarness({ env: { MAX_UPLOAD_BYTES: '1000' } })
+    const copy = spyOn(Blob.prototype, 'arrayBuffer')
+
+    const response = await h.upload('a.pdf', pdfBytes('big', 2000))
+
+    expect(response.status).toBe(413)
+    expect(await errorCode(response)).toBe('document.too_large')
+    expect(copy).not.toHaveBeenCalled()
+    copy.mockRestore()
+  })
+
   test('a body over the envelope limit is request.too_large, read no further than the limit', async () => {
     const h = await createDocumentHarness({ env: { MAX_UPLOAD_BYTES: '2000' } })
     const auth = await h.bearer(h.people.owner)

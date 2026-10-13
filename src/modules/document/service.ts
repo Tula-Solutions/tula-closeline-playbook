@@ -112,13 +112,16 @@ export function assertRole(context: Pick<CallContext, 'role'>, roles: readonly R
 /**
  * Refuses a file part that is too large, of an unsupported type or malformed, from what is known
  * before its bytes are read: the name, the declared type and the size the multipart parser counted.
+ * `maxBytes` is the instance's own `MAX_UPLOAD_BYTES`, which may be lower than the contract's.
  * The upload runs the same check again on the bytes it holds.
  */
-export function assertUploadable(file: {
-  fileName: string
-  declaredMediaType: string | null
-  sizeBytes: number
-}): void {
+export function assertUploadable(
+  file: { fileName: string; declaredMediaType: string | null; sizeBytes: number },
+  maxBytes: number
+): void {
+  if (file.sizeBytes > maxBytes) {
+    throw failure('document.too_large')
+  }
   const checked = checkUploadFile(file)
   if (!checked.ok) {
     throw failure(checked.code)
