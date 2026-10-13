@@ -11,6 +11,7 @@ import { createMemoryEmbedder } from '~/adapters/memory/embedder'
 import { postgresError } from '~/adapters/memory/playbook-database'
 import { createApp } from '~/app'
 import * as Documents from '~/modules/document/service'
+import { ParseError } from '~/ports/parser'
 import { createIngestion } from '~/workers/ingestion'
 import { pdfBytes } from '../document/test-support'
 import {
@@ -105,6 +106,35 @@ describe('a document that cannot be ingested fails with a reason', () => {
     })
     expect(await h.vectorIds(id)).toEqual([])
     expect(jobOutcomes(h.deps)).toEqual(['failed'])
+  })
+
+  test('a parser that counts the pages before reading them: too_many_pages with the page count recorded', async () => {
+    const h = createPipelineHarness()
+    spyOn(h.deps.parser, 'parse').mockRejectedValue(
+      new ParseError('too_many_pages', { pageCount: 450 })
+    )
+    const id = await h.upload('long.txt', 'x')
+
+    await h.pass()
+
+    expect(h.document(id)).toMatchObject({
+      state: 'failed',
+      failure_reason: 'too_many_pages',
+      page_count: 450,
+    })
+  })
+
+  test('a parser that gives up on a hostile file: processing_failed, tried once', async () => {
+    const h = createPipelineHarness()
+    const parse = spyOn(h.deps.parser, 'parse').mockRejectedValue(
+      new ParseError('processing_failed')
+    )
+    const id = await h.upload('hostile.txt', 'x')
+
+    await h.pass()
+
+    expect(h.document(id)).toMatchObject({ state: 'failed', failure_reason: 'processing_failed' })
+    expect(parse).toHaveBeenCalledTimes(1)
   })
 
   test('bytes the parser cannot read: unreadable', async () => {
