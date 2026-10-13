@@ -225,8 +225,6 @@ const schema = z
     HOUSEKEEPING_INTERVAL_MS: integer(1_000, 86_400_000).default(600_000),
     /** How long a purge claim is held while the vectors and files go, in ms. */
     PURGE_LEASE_MS: integer(5_000, 3_600_000).default(120_000),
-    /** The youngest an object with no document may be before the orphan sweep deletes it, in ms (at least one hour). */
-    ORPHAN_MIN_AGE_MS: integer(3_600_000, 2_592_000_000).default(86_400_000),
     /** Objects one orphan-sweep listing page holds (1 to 1000). */
     ORPHAN_PAGE_SIZE: integer(1, 1_000).default(200),
     /** Listing pages the orphan sweep reads per Organization per pass. */

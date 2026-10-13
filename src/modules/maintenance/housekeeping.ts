@@ -10,6 +10,14 @@ import type { ProcessedStore } from 'tula-closeline-kit'
 import { isLockTimeout } from '~/adapters/postgres/retry'
 import { inTransaction, type PipelineDeps, within } from '~/modules/ingestion/runtime'
 
+/**
+ * The youngest an object with no document may be before the orphan sweep deletes it: 24 hours, the
+ * database's rule (the orphan sweep's 25-hour age and the 26-hour key purge are built on it), so it
+ * is a constant and not a setting: above it the sweep would skip objects and still declare them
+ * swept, below it a young upload's object could be deleted.
+ */
+export const ORPHAN_OBJECT_MIN_AGE_MS = 24 * 60 * 60 * 1000
+
 /** The rounds one purge repeats while its batches come back full. */
 const MAX_PURGE_ROUNDS = 20
 
@@ -91,7 +99,7 @@ export function documentIdOfKey(key: string): string | undefined {
 
 /**
  * Deletes the Organization's objects under `documents/` that no document names and that are older
- * than `ORPHAN_MIN_AGE_MS` (an upload whose outcome was unknown leaves one). The listing is paged
+ * than {@link ORPHAN_OBJECT_MIN_AGE_MS} (an upload whose outcome was unknown leaves one). The listing is paged
  * (`ORPHAN_PAGE_SIZE`, at most `ORPHAN_MAX_PAGES` pages a pass); an object is deleted only when
  * its document id has no row and its last write is old, so an upload in progress, whose object
  * is young, is never touched. An object under another prefix, or with a key of another shape,
@@ -120,7 +128,7 @@ export async function sweepOrphanObjectsOnce(
   signal: AbortSignal
 ): Promise<OrphanSweepResult> {
   const { env } = deps
-  const oldest = deps.clock.now().getTime() - env.ORPHAN_MIN_AGE_MS
+  const oldest = deps.clock.now().getTime() - ORPHAN_OBJECT_MIN_AGE_MS
   let cursor: string | undefined
   let deleted = 0
   let complete = false

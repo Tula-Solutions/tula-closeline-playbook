@@ -33,7 +33,7 @@ paths:
   `purge` every `SWEEP_INTERVAL_MS`, `housekeeping` (consumed and idempotency purges, spent purges
   logged for a person and never claimed, orphan objects) every `HOUSEKEEPING_INTERVAL_MS`. Orphan
   rule: delete an object under `documents/doc_<id>/` only if the id has no row and the object is
-  older than `ORPHAN_MIN_AGE_MS` (24 h). Orphans have the `orphan_sweep` work kind (an Organization
+  older than 24 h (`ORPHAN_OBJECT_MIN_AGE_MS`, the db's rule, not a setting). Orphans have the `orphan_sweep` work kind (an Organization
   is named 25 h after its oldest unswept upload attempt): `visitOrphanSweep` sweeps, then records
   it with `ORPHAN_SWEEP_DONE` using the time the sweep started (not when done is called), under a
   1 s `lock_timeout`; a timeout is tried again next tick, unreported, and a listing cut short by

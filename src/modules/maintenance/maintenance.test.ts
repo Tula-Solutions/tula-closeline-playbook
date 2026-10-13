@@ -642,3 +642,21 @@ describe('an upload that may leave an object is visible to the orphan sweep befo
     expect(await objectsOf(h)).toEqual([])
   })
 })
+
+describe('the orphan age is the database rule (24 hours), not a setting', () => {
+  test('an object under 24 hours old is kept even if a shorter age is configured, one over is deleted', async () => {
+    const h = createPipelineHarness({ env: { ORPHAN_MIN_AGE_MS: '3600000' } })
+    const young = `documents/doc_${'1'.repeat(32)}/original.pdf`
+    const old = `documents/doc_${'2'.repeat(32)}/original.pdf`
+    await h.deps.objects.put(h.organizationId, old, new Uint8Array([1]))
+    await h.deps.time.advance(60 * 60 * 1000)
+    await h.deps.objects.put(h.organizationId, young, new Uint8Array([1]))
+    await h.deps.time.advance(23 * 60 * 60 * 1000 + 30 * 60 * 1000)
+    // Now `old` is 24 h 30 m old and `young` 23 h 30 m old.
+
+    expect(await sweepOrphanObjects(h.deps, h.organizationId, new AbortController().signal)).toBe(1)
+
+    expect(await h.deps.objects.head(h.organizationId, young)).toBeDefined()
+    expect(await h.deps.objects.head(h.organizationId, old)).toBeUndefined()
+  })
+})
