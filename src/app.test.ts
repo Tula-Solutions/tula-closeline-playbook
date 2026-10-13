@@ -38,11 +38,19 @@ describe('the booted app', () => {
     const document = (await response.json()) as ServedDocument
     expect(document.openapi).toBe('3.1.0')
     expect(document.info.title).toBe(SERVICE)
-    expect(Object.keys(document.paths).sort()).toEqual(['/healthz', '/readyz'])
+    expect(Object.keys(document.paths).sort()).toEqual([
+      '/healthz',
+      '/internal/playbook/organizations/{organizationId}/remove-all',
+      '/readyz',
+      '/v1/playbook/documents',
+      '/v1/playbook/documents/{documentId}',
+      '/v1/playbook/documents/{documentId}/restore',
+    ])
     expect(document.paths['/healthz']?.get.responses['500']).toBeDefined()
     expect(document.paths['/readyz']?.get.responses['503']).toBeDefined()
     expect(JSON.stringify(document.paths['/healthz']?.get.responses['500'])).toContain('code')
     expect(document.components?.securitySchemes).toHaveProperty('accessToken')
+    expect(document.components?.securitySchemes).toHaveProperty('internalSecret')
   })
 
   test('the document written by the script is the document the app serves', async () => {

@@ -2,14 +2,17 @@ import type { OpenAPIHono } from '@hono/zod-openapi'
 import type { Container } from '~/container'
 import { type AuthedEnv, authenticate } from '~/http/auth'
 import { createBaseApp } from '~/http/base'
+import { PUBLIC_PREFIX } from '~/http/limits'
 import { createRouter } from '~/http/router'
 import { registerSecuritySchemes } from '~/http/security'
 import type { AppEnv } from '~/http/types'
+import { createInternalDocumentRouter } from '~/modules/document/internal-router'
+import { createDocumentRouter } from '~/modules/document/router'
 import { createHealthRouter } from '~/modules/health/router'
 import { serveOpenApi } from '~/openapi'
 
 /** The prefix of every public route, which sits behind the access-token middleware. */
-export const PUBLIC_PREFIX = '/v1'
+export { PUBLIC_PREFIX }
 
 /**
  * Build the HTTP app from a container. Modules are mounted here as they are added. The public
@@ -21,10 +24,11 @@ export function createApp(container: Container): OpenAPIHono<AppEnv> {
   registerSecuritySchemes(app)
 
   app.route('/', createHealthRouter(container))
+  app.route('/', createInternalDocumentRouter(container))
 
   const publicRoutes = createRouter<AuthedEnv>()
   publicRoutes.use('*', authenticate(container))
-  // Playbook routes (hub issue 14) are mounted on publicRoutes here.
+  publicRoutes.route('/', createDocumentRouter(container))
   app.route(PUBLIC_PREFIX, publicRoutes)
 
   serveOpenApi(app)

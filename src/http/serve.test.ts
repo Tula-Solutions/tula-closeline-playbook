@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { errorBodySchema } from 'tula-closeline-contract'
 import { createApp } from '~/app'
 import { createTestDeps } from '~/testing'
+import { UPLOAD_BODY_OVERHEAD_BYTES } from './limits'
 import { BODY_LIMIT_MARGIN_BYTES, serveOptions } from './serve'
 
 function optionsFor(env: Record<string, string>) {
@@ -38,11 +39,22 @@ describe('Bun.serve options', () => {
     }
   })
 
-  test('the request body size and port come from configuration', () => {
-    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '2048', PORT: '4100' })
+  test('the port comes from configuration', () => {
+    expect(optionsFor({ PORT: '4100' }).options.port).toBe(4100)
+  })
 
-    expect(options.maxRequestBodySize).toBe(2048 + BODY_LIMIT_MARGIN_BYTES)
-    expect(options.port).toBe(4100)
+  test('Bun is given the largest route limit, the upload route, because it cannot limit one route', () => {
+    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '2048', MAX_UPLOAD_BYTES: '5000' })
+
+    expect(options.maxRequestBodySize).toBe(
+      5000 + UPLOAD_BODY_OVERHEAD_BYTES + BODY_LIMIT_MARGIN_BYTES
+    )
+  })
+
+  test('a limit raised above the upload limit wins, so no route is cut by Bun first', () => {
+    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '9000000', MAX_UPLOAD_BYTES: '5000' })
+
+    expect(options.maxRequestBodySize).toBe(9_000_000 + BODY_LIMIT_MARGIN_BYTES)
   })
 })
 

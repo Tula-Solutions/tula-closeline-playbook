@@ -27,8 +27,11 @@ search over them, and later fine-tuning. It owns the `playbook` Postgres schema 
 `closeline_playbook`), its bucket and its queue, and nothing else. It never reads the `core` or
 `auth` schema; it asks core over HTTP or consumes events.
 
-What exists: the skeleton (HTTP stack, token check, container, consumer loop, ports and fakes).
-What does not: Playbook routes and pipeline steps (hub issue 14) and every real vendor adapter.
+What exists: the skeleton (HTTP stack, token check, container, consumer loop, ports and fakes) and
+the document routes (hub issue 14, round A): upload, list, read, delete, restore and the internal
+remove-all.
+What does not: the pipeline (consumers, the ingestion job loop, vector cleanup, the purge and
+erasure sweeps: round B) and every real vendor adapter.
 
 ## Layout
 
@@ -46,6 +49,13 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 - All database access goes through `container.withOrganization(organizationId, fn)`, the db
   library's tenant-scoped helper. Statements are the db library's `PLAYBOOK_STATEMENTS` strings;
   `statementOf` in `src/adapters/postgres/processed-store.ts` binds their `$n` placeholders.
+- `src/modules/document/` is the document module: `router.ts` (public, under `/v1`),
+  `internal-router.ts` (behind the ADR 0013 secret, `/internal/...`), `service.ts` (every rule),
+  `idempotency.ts` (the key table, core's pattern), `detect.ts` (content check), `schema.ts` (rows to
+  contract documents, list cursor). Routes, roles, codes and descriptions come from the contract's
+  `PLAYBOOK_ROUTES`. Unit tests run on `src/adapters/memory/playbook-database.ts`, a double that runs
+  the db library's statements by their text; `document.integration.ts` runs the real ones. It is a required CI check that `bun run verify` does not
+  run locally; run it with the compose Postgres up before relying on a change to a statement's use.
 - `src/messages.ts` is the registry of the two contract messages. `src/consumer.ts` wires the kit's
   `createConsumer` (name `playbook.ingestion`) over the Postgres `ProcessedStore`; handlers go in
   `createHandlers`. `server.ts` starts the consumer; shutdown stops it (`stoppableWith`).
@@ -63,14 +73,57 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   (60 s), and dead-lettered after the queue's `maxReceiveCount`.
 - An unhandled rejection or uncaught exception is fatal by design: it is reported, the consumer
   stops receiving, and the process exits 1 (`src/exit.ts`). Catch what a step can recover from.
-- Hub issue 14: the 1 MiB global body limit (`MAX_REQUEST_BODY_BYTES`, `createBaseApp`) and Bun's
-  `maxRequestBodySize` (`serveOptions`) block the 25 MiB upload until the upload route sets its own
-  limit and `serve.ts` raises Bun's to match.
+- Body limits: every route has `MAX_REQUEST_BODY_BYTES` (1 MiB) except the upload, which has
+  `MAX_UPLOAD_BYTES` plus 64 KiB of multipart envelope (`src/http/limits.ts`). Bun's
+  `maxRequestBodySize` is one number per process, so `serveOptions` gives it the largest route
+  limit and the app's own limits hold the others. The upload's limit checks the declared length
+  only in middleware and caps the stream where the route reads it (`capBody`): nothing buffers an
+  unauthenticated body.
+- Both upload bounds (the instance's places and one Organization's share) are per instance and
+  in memory. With `MAX_CONCURRENT_UPLOADS=1` the share is the whole gate. Two Organizations (or one
+  with many accounts) can still hold every place by reconnecting each time a deadline passes, so a
+  rate limit per user or source at the edge is required before production (hub issue 19, infra).
+  The default `UPLOAD_BODY_TIMEOUT_MS` of 60 s assumes at least about 3.5 Mbit/s up for a 25 MiB
+  file (25 MiB in 60 s); slower links need a larger value, and it is left at 60 s deliberately.
+- The upload order (service.ts, `upload`): role, instance bound (`MAX_CONCURRENT_UPLOADS`, 503 with
+  `Retry-After` when full: the contract has no code for it; one Organization may hold at most half
+  the places, rounded up and at least one, else `rate.limited` 429 with `Retry-After`), body cap and
+  a deadline on the body (`UPLOAD_BODY_TIMEOUT_MS`, default 60 s; a slower body is cut off with
+  `server.timeout` 504 and gives its place back), multipart, `checkUploadFile` (with the instance's
+  own `MAX_UPLOAD_BYTES`, before the file is copied out of the part),
+  content check (a DOCX or PPTX is judged by the entry names in its ZIP central directory only),
+  SHA-256, then one transaction (idempotency key, quota lock, duplicate by hash,
+  quota, insert; it rolls back with `ObjectRequired` when it would insert before the file is
+  stored), the object write under `documents/<documentId>/original.<type>`, the transaction again,
+  and only then the publish. No publish inside a transaction. A crash before the commit leaves
+  nothing a row names (the file is deleted only when the transaction certainly rolled back: an error
+  raised while its work ran, or a serialization, deadlock or class 23 answer to the commit; any
+  other error at or after the commit leaves the file and logs "unknown outcome"); after it the document is `uploaded` with a queued job, which the job loop
+  finds without the message (`jobs_due`). A failed delete or restore publish is recovered by the
+  `cleanup_pending` sweep. A publish failure never fails a request that has committed.
+- Round B must: handle `playbook.document_uploaded` and `playbook.document_deleted` (until then a
+  published message is hidden, reported and dead-lettered by the consumer: do not deploy round A
+  alone); run the job loop over `jobs_due`; run the purge sweep over `purge_due` (the remove-all
+  route answers 503 until it has removed the barred documents and their files); delete orphan
+  objects (an upload that failed with an unknown outcome keeps its object, under `documents/` with
+  no row); run `idempotency_purge`; and stop recording consumed messages for a removed Organization.
+- The remove-all route does bounded work (5 erase batches of 100, then the cleanup publishes eight
+  at a time inside a 5 s budget; the rest is left to the `cleanup_pending` sweep) and answers 200
+  only when nothing remains. Core must stop the Organization signing in and uploading before it
+  calls: this service only detects an upload that lands late (a row left unerased) and answers 503. While documents remain it answers 503 `server.unavailable` with `Retry-After: 30` and
+  stores no key; the caller repeats until 200. The key is required and stored with the final answer.
 - Vector ids are deterministic (`<documentId>:<chunk>`) and each vector carries its job's epoch
   (db README, ADR 0016). Search drops results whose document is deleted or gone; that state check
   is the guarantee, the vector cleanup is not.
 - Uploads are held whole in memory: `MAX_CONCURRENT_UPLOADS` bounds them per instance, and sizes and
   page counts come from the contract's constants (`env.ts` may lower them, never raise them).
+  Measured on Bun 1.4.2 against a real server: a 25 MiB upload peaks at about 26 MiB of buffers and
+  25 to 50 MiB of resident memory once warm (up to about 100 MiB on the first), so plan 4 times the
+  file per upload: 100 MiB, 400 MiB at the default bound of 4.
+- A list is one call to `DOCUMENT_LIST_FILTERED` (db v0.12.0): any state filter, every column a read
+  returns on each row (`updated_at`, `page_count`), so a listed document is never read again.
+  `pageCount` is the row's `page_count`, null until round B's ingestion job records it with
+  `INGESTION_JOB_ADVANCE` before it completes or fails the job.
 - File content, extracted text and prompts are untrusted data. Never log or return them; no
   document text in an error message, a log field or a queue payload.
 - Every call to a vendor port takes an `AbortSignal`. Every call has its own timeout and a bounded,
@@ -86,9 +139,11 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 `SHUTDOWN_TIMEOUT_MS`, `SHUTDOWN_GRACE_MS`, `MAX_REQUEST_BODY_BYTES`, `REGION`, `SENTRY_DSN`,
 `GIT_SHA`, `DATABASE_URL`, `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE`, `AWS_REGION`,
 `QUEUE_URL`, `QUEUE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ENDPOINT`, `MAX_UPLOAD_BYTES`,
-`MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `CONSUMER_CONCURRENCY`,
+`MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `UPLOAD_BODY_TIMEOUT_MS`, `MAX_DOCUMENTS_PER_ORGANIZATION`,
+`MAX_BYTES_PER_ORGANIZATION`, `INTERNAL_API_TOKENS`, `CONSUMER_CONCURRENCY`,
 `CONSUMER_STOP_DEADLINE_MS`. Outside `local`, `REGION`, `SENTRY_DSN`, `DATABASE_URL`, the `AUTH_*`
-keys, `AWS_REGION`, `QUEUE_URL` and `STORAGE_BUCKET` are required. Add a key in both files.
+keys, `AWS_REGION`, `QUEUE_URL`, `STORAGE_BUCKET` and `INTERNAL_API_TOKENS` are required (the
+public local secret is refused). Add a key in both files.
 
 ## Hot paths
 
@@ -98,6 +153,11 @@ Each has a benchmark in `bench/` with a budget; a change to one states its compl
 - **The ingestion claim** (`createPlaybookConsumer`: receive, claim, handle, complete, acknowledge),
   O(1) per message in the store: `bench/consumer.bench.test.ts`. The Postgres store adds one
   statement per step; only its integration suite sees that.
+- **The upload** (`upload` in `src/modules/document/service.ts`): O(file size) for the file check,
+  the content check and the SHA-256, with no copy of the file, plus one transaction of O(1) indexed
+  statements (two when the file is new) and one object write: `bench/upload.bench.test.ts` times the
+  CPU-bound part on a 25 MiB file. A list page is O(page size) reads; a filtered one is bounded by 6
+  pages of 100. The remove-all route is bounded by 5 batches of 100.
 - **Playbook search** (not built): the Copilot searches inside a budget of about 1.5 s on a live
   call (ADR 0010), so one embedding call plus one vector query must stay O(topK) and never scan an
   Organization's documents. Add its benchmark with the first search function and name it here.
