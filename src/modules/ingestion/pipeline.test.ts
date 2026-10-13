@@ -224,6 +224,63 @@ describe('a document that cannot be ingested fails with a reason', () => {
   })
 })
 
+describe('a chunks artifact written under larger settings', () => {
+  /** Rewrites the first chunk of the document's chunks artifact so it exceeds today's maximum. */
+  async function inflate(h: Harness, id: string, epoch = 0): Promise<void> {
+    const key = `documents/${id}/chunks-${epoch}.json`
+    const stored = await h.deps.objects.get(h.organizationId, key)
+    const value = JSON.parse(new TextDecoder().decode(stored?.body)) as {
+      chunks: { text: string }[]
+    }
+    const first = value.chunks[0]
+    if (first === undefined) {
+      throw new Error('no chunk to inflate')
+    }
+    first.text = 'x'.repeat(h.deps.env.CHUNK_MAX_CHARS + 400)
+    await h.deps.objects.put(h.organizationId, key, new TextEncoder().encode(JSON.stringify(value)))
+  }
+
+  test('is chunked again when no chunk was embedded yet, and the document completes', async () => {
+    const h = createPipelineHarness()
+    spyOn(h.deps.embedder, 'embed').mockRejectedValueOnce(new Error('the model blinked'))
+    const id = await h.upload('notes.txt', bigParagraphs(3))
+    await h.pass()
+    expect(h.document(id)?.state).toBe('processing')
+    await inflate(h, id)
+
+    await h.deps.time.advance(60_000)
+    await h.pass()
+
+    expect(h.document(id)?.state).toBe('ready')
+    expect((await h.vectorIds(id)).length).toBe(3)
+    expect(
+      logged(h.deps, 'a chunks artifact no longer fits the settings; chunking again')
+    ).toHaveLength(1)
+  })
+
+  test('fails the document when some chunks were already embedded', async () => {
+    const h = createPipelineHarness()
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    let calls = 0
+    spyOn(h.deps.embedder, 'embed').mockImplementation(async (texts, options) => {
+      calls++
+      if (calls === 2) {
+        throw new Error('the model blinked')
+      }
+      return embed(texts, options)
+    })
+    const id = await h.upload('many.txt', bigParagraphs(100))
+    await h.pass()
+    expect(h.document(id)?.state).toBe('processing')
+    await inflate(h, id)
+
+    await h.deps.time.advance(60_000)
+    await h.pass()
+
+    expect(h.document(id)).toMatchObject({ state: 'failed', failure_reason: 'processing_failed' })
+  })
+})
+
 describe('a transient failure is retried and the work is not repeated', () => {
   test('an embedder that fails once on the second batch resumes there, with no duplicate vector', async () => {
     const h = createPipelineHarness()

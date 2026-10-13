@@ -92,6 +92,15 @@ type JobContext = {
   writesInFlight: number
 }
 
+/** A stored artifact does not fit today's schema (it was written under other settings). */
+class ArtifactRejected extends PermanentFailure {
+  /** Creates the failure; it ends the document `processing_failed` unless the caller can rebuild the artifact. */
+  constructor() {
+    super('processing_failed', 'a stored artifact does not fit the current settings')
+    this.name = 'ArtifactRejected'
+  }
+}
+
 /** Renews the lease once; false means the claim is gone. */
 async function heartbeatOnce(c: JobContext): Promise<boolean> {
   const { deps } = c
@@ -226,7 +235,7 @@ async function readArtifact<T>(
   }
   const parsed = parse(value)
   if (parsed === undefined) {
-    throw new PermanentFailure('processing_failed')
+    throw new ArtifactRejected()
   }
   return parsed
 }
@@ -399,10 +408,29 @@ async function ensureIndexSettings(c: JobContext): Promise<void> {
 async function embedStep(c: JobContext): Promise<void> {
   const { deps } = c
   const { env, embedder } = deps
-  const { chunks } = await readArtifact(c, chunksKey(c.documentId, c.epoch), (value) => {
-    const result = chunksArtifactSchema(env).safeParse(value)
-    return result.success ? result.data : undefined
-  })
+  const readChunks = () =>
+    readArtifact(c, chunksKey(c.documentId, c.epoch), (value) => {
+      const result = chunksArtifactSchema(env).safeParse(value)
+      return result.success ? result.data : undefined
+    })
+  let chunks: Awaited<ReturnType<typeof readChunks>>['chunks']
+  try {
+    chunks = (await readChunks()).chunks
+  } catch (error) {
+    // Written under larger limits and now refused: if nothing of this epoch is embedded yet the
+    // chunks can simply be cut again from the kept pages; after that they cannot, as the vector
+    // ids already written would no longer match.
+    if (!(error instanceof ArtifactRejected) || c.progress.chunksDone > 0) {
+      throw error
+    }
+    deps.logger.warn('a chunks artifact no longer fits the settings; chunking again', {
+      organizationId: c.organizationId,
+      documentId: c.documentId,
+      jobId: c.jobId,
+    })
+    await chunkStep(c)
+    chunks = (await readChunks()).chunks
+  }
   if (c.progress.chunkCount !== null && c.progress.chunkCount !== chunks.length) {
     throw new PermanentFailure('processing_failed')
   }

@@ -44,3 +44,6 @@ paths:
 - Two switches: `WORKERS_ENABLED` is the job loop only (refused outside `local` while the ports are
   fakes); `SWEEPS_ENABLED` (default true) runs the purge, cleanup_pending, housekeeping and orphan
   sweeps and never depends on the job loop.
+- Lowering a limit (`CHUNK_MAX_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`) can
+  fail documents in flight: a stored artifact the new schema refuses is cut again from the pages
+  when no chunk of that epoch is embedded yet, and otherwise ends the document `processing_failed`.
