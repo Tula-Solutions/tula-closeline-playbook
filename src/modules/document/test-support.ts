@@ -47,6 +47,8 @@ export async function errorCode(response: Response): Promise<string> {
 export type DocumentHarness = TestApp & {
   /** Every message published to the queue, in order. */
   published: PlaybookEnvelope[]
+  /** Slows or intercepts each publish: wait `delayMs`, then run `before` once if set. */
+  publishing: { delayMs: number; before?: (() => Promise<void>) | undefined }
   /** The Organization the tests mostly use, and its people by role. */
   organizationId: string
   people: Record<Role, TestIdentity>
@@ -73,7 +75,14 @@ export async function createDocumentHarness(
   const testApp = await createTestApp(overrides)
   const published: PlaybookEnvelope[] = []
   const original = testApp.deps.queue.publish.bind(testApp.deps.queue)
+  const publishing: DocumentHarness['publishing'] = { delayMs: 0 }
   spyOn(testApp.deps.queue, 'publish').mockImplementation(async (envelope) => {
+    const before = publishing.before
+    publishing.before = undefined
+    await before?.()
+    if (publishing.delayMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, publishing.delayMs))
+    }
     published.push(envelope)
     await original(envelope)
   })
@@ -93,6 +102,7 @@ export async function createDocumentHarness(
   return {
     ...testApp,
     published,
+    publishing,
     organizationId,
     people,
     call,

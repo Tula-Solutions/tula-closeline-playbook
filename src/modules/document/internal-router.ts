@@ -41,6 +41,12 @@ const removeAll = createRoute({
  * The internal routes (ADR 0013), behind the shared secret and never behind the access-token
  * middleware. The guard is on `/internal/*` only, so mounting this router at the root leaves every
  * other route as it was. The Organization comes from the path and from nowhere else.
+ *
+ * Remove-all expects core to have stopped the Organization from signing in and uploading before it
+ * calls. This service cannot stop a person who still holds a valid token: it only notices an upload
+ * that lands after the erase (a document row is then left that was not erased), answers 503 and
+ * erases it on the repeat. Cleanup messages are published eight at a time within a time budget;
+ * those past the budget are left to the `cleanup_pending` sweep.
  */
 export function createInternalDocumentRouter(container: Container): OpenAPIHono<AppEnv> {
   const router = createRouter()

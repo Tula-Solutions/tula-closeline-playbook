@@ -3,8 +3,10 @@ import {
   type DocumentId,
   formatId,
   internalRemoveOrganizationDocumentsResponseSchema,
+  organizationIdSchema,
 } from 'tula-closeline-contract'
 import { newOrganizationId } from '~/testing'
+import * as Documents from './service'
 import { ERASE_BATCH_SIZE, ERASE_BATCHES_PER_REQUEST } from './service'
 import {
   createDocumentHarness,
@@ -15,6 +17,8 @@ import {
   pdfBytes,
   personIn,
 } from './test-support'
+
+const organizationIdOf = (id: string) => organizationIdSchema.parse(id)
 
 const removeAllPath = (organizationId: string) =>
   `/internal/playbook/organizations/${organizationId}/remove-all`
@@ -228,6 +232,74 @@ describe('the internal remove-all route: what it removes', () => {
     expect(first.status).toBe(503)
     expect(erasedAfterFirst).toBe(bound)
     expect(erasedAfterSecond).toBe(bound + 50)
+  })
+
+  test('publishes the cleanups of 300 documents with bounded concurrency, well inside the budget', async () => {
+    const h = await createDocumentHarness()
+    seedDocuments(h, h.organizationId, 300)
+    h.publishing.delayMs = 20
+    const startedAt = performance.now()
+
+    const response = await removeAll(h, h.organizationId)
+
+    const elapsed = performance.now() - startedAt
+    expect(response.status).toBe(503)
+    expect(h.published).toHaveLength(300)
+    // One at a time these would take 6 s; eight at a time about 0.75 s.
+    expect(elapsed).toBeLessThan(2500)
+    expect(elapsed).toBeLessThan(Documents.PUBLISH_BUDGET_MS)
+  })
+
+  test('stops publishing when its budget is spent and leaves the rest to the sweep', async () => {
+    const h = await createDocumentHarness()
+    seedDocuments(h, h.organizationId, 100)
+    h.publishing.delayMs = 20
+
+    await expect(
+      Documents.removeAll(
+        h.deps,
+        organizationIdOf(h.organizationId),
+        formatId('req', crypto.randomUUID()),
+        newKey(),
+        {
+          publishBudgetMs: 100,
+        }
+      )
+    ).rejects.toMatchObject({ code: 'server.unavailable' })
+
+    expect(h.published.length).toBeGreaterThan(0)
+    expect(h.published.length).toBeLessThan(100)
+    expect(h.deps.logLines.join('\n')).toContain('left cleanup messages for the sweep')
+    expect(
+      h.deps.database.documents(h.organizationId).every((d) => d.restore_barred_at !== null)
+    ).toBe(true)
+  })
+
+  test('an upload that lands after the erase is not erased, never counts as removed, and is taken by the repeat', async () => {
+    const h = await createDocumentHarness()
+    seedDocuments(h, h.organizationId, 1)
+    let late: Response | undefined
+    h.publishing.before = async () => {
+      late = await h.upload('late.pdf', pdfBytes('late'))
+    }
+    const key = newKey()
+
+    const first = await removeAll(h, h.organizationId, { key })
+
+    expect(late?.status).toBe(201)
+    expect(first.status).toBe(503)
+    expect(
+      h.deps.database.documents(h.organizationId).filter((d) => d.restore_barred_at === null)
+    ).toHaveLength(1)
+    expect(h.deps.database.keys(h.organizationId).map((k) => k.route)).not.toContain(
+      'organizations.remove_all'
+    )
+
+    const second = await removeAll(h, h.organizationId, { key })
+    expect(second.status).toBe(503)
+    h.deps.database.purgeAll(h.organizationId)
+    const third = await removeAll(h, h.organizationId, { key })
+    expect(third.status).toBe(200)
   })
 
   test('removes the usage and the rest only when no document row is left, keeping its own key', async () => {

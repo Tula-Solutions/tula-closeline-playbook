@@ -724,7 +724,8 @@ export async function removeAll(
   deps: DocumentDeps,
   organizationId: OrganizationId,
   requestId: RequestId,
-  idempotencyKey: string
+  idempotencyKey: string,
+  options: { publishBudgetMs?: number } = {}
 ): Promise<RemoveAllResult> {
   const keyed: KeyedRequest = {
     key: idempotencyKey,
@@ -744,6 +745,7 @@ export async function removeAll(
     return answer
   }
 
+  const cleanups: { documentId: string; deletionSeq: number }[] = []
   for (let batch = 0; batch < ERASE_BATCHES_PER_REQUEST; batch++) {
     const erased = await transaction(
       deps,
@@ -754,16 +756,14 @@ export async function removeAll(
     )
     for (const row of erased) {
       if (row.changed === true) {
-        await publishAfterCommit(deps, context, {
-          type: 'playbook.document_deleted',
-          payload: { documentId: String(row.id), deletionSeq: Number(row.deletion_seq) },
-        })
+        cleanups.push({ documentId: String(row.id), deletionSeq: Number(row.deletion_seq) })
       }
     }
     if (erased.length === 0) {
       break
     }
   }
+  await publishCleanups(deps, context, cleanups, options.publishBudgetMs ?? PUBLISH_BUDGET_MS)
 
   const finished = await transaction(deps, organizationId, async (run) => {
     await run(LOCK_TIMEOUT_SQL, [])
@@ -794,6 +794,46 @@ export async function removeAll(
     throw new RetryAfterError(ERRORS['server.unavailable'], REMOVAL_RETRY_AFTER_SECONDS)
   }
   return answer
+}
+
+/** How many cleanup messages a remove-all publishes at once. */
+export const PUBLISH_CONCURRENCY = 8
+
+/** How long a remove-all spends publishing cleanup messages; the rest are left to the `cleanup_pending` sweep. */
+export const PUBLISH_BUDGET_MS = 5000
+
+/**
+ * Publishes the deleted-document messages of a remove-all, {@link PUBLISH_CONCURRENCY} at a time,
+ * and starts no new one once `budgetMs` has passed. A message not published here is not lost: its
+ * document is `cleanup_pending`, and the sweep publishes it. Each publish already has its own
+ * timeout in the queue adapter, so this call ends within the budget plus one publish.
+ */
+async function publishCleanups(
+  deps: Pick<DocumentDeps, 'queue' | 'logger'>,
+  context: Pick<CallContext, 'organizationId' | 'requestId'>,
+  cleanups: readonly { documentId: string; deletionSeq: number }[],
+  budgetMs: number
+): Promise<void> {
+  const deadline = performance.now() + budgetMs
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < cleanups.length && performance.now() < deadline) {
+      const cleanup = cleanups[next++]
+      if (cleanup !== undefined) {
+        await publishAfterCommit(deps, context, {
+          type: 'playbook.document_deleted',
+          payload: cleanup,
+        })
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(PUBLISH_CONCURRENCY, cleanups.length) }, worker))
+  if (next < cleanups.length) {
+    deps.logger.warn('a remove-all left cleanup messages for the sweep', {
+      organizationId: context.organizationId,
+      left: cleanups.length - next,
+    })
+  }
 }
 
 /** What a caller of an unfinished remove-all is told to wait: the purge sweep needs a moment. */
