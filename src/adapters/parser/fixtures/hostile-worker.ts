@@ -42,6 +42,15 @@ self.onmessage = (event) => {
     })
   } else if (mode === 'bad-page-count') {
     self.postMessage({ ok: false, reason: 'too_many_pages', pageCount: -3 })
+  } else if (mode === 'slow') {
+    setTimeout(
+      () =>
+        self.postMessage({
+          ok: true,
+          document: { pages: [{ number: 1, text: 'fine', needsOcr: false }] },
+        }),
+      600
+    )
   } else if (mode === 'garbage') {
     self.postMessage('not a reply')
   } else {

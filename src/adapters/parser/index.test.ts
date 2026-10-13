@@ -3,7 +3,7 @@ import { loadEnv } from '~/env'
 import { ParseError } from '~/ports/parser'
 import { parserBehaviour } from '~/ports/parser.behaviour'
 import { DOCX_MEDIA_TYPE, PPTX_MEDIA_TYPE } from './extract'
-import { createDocumentParser, createDocumentParserFor } from './index'
+import { createDocumentParser, createDocumentParserFor, ParserOverloaded } from './index'
 import { buildDocx, buildPdf, buildPptx } from './test-support'
 
 const limits = { maxPages: 300, maxTextChars: 5_000_000 }
@@ -162,6 +162,48 @@ describe('a parser that hangs, crashes or runs away fails the document, never th
     } finally {
       post.mockRestore()
     }
+  })
+
+  test('two parses at once, one runaway: neither is failed for good because of the other', async () => {
+    let grown = false
+    const parser = createDocumentParser({
+      limits,
+      timeoutMs: 10_000,
+      memoryLimitBytes: 100,
+      workerUrl: new URL('./fixtures/hostile-worker.ts', import.meta.url),
+      residentBytes: () => (grown ? 1_000_000 : 0),
+    })
+    const healthy = parser.parse(misbehave('slow'), { signal: never })
+    const runaway = parser.parse(misbehave('spin'), { signal: never })
+    const outcomes = Promise.allSettled([healthy, runaway])
+    setTimeout(() => {
+      grown = true
+    }, 150)
+
+    const [first, second] = await outcomes
+
+    for (const outcome of [first, second]) {
+      expect(outcome.status === 'rejected' ? outcome.reason : undefined).toBeInstanceOf(
+        ParserOverloaded
+      )
+    }
+  })
+
+  test('a parse that trips the memory limit alone is permanent', async () => {
+    let grown = false
+    const parser = createDocumentParser({
+      limits,
+      timeoutMs: 10_000,
+      memoryLimitBytes: 100,
+      workerUrl: new URL('./fixtures/hostile-worker.ts', import.meta.url),
+      residentBytes: () => (grown ? 1_000_000 : 0),
+    })
+    const run = parser.parse(misbehave('spin'), { signal: never })
+    setTimeout(() => {
+      grown = true
+    }, 100)
+
+    expect((await failureOf(run)).reason).toBe('processing_failed')
   })
 
   test('an abort ends a running parse at once and rejects with the abort reason', async () => {

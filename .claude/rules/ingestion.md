@@ -64,7 +64,12 @@ paths:
   signal, or when `process.memoryUsage.rss()` has grown past `PARSER_MEMORY_LIMIT_BYTES` since the
   parse began (polled every 50 ms; Bun 1.4.2 ignores Worker `resourceLimits`, so this is a bound
   with a polling gap, backed by the size limits below; a killed Worker's memory may stay resident
-  for a while). Hang, crash, runaway and nonsense replies are `ParseError('processing_failed')`,
+  for a while). When the bound trips while another parse is live, the parse ends with
+  `ParserOverloaded` (retried by the job, not failed; the parses of one episode are judged alike
+  for two polls), and only a file that trips it alone is `processing_failed`. A runaway file that
+  always overlaps another parse therefore uses at most `INGESTION_MAX_ATTEMPTS` (8) attempts, with
+  the job's backoff, before the job gives up: acceptable, since each attempt is bounded. The Worker's
+  reply is checked with a Zod schema against the limits before use. Hang, crash, runaway and nonsense replies are `ParseError('processing_failed')`,
   never retried (the file is the cause). No error message or log holds file content.
   - Formats: PDF through `unpdf` (pdf.js, no native canvas): page count checked before any page,
     password request is `password_protected`, a page without a text layer is empty with
@@ -86,3 +91,7 @@ paths:
     parser files. A change to any parser limit needs a hostile-input test in `office.test.ts`,
     `pdf.test.ts` or `text.test.ts` and a budget check in `bench/parser.bench.test.ts`.
   - Fixtures are built in code (`test-support.ts`: `buildPdf`, `buildZip`, `buildDocx`, `buildPptx`).
+- Known gaps (parser): a PDF with some text pages and some scanned pages ends `ready` with only
+  the text pages until real OCR lands; PDFs that rely on predefined CJK CMaps may extract little
+  text because no CMap source is configured; a hostile page that spins the CPU is stopped only by
+  the host's time limit; job slots are shared across Organizations with no per-Organization share.

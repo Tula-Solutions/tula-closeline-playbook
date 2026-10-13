@@ -8,6 +8,20 @@ import type { WorkerRequest } from './worker'
 /** How often the host looks at the process's memory while a parse runs, in ms. */
 const MEMORY_POLL_MS = 50
 
+/**
+ * Thrown when a parse was ended because the process ran out of its memory budget while other
+ * parses were running, so this file may not be the cause. It is not a {@link ParseError}: the job
+ * treats it as worth another attempt (bounded by `INGESTION_MAX_ATTEMPTS`, with backoff), and a
+ * file that trips the limit while it runs alone fails for good.
+ */
+export class ParserOverloaded extends Error {
+  /** Creates the error; the message never holds content. */
+  constructor() {
+    super('the parser ran out of memory while other documents were parsing')
+    this.name = 'ParserOverloaded'
+  }
+}
+
 /** Settings of {@link createDocumentParser}. */
 export type DocumentParserOptions = {
   /** The page and text limits handed to every parse. */
@@ -59,12 +73,25 @@ function replySchema(limits: ParserLimits) {
 export function createDocumentParser(options: DocumentParserOptions): DocumentParser {
   const url = options.workerUrl ?? new URL('./worker.ts', import.meta.url)
   const resident = options.residentBytes ?? (() => process.memoryUsage.rss())
+  const parses: LiveParses = { live: 0, contendedUntil: 0 }
   return {
     parse: async (document, { signal }) => {
       signal.throwIfAborted()
-      return runInWorker(document, signal, url, resident, options)
+      parses.live++
+      try {
+        return await runInWorker(document, signal, url, resident, options, parses)
+      } finally {
+        parses.live--
+      }
     },
   }
+}
+
+/** The parses running in one parser: the memory poll measures the whole process, so it must know who else is running. */
+type LiveParses = {
+  live: number
+  /** Until this time (ms) a memory trip counts as shared, so the parses of one episode are judged alike. */
+  contendedUntil: number
 }
 
 /** Runs one parse in a fresh worker and always ends the worker. */
@@ -73,7 +100,8 @@ function runInWorker(
   signal: AbortSignal,
   url: URL,
   resident: () => number,
-  options: DocumentParserOptions
+  options: DocumentParserOptions,
+  parses: LiveParses
 ): Promise<ParsedDocument> {
   return new Promise<ParsedDocument>((resolve, reject) => {
     const worker = new Worker(url.href, { smol: true })
@@ -96,7 +124,16 @@ function runInWorker(
     const deadline = setTimeout(() => fail('processing_failed'), options.timeoutMs)
     const memory = setInterval(() => {
       if (resident() - baseline > options.memoryLimitBytes) {
-        fail('processing_failed')
+        const now = performance.now()
+        if (parses.live > 1) {
+          parses.contendedUntil = now + 2 * MEMORY_POLL_MS
+        }
+        if (now < parses.contendedUntil) {
+          // Others were running (or just ended for this reason): the growth is not this file's alone.
+          finish(() => reject(new ParserOverloaded()))
+        } else {
+          fail('processing_failed')
+        }
       }
     }, MEMORY_POLL_MS)
     const onAbort = () => finish(() => reject(signal.reason))

@@ -9,6 +9,7 @@ import {
 import { VectorError } from 'tula-closeline-kit'
 import { createMemoryEmbedder } from '~/adapters/memory/embedder'
 import { postgresError } from '~/adapters/memory/playbook-database'
+import { ParserOverloaded } from '~/adapters/parser'
 import { createApp } from '~/app'
 import * as Documents from '~/modules/document/service'
 import { ParseError } from '~/ports/parser'
@@ -122,6 +123,17 @@ describe('a document that cannot be ingested fails with a reason', () => {
       failure_reason: 'too_many_pages',
       page_count: 450,
     })
+  })
+
+  test('a parse ended for shared memory pressure is retried, not failed', async () => {
+    const h = createPipelineHarness()
+    spyOn(h.deps.parser, 'parse').mockRejectedValue(new ParserOverloaded())
+    const id = await h.upload('busy.txt', 'x')
+
+    await h.pass()
+
+    expect(h.document(id)?.state).not.toBe('failed')
+    expect(jobOutcomes(h.deps)).toEqual(['retried'])
   })
 
   test('a parser that gives up on a hostile file: processing_failed, tried once', async () => {
