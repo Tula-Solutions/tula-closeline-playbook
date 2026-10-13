@@ -293,3 +293,60 @@ describe('one failing cleanup does not starve the ones behind it', () => {
     expect(h.deps.reported).toHaveLength(1)
   })
 })
+
+describe('a pass over pending cleanups with a vector store that stays down', () => {
+  const seedPending = (h: ReturnType<typeof createPipelineHarness>, count: number) => {
+    const deletedAt = h.deps.clock.now().getTime() - 10 * 60 * 1000
+    const ids: string[] = []
+    for (let n = 0; n < count; n++) {
+      const id = `doc_${n.toString(16).padStart(32, '0')}`
+      ids.push(id)
+      h.deps.database.seed({
+        id,
+        organization_id: h.organizationId,
+        state: 'deleted',
+        epoch: 0,
+        deletion_seq: 1,
+        vectors_removed_seq: null,
+        deleted_at: deletedAt + n,
+      })
+    }
+    return ids
+  }
+
+  test('20 pending documents give at most 3 attempts and 3 reports, and a second tick in the window reports none again', async () => {
+    const h = createPipelineHarness()
+    seedPending(h, 20)
+    const del = spyOn(h.deps.vectors, 'deleteByFilter').mockRejectedValue(new Error('down'))
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(del.mock.calls.length).toBeLessThanOrEqual(3)
+    expect(h.deps.reported).toHaveLength(3)
+
+    await h.deps.time.advance(30 * 1000)
+    await h.deps.workers.sweeps.run('cleanup')
+
+    expect(h.deps.reported).toHaveLength(3)
+    expect(h.deps.logLines.join('\n')).toContain('failed again')
+  })
+
+  test('a failure followed by successes does not stop the pass', async () => {
+    const h = createPipelineHarness()
+    const ids = seedPending(h, 8)
+    const del = h.deps.vectors.deleteByFilter.bind(h.deps.vectors)
+    let calls = 0
+    spyOn(h.deps.vectors, 'deleteByFilter').mockImplementation(async (org, filter) => {
+      calls++
+      if (calls % 2 === 1 && calls < 8) {
+        throw new Error('flaky')
+      }
+      return del(org, filter)
+    })
+
+    await h.deps.workers.sweeps.run('cleanup')
+
+    const cleaned = ids.filter((id) => h.document(id)?.vectors_removed_seq === 1)
+    expect(cleaned.length).toBeGreaterThanOrEqual(4)
+  })
+})

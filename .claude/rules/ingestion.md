@@ -45,7 +45,9 @@ paths:
   record fails, the upload fails before anything is stored.
   `cleanup_pending` lists exactly the pending cleanups (`DOCUMENT_LIST_PENDING_CLEANUP`, keyset
   `(deleted_at, id)`, at most 5 pages of 100 a tick) and keeps a five-minute floor so a fresh
-  delete is left to its message. A delete message whose cleanup waits on a lease is
+  delete is left to its message. A pass stops after 3 consecutive failed cleanups (a success resets
+  the count); a failing document is reported once per 30 min window (in-process map, 1000 entries,
+  deduplication only) and repeats log a warning with ids. A delete message whose cleanup waits on a lease is
   acknowledged (the kit cannot retry without an error report) and that sweep finishes it.
 - A message for a removed Organization (no documents, settings or usage left) is acknowledged and
   not recorded (`withoutRemovedOrganizations`), so the remove-all can reach `removed`.
@@ -55,3 +57,5 @@ paths:
 - Lowering a limit (`CHUNK_MAX_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`) can
   fail documents in flight: a stored artifact the new schema refuses is cut again from the pages
   when no chunk of that epoch is embedded yet, and otherwise ends the document `processing_failed`.
+- Known gap: a job artefact write that lands after its document's purge leaves an object with no
+  document row and no hint (the lease normally prevents it).

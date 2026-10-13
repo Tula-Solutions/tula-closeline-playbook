@@ -25,6 +25,49 @@ function pgText(value: unknown): string {
 /** The listing pages of pending cleanups one Organization's pass reads. */
 export const CLEANUP_SCAN_PAGES = 5
 
+/** Consecutive failed cleanups after which an Organization's pass stops (a success resets the count). */
+export const CLEANUP_MAX_CONSECUTIVE_FAILURES = 3
+
+/** How long a failing document is reported once; later failures inside the window only log a warning. */
+export const CLEANUP_REPORT_WINDOW_MS = 30 * 60 * 1000
+
+/** The most failing documents remembered for that deduplication (the oldest are dropped first). */
+export const CLEANUP_REPORT_MEMORY = 1000
+
+/** Failing documents already reported, by `organizationId:documentId` to the time the report expires. For deduplication only. */
+const reported = new Map<string, number>()
+
+/** Reports a failing cleanup once per window and document; a repeat is a warning with ids only. */
+function reportFailure(
+  deps: PipelineDeps,
+  error: unknown,
+  organizationId: string,
+  documentId: string
+): void {
+  const now = deps.clock.now().getTime()
+  const key = `${organizationId}:${documentId}`
+  const until = reported.get(key)
+  if (until !== undefined && until > now) {
+    deps.logger.warn('a pending cleanup failed again', { organizationId, documentId })
+    return
+  }
+  reported.delete(key)
+  if (reported.size >= CLEANUP_REPORT_MEMORY) {
+    for (const [other, expires] of reported) {
+      if (expires <= now) {
+        reported.delete(other)
+      }
+    }
+    // Still full: drop the oldest entry (a Map iterates in insertion order).
+    const oldest = reported.keys().next()
+    if (reported.size >= CLEANUP_REPORT_MEMORY && !oldest.done) {
+      reported.delete(oldest.value)
+    }
+  }
+  reported.set(key, now + CLEANUP_REPORT_WINDOW_MS)
+  reportWorkerError(deps, error, { worker: 'cleanup_pending', organizationId })
+}
+
 /** The documents on a listing page. */
 const LIST_PAGE = 100
 
@@ -45,6 +88,7 @@ export async function cleanupPending(
 ): Promise<number> {
   let cursor = { at: '-infinity', id: '' }
   let cleaned = 0
+  let failures = 0
   const oldEnough = deps.clock.now().getTime() - CLEANUP_PENDING_AFTER_MS
   for (let page = 0; page < CLEANUP_SCAN_PAGES && !signal.aborted; page++) {
     const rows = (
@@ -72,12 +116,17 @@ export async function cleanupPending(
           Number(row.deletion_seq),
           signal
         )
+        failures = 0
         if (result === 'done') {
           cleaned++
         }
       } catch (error) {
-        // One document must not starve the ones behind it: report it and go on.
-        reportWorkerError(deps, error, { worker: 'cleanup_pending', organizationId })
+        // One document must not starve the ones behind it: report it and go on, but a store that
+        // keeps failing ends the pass instead of waiting out a timeout per document.
+        reportFailure(deps, error, organizationId, String(row.id))
+        if (++failures >= CLEANUP_MAX_CONSECUTIVE_FAILURES) {
+          return cleaned
+        }
       }
     }
     const last = rows.at(-1)
