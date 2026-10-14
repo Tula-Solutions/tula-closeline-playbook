@@ -1,0 +1,76 @@
+import {
+  ALL_PLAYBOOK_ERRORS,
+  ERRORS,
+  type OrganizationId,
+  type RequestId,
+  type Role,
+  type UserId,
+} from 'tula-closeline-contract'
+import type { Run } from '~/adapters/postgres/processed-store'
+import { isLockTimeout, retryTransaction } from '~/adapters/postgres/retry'
+import type { Container } from '~/container'
+import { domainError, RetryAfterError } from '~/http/domain-error'
+
+/** The seconds a busy answer asks the caller to wait. */
+export const RETRY_AFTER_SECONDS = 1
+
+/** Who is calling and which request it is: the Organization and role come from the verified token only. */
+export type CallContext = {
+  userId: UserId
+  organizationId: OrganizationId
+  role: Role
+  requestId: RequestId
+}
+
+const ALL_ERRORS = { ...ERRORS, ...ALL_PLAYBOOK_ERRORS }
+
+/** The AppError for a code the contract's checks or the database's answers can name. */
+export function failure(code: keyof typeof ALL_ERRORS) {
+  return domainError(ALL_ERRORS[code])
+}
+
+/** Refuses a caller whose role is not in `roles` with the common `auth.forbidden`. */
+export function assertRole(context: Pick<CallContext, 'role'>, roles: readonly Role[]): void {
+  if (!roles.includes(context.role)) {
+    throw domainError(ERRORS['auth.forbidden'])
+  }
+}
+
+/**
+ * The errors raised while a transaction's work was running, before its commit was sent. Such an
+ * error means the transaction did not commit, whatever it was (a statement the server refused, a
+ * dropped connection, a bug), because the commit is only sent after the work returns. An error
+ * that is not in this set came from before the work or from the commit or release, where the
+ * server may or may not have applied the change.
+ */
+export const raisedBeforeCommit = new WeakSet<object>()
+
+/** Makes a transaction that can run again after a deadlock or a serialization failure, then maps a lock timeout to a retryable 503. */
+export async function transaction<T>(
+  deps: Pick<Container, 'scope'>,
+  organizationId: string,
+  work: (run: Run) => Promise<T>
+): Promise<T> {
+  const marked = async (run: Run): Promise<T> => {
+    try {
+      return await work(run)
+    } catch (error) {
+      if (typeof error === 'object' && error !== null) {
+        raisedBeforeCommit.add(error)
+      }
+      throw error
+    }
+  }
+  try {
+    return await retryTransaction(() => deps.scope(organizationId, marked))
+  } catch (error) {
+    if (isLockTimeout(error)) {
+      const busy = new RetryAfterError(ERRORS['server.unavailable'], RETRY_AFTER_SECONDS)
+      if (typeof error === 'object' && error !== null && raisedBeforeCommit.has(error)) {
+        raisedBeforeCommit.add(busy)
+      }
+      throw busy
+    }
+    throw error
+  }
+}
