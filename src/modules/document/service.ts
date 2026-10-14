@@ -18,6 +18,7 @@ import {
   type RequestId,
 } from 'tula-closeline-contract'
 import {
+  DEAL_ERASE_BATCH,
   DOCUMENT_BY_HASH,
   DOCUMENT_ERASE_BATCH,
   DOCUMENT_GET,
@@ -89,6 +90,9 @@ export const ERASE_BATCH_SIZE = 100
 
 /** The erase batches one remove-all request runs: a constant, so the request is bounded whatever the Organization holds. */
 export const ERASE_BATCHES_PER_REQUEST = 5
+
+/** How many Deals one remove-all batch erases; the database clamps it, and a request runs at most {@link ERASE_BATCHES_PER_REQUEST} batches. */
+export const DEAL_ERASE_BATCH_SIZE = 100
 
 export { assertRole }
 
@@ -662,7 +666,8 @@ export type RemoveAllResult = { organizationId: OrganizationId; status: 'removed
  * {@link ERASE_BATCH_SIZE} documents are barred from restore and made due for purge, the vector
  * cleanup of each document that changed is published, and then the Organization's end state is
  * read. It answers `removed` only when nothing remains, as the contract defines it: no document
- * row (the purge sweep removes the file and the row of the barred ones) and the rest removed. When
+ * row (the purge sweep removes the file and the row of the barred ones), no Deal (erased here, in
+ * batches of {@link DEAL_ERASE_BATCH_SIZE}) and the rest removed. When
  * documents remain it answers `server.unavailable` (503) with `Retry-After`, and the caller
  * repeats the call until it answers 200; each repeat erases more and re-reads the end state. The
  * idempotency key is stored only with the final answer, so a repeat after 503 is a new attempt.
@@ -711,11 +716,20 @@ export async function removeAll(
     }
   }
   await publishCleanups(deps, context, cleanups, options.publishBudgetMs ?? PUBLISH_BUDGET_MS)
+  for (let batch = 0; batch < ERASE_BATCHES_PER_REQUEST; batch++) {
+    const deleted = await transaction(deps, organizationId, async (run) => {
+      await run(LOCK_TIMEOUT_SQL, [])
+      return (await run(DEAL_ERASE_BATCH, [organizationId, DEAL_ERASE_BATCH_SIZE])).rows[0]?.deleted
+    })
+    if (Number(deleted ?? 0) === 0) {
+      break
+    }
+  }
 
   const finished = await transaction(deps, organizationId, async (run) => {
     await run(LOCK_TIMEOUT_SQL, [])
     const status = (await run(ORGANIZATION_REMOVAL_STATUS, [organizationId])).rows[0]
-    if (status?.no_documents !== true) {
+    if (status?.no_documents !== true || status.no_deals !== true || status.no_imports !== true) {
       // Nothing is written, so no key row is left in flight.
       return false
     }
