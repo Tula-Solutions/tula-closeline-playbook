@@ -6,6 +6,7 @@ import {
   type Role,
   type UserId,
 } from 'tula-closeline-contract'
+import { StorageError } from 'tula-closeline-kit'
 import type { Run } from '~/adapters/postgres/processed-store'
 import { isLockTimeout, postgresErrorOf, retryTransaction } from '~/adapters/postgres/retry'
 import type { Container } from '~/container'
@@ -95,4 +96,16 @@ export async function mappingBadCursor<T>(work: () => Promise<T>): Promise<T> {
     }
     throw error
   }
+}
+
+/** SQLSTATEs that a later attempt can cure: serialization, deadlock, a lost or restarting server, too many connections. */
+const TRANSIENT_SQLSTATES = new Set(['40001', '40P01', '57P01', '57P02', '57P03', '53300'])
+
+/** Whether a failure is one a repeat of the request can cure: a lost database connection or restart, an exhausted retry of a serialization failure, a lock timeout, or an object store that did not answer. */
+export function isTransientFailure(error: unknown): boolean {
+  if (error instanceof StorageError) {
+    return error.code === 'storage.unavailable'
+  }
+  const code = postgresErrorOf(error)?.code
+  return code !== undefined && (code.startsWith('08') || TRANSIENT_SQLSTATES.has(code))
 }

@@ -175,7 +175,26 @@ describe('applying a file', () => {
     expect(await h.report(id)).toEqual([
       // A name may not hold a line break, so the row is rejected, but it is still one record.
       { rowNumber: 2, reason: 'invalid_name', dealId: 'A' },
-      { rowNumber: 3, reason: 'wrong_column_count', dealId: null },
+      { rowNumber: 3, reason: 'blank_row', dealId: null },
+      { rowNumber: 4, reason: null, dealId: 'B' },
+    ])
+  })
+
+  test('with CRLF, an interior blank line is a blank_row and the trailing newlines are not rows', async () => {
+    const h = await createImportHarness()
+    const id = await upload(h, `${HEADER}\r\nA,won,,,,\r\n\r\nB,lost,,,,\r\n\r\n\r\n`)
+
+    await h.runImports()
+
+    expect(await read(h, id)).toMatchObject({
+      state: 'completed',
+      rowCount: 3,
+      appliedCount: 2,
+      rejectedCount: 1,
+    })
+    expect(await h.report(id)).toEqual([
+      { rowNumber: 2, reason: null, dealId: 'A' },
+      { rowNumber: 3, reason: 'blank_row', dealId: null },
       { rowNumber: 4, reason: null, dealId: 'B' },
     ])
   })
