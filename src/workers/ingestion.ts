@@ -1,11 +1,14 @@
 import {
   type ClaimedIngestionJob,
   claimedJobs,
+  DEAL_IMPORT_CLAIM,
+  DEAL_IMPORT_GIVE_UP_SPENT,
   INGESTION_JOB_CLAIM,
   INGESTION_JOB_GIVE_UP_SPENT,
   type IngestionJobClaimRow,
 } from 'tula-closeline-db'
 import { isLockTimeout } from '~/adapters/postgres/retry'
+import { claimedImports, runImport } from '~/modules/deal-import/job'
 import { runJob } from '~/modules/ingestion/job'
 import {
   CLAIM_LOCK_TIMEOUT_SQL,
@@ -59,16 +62,17 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
   /** The jobs running now, across every Organization: one pool bounded by `INGESTION_CONCURRENCY`. */
   const active = new Set<Promise<void>>()
 
-  /** Starts a job in the pool without waiting for it; a failing job reports and frees its slot. */
-  function launch(
+  /** Starts a task in the pool without waiting for it; a failing task reports and frees its slot. */
+  function launchTask(
+    worker: string,
     organizationId: string,
-    job: ClaimedIngestionJob,
+    work: () => Promise<unknown>,
     mine: Set<Promise<void>>
   ): void {
-    const task: Promise<void> = runJob(deps, organizationId, job, shutdown.signal)
+    const task: Promise<void> = work()
       .then(
         () => undefined,
-        (error: unknown) => reportWorkerError(deps, error, { worker: 'ingestion', organizationId })
+        (error: unknown) => reportWorkerError(deps, error, { worker, organizationId })
       )
       .catch(() => {
         // Reporting itself failed (a dead log destination): nothing more can be done, and the
@@ -79,6 +83,20 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
       })
     active.add(task)
     mine.add(task)
+  }
+
+  /** Starts a document job in the pool. */
+  function launch(
+    organizationId: string,
+    job: ClaimedIngestionJob,
+    mine: Set<Promise<void>>
+  ): void {
+    launchTask(
+      'ingestion',
+      organizationId,
+      () => runJob(deps, organizationId, job, shutdown.signal),
+      mine
+    )
   }
 
   /** Waits until the pool has a free slot (or shutdown). */
@@ -138,6 +156,55 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     return ran
   }
 
+  /**
+   * Claims as many of the Organization's due imports as there are free slots in the one pool the
+   * document jobs use, and starts them. Returns the number started. Spent imports (the database's
+   * attempt bound) are failed and logged.
+   */
+  async function claimAndRunImports(
+    organizationId: string,
+    mine: Set<Promise<void>>
+  ): Promise<number> {
+    await freeSlot()
+    if (shutdown.signal.aborted) {
+      return 0
+    }
+    const free = env.INGESTION_CONCURRENCY - active.size
+    let claimed: ReturnType<typeof claimedImports> = []
+    try {
+      const result = await inTransaction(deps, organizationId, async (run) => {
+        await run(CLAIM_LOCK_TIMEOUT_SQL, [])
+        return run(DEAL_IMPORT_CLAIM, [organizationId, free, env.INGESTION_LEASE_MS])
+      })
+      claimed = claimedImports(result.rows)
+    } catch (error) {
+      if (!isLockTimeout(error)) {
+        throw error
+      }
+      deps.logger.debug('an import claim waited too long for a lock', { organizationId })
+    }
+    for (const claim of claimed) {
+      launchTask(
+        'imports',
+        organizationId,
+        () => runImport(deps, organizationId, claim, shutdown.signal),
+        mine
+      )
+    }
+    if (!shutdown.signal.aborted) {
+      const spent = await inTransaction(deps, organizationId, (run) =>
+        run(DEAL_IMPORT_GIVE_UP_SPENT, [organizationId, GIVE_UP_BATCH])
+      )
+      if (spent.rows.length > 0) {
+        deps.logger.error('Deal imports reached the database attempt bound', {
+          organizationId,
+          imports: spent.rows.length,
+        })
+      }
+    }
+    return claimed.length
+  }
+
   /** One pass that waits for the jobs it started (tests and one-shot runs); the loop does not. */
   async function runPass(): Promise<number> {
     const mine = new Set<Promise<void>>()
@@ -150,25 +217,33 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
 
   async function passOver(mine: Set<Promise<void>>): Promise<number> {
     let ran = 0
-    const first = [...nudged]
-    nudged.clear()
-    const done = new Set<string>()
-    for (const organizationId of first) {
-      if (shutdown.signal.aborted) {
-        return ran
+    if (env.WORKERS_ENABLED) {
+      const first = [...nudged]
+      nudged.clear()
+      const done = new Set<string>()
+      for (const organizationId of first) {
+        if (shutdown.signal.aborted) {
+          return ran
+        }
+        done.add(organizationId)
+        try {
+          ran += await claimAndRun(organizationId, mine)
+        } catch (error) {
+          reportWorkerError(deps, error, { worker: 'ingestion', organizationId })
+        }
       }
-      done.add(organizationId)
-      try {
-        ran += await claimAndRun(organizationId, mine)
-      } catch (error) {
-        reportWorkerError(deps, error, { worker: 'ingestion', organizationId })
-      }
+      await forEachOrganization(deps, 'jobs_due', shutdown.signal, async (organizationId) => {
+        if (!done.has(organizationId)) {
+          ran += await claimAndRun(organizationId, mine)
+        }
+      })
     }
-    await forEachOrganization(deps, 'jobs_due', shutdown.signal, async (organizationId) => {
-      if (!done.has(organizationId)) {
-        ran += await claimAndRun(organizationId, mine)
-      }
-    })
+    // Imports use no embedder, OCR or vector store, so their gate is their own.
+    if (env.IMPORTS_ENABLED) {
+      await forEachOrganization(deps, 'import_apply', shutdown.signal, async (organizationId) => {
+        ran += await claimAndRunImports(organizationId, mine)
+      })
+    }
     return ran
   }
 
