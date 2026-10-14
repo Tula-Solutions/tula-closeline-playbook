@@ -32,6 +32,7 @@ import {
   DOCUMENT_REQUEUE,
   DOCUMENT_RESTORE,
   DOCUMENT_RESTORE_FOR_UPLOAD,
+  DOCUMENT_SEARCH_STATE,
   DOCUMENT_SOFT_DELETE,
   IDEMPOTENCY_BEGIN,
   IDEMPOTENCY_COMPLETE,
@@ -49,6 +50,7 @@ import {
   INGESTION_JOB_HEARTBEAT,
   INGESTION_JOB_RETRY,
   INGESTION_MAX_RETRY_DELAY_MS,
+  MAX_DOCUMENT_SEARCH_STATE_IDS,
   ORGANIZATION_REMOVAL_STATUS,
   ORGANIZATION_REMOVE_REST,
   ORGANIZATIONS_WITH_WORK,
@@ -71,6 +73,7 @@ import {
 } from 'tula-closeline-db/schema'
 import type { Clock } from 'tula-closeline-kit'
 import type { Discover, InScope, Result, Run } from '~/adapters/postgres/processed-store'
+import { parseTextArrayLiteral } from '~/adapters/postgres/text-array'
 import { CLEANUP_PENDING_AFTER_MS } from '~/modules/ingestion/runtime'
 import {
   type MemoryCallJobRow,
@@ -703,6 +706,19 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           const [organization, id] = params as [string, string]
           const d = find(organization, id)
           return d === undefined ? none : rows([view(d)])
+        }
+        case DOCUMENT_SEARCH_STATE: {
+          // As the statement: the first MAX_DOCUMENT_SEARCH_STATE_IDS ids, only this Organization's documents, in id order.
+          const [organization, literal] = params as [string, string]
+          const wanted = new Set(
+            (parseTextArrayLiteral(literal) ?? []).slice(0, MAX_DOCUMENT_SEARCH_STATE_IDS)
+          )
+          return rows(
+            documentsOf(organization)
+              .filter((d) => wanted.has(d.id))
+              .sort((a, b) => (a.id < b.id ? -1 : 1))
+              .map((d) => ({ id: d.id, name: d.name, state: d.state, epoch: d.epoch }))
+          )
         }
         case DOCUMENT_LIST_FILTERED: {
           const [organization, createdAfter, idAfter, size, wanted] = params as [

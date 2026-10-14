@@ -82,7 +82,7 @@ function candidateOf(hit: {
 const RETRY_JITTER_MS = 100
 
 /** What a step does with a failure: the kind of step and how its failures are classed. */
-type Step = 'embedder' | 'vector store' | 'database'
+export type Step = 'embedder' | 'vector store' | 'database'
 
 /**
  * Whether a failure of the step cannot be cured by a repeat and is ours to fix, so it is a 500 and
@@ -110,7 +110,7 @@ function isPermanentFailure(step: Step, error: unknown): boolean {
  * database read is not repeated (its transaction helper already retries serialization failures).
  * The text is never in the log.
  */
-async function outside<T>(
+export async function outside<T>(
   deps: SearchDeps,
   step: Step,
   organizationId: string,

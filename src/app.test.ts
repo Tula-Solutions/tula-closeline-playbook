@@ -57,6 +57,7 @@ describe('the booted app', () => {
       '/v1/playbook/documents/{documentId}',
       '/v1/playbook/documents/{documentId}/restore',
       '/v1/playbook/rights-confirmation',
+      '/v1/playbook/search/documents',
       '/v1/playbook/search/moments',
     ])
     expect(document.paths['/healthz']?.get.responses['500']).toBeDefined()

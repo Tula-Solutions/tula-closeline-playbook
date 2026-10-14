@@ -35,8 +35,10 @@ import {
   vectorId,
   within,
 } from './runtime'
+import { attributeSnippet } from './snippet'
 import {
   chunksArtifactSchema,
+  DOCUMENT_VECTOR_VERSION,
   deleteArtifactsUpTo,
   deleteVectorsUpTo,
   pagesArtifactSchema,
@@ -484,6 +486,11 @@ async function embedStep(c: JobContext): Promise<void> {
               epoch: c.epoch,
               chunk: chunk.index,
               page: chunk.page,
+              // What a search shows, so a hit needs no read of the chunks artifact. Tenant text: never logged.
+              snippet: attributeSnippet(chunk.text),
+              kind: 'document',
+              // The attribute layout: search ignores vectors written before the snippets existed.
+              v: DOCUMENT_VECTOR_VERSION,
             },
           }))
         )
