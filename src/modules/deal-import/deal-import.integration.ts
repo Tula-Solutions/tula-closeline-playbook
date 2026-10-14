@@ -23,6 +23,7 @@ import { type Discover, scopeOver, statementOf } from '~/adapters/postgres/proce
 import { integrationUrls } from '~/integration-support'
 import { errorCode, INTERNAL_SECRET, newKey, personIn } from '~/modules/document/test-support'
 import { newOrganizationId } from '~/testing'
+import { importObjectKey } from './keys'
 import { createImportHarness, csv, IMPORTS } from './test-support'
 
 const urls = integrationUrls()
@@ -203,14 +204,31 @@ describe('a second Organization against Postgres', () => {
   test('runs its own import beside the first and neither sees the other', async () => {
     const first = await harness()
     const second = await harness()
-    await upload(first, csv([`${deal(60)},won,,,,`]))
-    await upload(second, csv([`${deal(60)},lost,,,,`]))
+    const firstId = await upload(first, csv([`${deal(60)},won,,,,`]))
+    const secondId = await upload(second, csv([`${deal(60)},lost,,,,`]))
+    // Both harnesses share one database, so either one's job loop claims both imports; each keeps
+    // its files in its own memory store, so the files are copied across for the claim to find them.
+    for (const [from, to, organizationId, id] of [
+      [first, second, first.organizationId, firstId],
+      [second, first, second.organizationId, secondId],
+    ] as const) {
+      const key = importObjectKey(id)
+      const stored = await from.deps.objects.get(organizationId, key)
+      if (stored === undefined) {
+        throw new Error('the uploaded file is missing')
+      }
+      await to.deps.objects.put(organizationId, key, stored.body, { contentType: 'text/csv' })
+    }
 
     await first.runImports()
     await second.runImports()
 
+    expect(await read(first, firstId)).toMatchObject({ state: 'completed', appliedCount: 1 })
+    expect(await read(second, secondId)).toMatchObject({ state: 'completed', appliedCount: 1 })
     expect(await count(first.organizationId, 'deals')).toBe(1)
     expect(await count(second.organizationId, 'deals')).toBe(1)
+    expect(await count(first.organizationId, 'deal_import_rows')).toBe(1)
+    expect(await count(second.organizationId, 'deal_import_rows')).toBe(1)
   })
 })
 
@@ -238,5 +256,38 @@ describe('remove-all against Postgres, with imports', () => {
     expect(await count(h.organizationId, 'deal_import_rows')).toBe(0)
     expect(await count(h.organizationId, 'deals')).toBe(0)
     expect(await h.objectKeys()).toEqual([])
+  })
+
+  test('a failing object store stops remove-all before any import is erased, with more imports than one request takes', async () => {
+    const h = await harness()
+    for (let i = 0; i < 8; i++) {
+      await upload(h, csv([`${deal(400 + i)},open,,,,`]), newKey())
+    }
+    const original = h.deps.objects.delete.bind(h.deps.objects)
+    h.deps.objects.delete = async () => {
+      throw new Error('storage is down')
+    }
+    const removeAll = () =>
+      h.app.request(`/internal/playbook/organizations/${h.organizationId}/remove-all`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${INTERNAL_SECRET}`, 'idempotency-key': newKey() },
+      })
+
+    const failed = await removeAll()
+    const erased = await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute<{ n: number }>(
+        sql`select count(*)::int as n from playbook.deal_imports where erased_at is not null`
+      )
+    )
+    h.deps.objects.delete = original
+
+    expect(failed.status).toBe(500)
+    expect(erased.rows[0]?.n).toBe(0)
+    let status = 503
+    for (let call = 0; call < 20 && status === 503; call++) {
+      status = (await removeAll()).status
+    }
+    expect(status).toBe(200)
+    expect(await count(h.organizationId, 'deal_imports')).toBe(0)
   })
 })
