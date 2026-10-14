@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { type Call, callSchema } from 'tula-closeline-contract'
+import { type Call, callSchema, dealSchema, listDealsResponseSchema } from 'tula-closeline-contract'
 import {
   CALL_JOB_CLAIM,
   CALL_JOB_COMPLETE,
@@ -290,6 +290,35 @@ describe('processing a Transcript', () => {
     expect(await vectorsOf(h, call.id, other)).toHaveLength(0)
     const stranger = personIn(other, 'owner')
     expect((await h.send('GET', `${CALLS}/${call.id}`, { as: stranger })).status).toBe(404)
+  })
+
+  test('a Deal counts its live Calls: two give 2, a deleted one is not counted, another Organization has its own', async () => {
+    const h = await createCallHarness()
+    const first = await upload(h, transcriptText('a'), { dealId: 'D-1' })
+    await upload(h, transcriptText('b'), { dealId: 'D-1' })
+    const other = `org_${'8'.repeat(32)}`
+    h.confirmRights(other)
+    const stranger = personIn(other, 'owner')
+    const theirs = await h.uploadCall(transcriptText('c'), { dealId: 'D-1', as: stranger })
+    expect(theirs.status).toBe(201)
+    const countOf = async (as?: typeof stranger) => {
+      const list = listDealsResponseSchema.parse(
+        await (await h.send('GET', '/v1/playbook/deals', as === undefined ? {} : { as })).json()
+      )
+      const [deal] = list.items
+      const detail = dealSchema.parse(
+        await (
+          await h.send('GET', `/v1/playbook/deals/${deal?.id}`, as === undefined ? {} : { as })
+        ).json()
+      )
+      expect(detail.callCount).toBe(deal?.callCount ?? -1)
+      return detail.callCount
+    }
+
+    expect(await countOf()).toBe(2)
+    expect((await h.send('DELETE', `${CALLS}/${first.id}`)).status).toBe(200)
+    expect(await countOf()).toBe(1)
+    expect(await countOf(stranger)).toBe(1)
   })
 
   test('each pass claims one job per Organization', async () => {

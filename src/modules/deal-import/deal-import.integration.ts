@@ -114,6 +114,37 @@ describe('a Deal import against Postgres', () => {
     expect((await h.report(id)).map((r) => r.rowNumber)).toEqual([2, 3, 4, 5])
   })
 
+  test('reports an interior blank line as blank_row, with no deal id and no gap, and skips the trailing ones', async () => {
+    const h = await harness()
+    const id = await upload(
+      h,
+      `deal_id,outcome,closed_at,amount,currency\r\n${deal(1)},won,,,\r\n\r\n${deal(2)},lost,,,\r\n\r\n\r\n`
+    )
+
+    await h.runImports()
+
+    expect(await h.report(id)).toEqual([
+      { rowNumber: 2, reason: null, dealId: deal(1) },
+      { rowNumber: 3, reason: 'blank_row', dealId: null },
+      { rowNumber: 4, reason: null, dealId: deal(2) },
+    ])
+  })
+
+  test('refuses a sixth unfinished import with deal_import.busy and stores nothing', async () => {
+    const h = await harness()
+    for (let i = 0; i < 5; i++) {
+      await upload(h, csv([`${deal(i)},open,,,,`]))
+    }
+    const objects = await h.objectKeys()
+
+    const refused = await h.uploadCsv(csv([`${deal(9)},open,,,,`]))
+
+    expect(refused.status).toBe(429)
+    expect(await errorCode(refused)).toBe('deal_import.busy')
+    expect(await h.objectKeys()).toEqual(objects)
+    expect(await count(h.organizationId, 'deal_imports')).toBe(5)
+  })
+
   test('moves a Deal that was open to won once, and publishes its Outcome change after the commit', async () => {
     const h = await harness()
     await upload(h, csv([`${deal(10)},open,,,,`]))

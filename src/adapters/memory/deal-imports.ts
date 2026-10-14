@@ -1,3 +1,4 @@
+import { MAX_QUEUED_DEAL_IMPORTS } from 'tula-closeline-contract'
 import {
   DEAL_IMPORT_APPLY,
   DEAL_IMPORT_APPLY_BATCH,
@@ -16,6 +17,7 @@ import {
   DEAL_IMPORT_PURGE_BATCH,
   DEAL_IMPORT_RETRY,
   DEAL_IMPORT_ROW_REASONS,
+  DEAL_IMPORT_ROW_REASONS_WITHOUT_DEAL_ID,
   DEAL_IMPORT_ROWS_LIST,
   DEAL_IMPORT_ROWS_LIST_BY_RESULT,
   DEAL_MAX_SEQ,
@@ -115,17 +117,6 @@ type SentRow = {
   name: string | null
 }
 
-/**
- * The reasons a report row may have no deal id: the db check `deal_import_rows_deal_id_missing_only_when_unusable`.
- * The db library does not export this list, so it is kept here in step with the migration; `blank_row`
- * (a line with no id at all) joins it as soon as the db library's reason list has it.
- */
-const UNUSABLE_DEAL_ID_REASONS: readonly string[] = [
-  'invalid_deal_id',
-  'wrong_column_count',
-  ...((DEAL_IMPORT_ROW_REASONS as readonly string[]).includes('blank_row') ? ['blank_row'] : []),
-]
-
 const MAX_ROW_NUMBER = 50_001
 
 /**
@@ -176,6 +167,13 @@ export function runImportStatement(
       if (!own(organization)) {
         return none
       }
+      const unfinished = ctx.imports.filter(
+        (i) =>
+          i.organization_id === organization && (i.state === 'uploaded' || i.state === 'processing')
+      ).length
+      if (unfinished >= MAX_QUEUED_DEAL_IMPORTS) {
+        return rows([{ result: 'busy' }])
+      }
       const at = now()
       const row: MemoryImportRow = {
         id,
@@ -199,7 +197,7 @@ export function runImportStatement(
         updated_at: at,
       }
       ctx.imports.push(row)
-      return rows([view(row)])
+      return rows([{ result: 'created', ...view(row) }])
     }
     case DEAL_IMPORT_GET: {
       const [organization, id] = params as [string, string]
@@ -623,7 +621,10 @@ function applyBatch(
     ) {
       throw ctx.postgresError('23514', 'deal_import_rows_reason_known')
     }
-    if (row.deal_id === null && !UNUSABLE_DEAL_ID_REASONS.includes(row.reason ?? '')) {
+    if (
+      row.deal_id === null &&
+      !(DEAL_IMPORT_ROW_REASONS_WITHOUT_DEAL_ID as readonly (string | null)[]).includes(row.reason)
+    ) {
       throw ctx.postgresError('23514', 'deal_import_rows_deal_id_missing_only_when_unusable')
     }
   }

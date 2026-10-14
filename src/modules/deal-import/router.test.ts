@@ -5,6 +5,7 @@ import {
   errorBodySchema,
   listDealImportsResponseSchema,
   MAX_DEAL_IMPORT_BYTES,
+  MAX_QUEUED_DEAL_IMPORTS,
 } from 'tula-closeline-contract'
 import { DEAL_IMPORT_INSERT, DEAL_IMPORT_LIST, DEAL_IMPORT_ROWS_LIST } from 'tula-closeline-db'
 import { StorageError } from 'tula-closeline-kit'
@@ -297,6 +298,42 @@ describe('storing an upload', () => {
     expect(documentResponse.status).toBe(503)
     taken?.()
     expect((await h.uploadCsv(csv([]))).status).toBe(202)
+  })
+})
+
+describe('the cap on queued imports', () => {
+  test('a sixth upload while five are unfinished is 429 deal_import.busy and stores nothing', async () => {
+    const h = await createImportHarness()
+    for (let i = 0; i < MAX_QUEUED_DEAL_IMPORTS; i++) {
+      expect((await h.uploadCsv(csv([`D${i},open,,,,`]))).status).toBe(202)
+    }
+    const objects = await h.objectKeys()
+    const rows = h.deps.database.imports(h.organizationId).length
+    const attempts = h.deps.database.statements.length
+
+    const refused = await h.uploadCsv(csv(['SIXTH,open,,,,']), { key: newKey() })
+
+    expect(refused.status).toBe(429)
+    expect(await errorCode(refused)).toBe('deal_import.busy')
+    expect(await h.objectKeys()).toEqual(objects)
+    expect(h.deps.database.imports(h.organizationId)).toHaveLength(rows)
+    expect(h.deps.database.statements.length).toBeGreaterThan(attempts)
+  })
+
+  test('the refused key is not consumed, a finished import frees a place, and another Organization has its own five', async () => {
+    const h = await createImportHarness()
+    for (let i = 0; i < MAX_QUEUED_DEAL_IMPORTS; i++) {
+      await h.uploadCsv(csv([`D${i},open,,,,`]))
+    }
+    const key = newKey()
+    const text = csv(['SIXTH,open,,,,'])
+    expect((await h.uploadCsv(text, { key })).status).toBe(429)
+    const stranger = personIn(newOrganizationId(), 'owner')
+    expect((await h.uploadCsv(csv(['X,open,,,,']), { as: stranger })).status).toBe(202)
+
+    await h.runImports()
+
+    expect((await h.uploadCsv(text, { key })).status).toBe(202)
   })
 })
 

@@ -35,6 +35,7 @@ const dealRowSchema = z.object({
   amount: z.string().nullable(),
   currency: z.string().nullable(),
   appeared_in_import: z.boolean(),
+  call_count: z.coerce.number().int().min(0),
   created_at: z.union([z.string(), z.date()]),
   updated_at: z.union([z.string(), z.date()]),
 })
@@ -44,7 +45,7 @@ export const outcomeSeqSchema = z.coerce.number().int().min(0)
 
 /**
  * Turns a Deal statement row into the contract's Deal; the service sends this output, never the
- * row. `callCount` is 0 until Calls exist (db migration 0016).
+ * row. `callCount` is the statement's `call_count`: the Deal's Calls that are not deleted.
  */
 export function toDeal(row: Record<string, unknown>): Deal {
   const r = dealRowSchema.parse(row)
@@ -57,7 +58,7 @@ export function toDeal(row: Record<string, unknown>): Deal {
     closedAt: r.closed_at,
     amount: r.amount,
     currency: r.currency,
-    callCount: 0,
+    callCount: r.call_count,
     appearedInImport: r.appeared_in_import,
     createdAt: stamp(r.created_at),
     updatedAt: stamp(r.updated_at),

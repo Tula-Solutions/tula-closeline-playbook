@@ -191,6 +191,10 @@ export async function upload(
       input.bytes.byteLength,
     ])
     const row = inserted.rows[0]
+    if (row?.result === 'busy') {
+      // Rolls back the key with the rest; the catch below removes the file this attempt wrote.
+      throw failure('deal_import.busy')
+    }
     if (row === undefined) {
       throw new Error('A Deal import the upload just wrote could not be read back')
     }
