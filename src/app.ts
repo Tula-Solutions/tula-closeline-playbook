@@ -6,6 +6,7 @@ import { PUBLIC_PREFIX } from '~/http/limits'
 import { createRouter } from '~/http/router'
 import { registerSecuritySchemes } from '~/http/security'
 import type { AppEnv } from '~/http/types'
+import { createDealRouter } from '~/modules/deal/router'
 import { createInternalDocumentRouter } from '~/modules/document/internal-router'
 import { createDocumentRouter } from '~/modules/document/router'
 import { createHealthRouter } from '~/modules/health/router'
@@ -29,6 +30,7 @@ export function createApp(container: Container): OpenAPIHono<AppEnv> {
   const publicRoutes = createRouter<AuthedEnv>()
   publicRoutes.use('*', authenticate(container))
   publicRoutes.route('/', createDocumentRouter(container))
+  publicRoutes.route('/', createDealRouter(container))
   app.route(PUBLIC_PREFIX, publicRoutes)
 
   serveOpenApi(app)
