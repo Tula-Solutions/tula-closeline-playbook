@@ -51,6 +51,9 @@ async function harness() {
 
 type Harness = Awaited<ReturnType<typeof harness>>
 
+/** The budget for the real apply of 50,000 rows, in 100 batches; set from the first CI run's number. */
+const APPLY_BUDGET_MS = 120_000
+
 const deal = (n: number) => `deal_${n.toString(16).padStart(32, '0')}`
 
 /** Uploads a CSV and returns the import's id. */
@@ -179,6 +182,42 @@ describe('a Deal import against Postgres', () => {
     expect(await errorCode(response)).toBe('request.invalid')
     expect(h.deps.reported).toEqual([])
   })
+})
+
+describe('the report and the apply path against Postgres', () => {
+  test('a row cursor beyond the last possible row is request.invalid, not a 500', async () => {
+    const h = await harness()
+    const id = await upload(h, csv([`${deal(70)},won,,,,`]))
+    await h.runImports()
+    const cursor = encodeURIComponent(encodeCursor({ rowNumber: 2 ** 40 }))
+
+    const response = await h.send('GET', `${IMPORTS}/${id}/rows?cursor=${cursor}`)
+
+    expect(response.status).toBe(400)
+    expect(await errorCode(response)).toBe('request.invalid')
+    expect(h.deps.reported).toEqual([])
+  })
+
+  // The meaningful guard for the job's own cost is the 500 ms CPU budget in
+  // bench/deal-import.bench.test.ts. This is the time of the real statement: 100 batches of 500 rows,
+  // each in its own transaction under the upload lock, on a CI runner's Postgres. The budget is
+  // generous on purpose and is there to catch a statement that has gone super-linear.
+  test('applies 50,000 rows in 100 batches of 500 within the budget', async () => {
+    const h = await harness()
+    const id = await upload(
+      h,
+      csv(Array.from({ length: 50_000 }, (_, i) => `${deal(100_000 + i)},open,,,,`))
+    )
+    const started = performance.now()
+
+    await h.runImports()
+
+    const elapsed = performance.now() - started
+    process.stdout.write(`deal import apply of 50,000 rows on Postgres: ${elapsed.toFixed(0)} ms\n`)
+    expect(await read(h, id)).toMatchObject({ state: 'completed', appliedCount: 50_000 })
+    expect(await count(h.organizationId, 'deals')).toBe(50_000)
+    expect(elapsed).toBeLessThan(APPLY_BUDGET_MS)
+  }, 240_000)
 })
 
 describe('a second Organization against Postgres', () => {

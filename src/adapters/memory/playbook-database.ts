@@ -416,6 +416,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
 
   function runner(state: State, scopeOrganization: string): Run {
     const own = (organization: unknown) => organization === scopeOrganization
+    // Set by QUOTA_LOCK (a transaction-level advisory lock in Postgres), so it lasts for this transaction.
+    let uploadLockHeld = false
     const documentsOf = (organization: unknown) =>
       state.documents.filter((d) => own(organization) && d.organization_id === organization)
     const find = (organization: unknown, id: unknown) =>
@@ -567,6 +569,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       }
       switch (text) {
         case QUOTA_LOCK:
+          uploadLockHeld = true
           return rows([{ locked: true }])
         case QUOTA_USAGE: {
           const [organization] = params as [string]
@@ -1560,6 +1563,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             importRows: state.importRows,
             deals: state.deals,
             own,
+            uploadLockHeld: () => uploadLockHeld,
             now,
             nextMicroseconds,
             rows,

@@ -47,3 +47,10 @@ paths:
   (`DEAL_IMPORT_ERASE_BATCH`, `DEAL_IMPORT_PURGE_BATCH`), before it erases Deals.
 - A blank record in the middle of the file is reported as a rejected `wrong_column_count` row, since
   the report must be contiguous; trailing blank records are dropped.
+- A CSV whose delete failed after its import ended stays until the orphan sweep next visits the
+  Organization. That sweep is scheduled by upload attempts, so it can wait for a later upload; remove-all
+  also deletes it.
+- A claim takes at most one import per Organization per pass, so one Organization cannot hold every
+  slot of the shared pool. A per-Organization cap on queued imports is a contract/db follow-up.
+- A deal id is the customer's text and may begin with `=`, `+`, `-` or `@`: any export or UI that
+  shows it must escape it (spreadsheet formula injection).

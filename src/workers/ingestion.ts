@@ -157,8 +157,9 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
   }
 
   /**
-   * Claims as many of the Organization's due imports as there are free slots in the one pool the
-   * document jobs use, and starts them. Returns the number started. Spent imports (the database's
+   * Claims one of the Organization's due imports when the one pool the document jobs use has a free
+   * slot, and starts it (one per Organization per pass, so slots spread across Organizations).
+   * Returns the number started. Spent imports (the database's
    * attempt bound) are failed and logged.
    */
   async function claimAndRunImports(
@@ -169,7 +170,10 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     if (shutdown.signal.aborted) {
       return 0
     }
-    const free = env.INGESTION_CONCURRENCY - active.size
+    // One import per Organization per pass: an import runs for minutes, so an Organization with many
+    // queued would otherwise take every free slot. The loop passes again while slots are free, which
+    // spreads them across the Organizations that have work.
+    const free = Math.min(1, env.INGESTION_CONCURRENCY - active.size)
     let claimed: ReturnType<typeof claimedImports> = []
     try {
       const result = await inTransaction(deps, organizationId, async (run) => {

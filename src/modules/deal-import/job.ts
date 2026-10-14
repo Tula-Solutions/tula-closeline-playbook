@@ -378,7 +378,9 @@ async function runBatches(c: ImportContext, claim: ClaimedImport): Promise<numbe
 /**
  * Runs one claimed import to its end. The run resumes after `report_through`, so a crash or a
  * redelivery never applies a row twice (the statement skips rows at or below it). Every end state
- * removes the CSV from the object store, best effort; the orphan sweep removes what this misses.
+ * removes the CSV from the object store, best effort. A delete that fails after the import ended
+ * leaves the file until the orphan sweep next visits the Organization; that sweep is scheduled by
+ * upload attempts, so the file can stay until a later upload (or remove-all).
  * Nothing it logs holds a file name, a cell or a deal id: ids, counts and durations only.
  */
 export async function runImport(

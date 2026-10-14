@@ -78,6 +78,8 @@ export type ImportContext = {
   deals: MemoryApplyDeal[]
   /** Whether the statement runs in `organization`'s scope. */
   own(organization: unknown): boolean
+  /** Whether this transaction has taken the Organization's upload lock (`QUOTA_LOCK`). */
+  uploadLockHeld(): boolean
   now(): number
   /** A strictly increasing microsecond clock for `created_at`. */
   nextMicroseconds(): number
@@ -445,6 +447,13 @@ function applyBatch(
   const imp = lookup.find(organization, id, token)
   if (imp === undefined) {
     return ctx.none
+  }
+  if (!ctx.uploadLockHeld()) {
+    // What `playbook.require_upload_lock` raises for a row the statement is about to write.
+    throw ctx.postgresError(
+      '55000',
+      'playbook.upload_lock: the Organization upload lock is not held'
+    )
   }
   const raw = JSON.parse(json) as Partial<SentRow>[]
   if (!Array.isArray(raw)) {

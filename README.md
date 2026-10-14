@@ -31,5 +31,13 @@ optional `name`; up to 10 MB and 50,000 rows) to `POST /v1/playbook/deal-imports
 | `IMPORTS_ENABLED` | run the import job (default true); independent of `WORKERS_ENABLED` |
 | `MAX_DEALS_PER_ORGANIZATION` | most Deals one Organization may hold (default 20,000) |
 
-The job shares `INGESTION_CONCURRENCY` with the document jobs. The whole CSV is held in memory
-while it runs (at most 10 MB): there is no streaming reader yet.
+The job shares `INGESTION_CONCURRENCY` with the document jobs, and takes at most one import per
+Organization per pass. The whole CSV is held in memory while it runs (at most 10 MB): there is no
+streaming reader yet.
+
+Sizing (memory per instance, from the reviewer's measurements):
+
+- An upload holds about 30 MB while it is received, for each upload in flight, up to
+  `MAX_CONCURRENT_UPLOADS` (shared with document uploads).
+- A running import job holds about 100 MB (the file, its text and 50,000 parsed records), so about
+  200 MB at the default `INGESTION_CONCURRENCY` of 2 and about 1.6 GB at 16.

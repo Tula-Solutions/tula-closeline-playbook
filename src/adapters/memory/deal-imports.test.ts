@@ -17,6 +17,7 @@ import {
   DEAL_IMPORT_ROWS_LIST_BY_RESULT,
   ORGANIZATION_REMOVAL_STATUS,
   ORGANIZATION_REMOVE_REST,
+  QUOTA_LOCK,
 } from 'tula-closeline-db'
 import { createFixedClock } from 'tula-closeline-kit'
 import { createMemoryPlaybookDatabase } from './playbook-database'
@@ -72,9 +73,13 @@ const apply = (
   rows: Sent[],
   limit = 1000,
   n = 1,
-  organization = ORG
+  organization = ORG,
+  lock = true
 ) =>
   db.scope(organization, async (run) => {
+    if (lock) {
+      await run(QUOTA_LOCK, [organization])
+    }
     const result = await run(DEAL_IMPORT_APPLY, [
       organization,
       imp(n),
@@ -88,6 +93,42 @@ const apply = (
       changed: result.rows.filter((r) => r.kind === 'outcome_changed'),
     }
   })
+
+describe('the apply statement requires the Organization upload lock', () => {
+  test('without QUOTA_LOCK in the same transaction it raises the lock error and writes nothing', async () => {
+    const { db } = setup()
+    const token = await claimed(db)
+
+    const attempt = apply(db, token, [{ row_number: 2, deal_id: 'A' }], 1000, 1, ORG, false)
+
+    await expect(attempt).rejects.toMatchObject({
+      code: '55000',
+      message: expect.stringContaining('playbook.upload_lock'),
+    })
+    expect(db.deals(ORG)).toEqual([])
+    expect(db.importRows(ORG, imp(1))).toEqual([])
+  })
+
+  test('the lock taken in an earlier transaction does not count', async () => {
+    const { db } = setup()
+    const token = await claimed(db)
+    await db.scope(ORG, (run) => run(QUOTA_LOCK, [ORG]))
+
+    await expect(
+      apply(db, token, [{ row_number: 2, deal_id: 'A' }], 1000, 1, ORG, false)
+    ).rejects.toMatchObject({ code: '55000' })
+  })
+
+  test('with the lock the batch is applied', async () => {
+    const { db } = setup()
+    const token = await claimed(db)
+
+    const result = await apply(db, token, [{ row_number: 2, deal_id: 'A' }])
+
+    expect(result.summary).toMatchObject({ taken: 1 })
+    expect(db.deals(ORG)).toHaveLength(1)
+  })
+})
 
 describe('the import row and its job', () => {
   test('an insert is uploaded with no counts; it is invisible to another Organization', async () => {

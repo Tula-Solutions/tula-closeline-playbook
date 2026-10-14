@@ -25,6 +25,9 @@ import { measure, summary } from './measure'
 // together and releases each batch's records once it is applied. The peak is the growth of the
 // process's resident memory over the run (it includes the double's own copies of the Deals, so it
 // is an upper bound for the job), asserted with a margin.
+// Which number guards what: the 500 ms CPU budget below is the meaningful guard, because it times
+// the job's own code. The end-to-end time is dominated by the double and only catches a hang; the
+// real statement's time is the integration suite's (deal-import.integration.ts).
 const CPU_BUDGET_MS = 500
 const RUN_BUDGET_MS = 35_000
 // Typical growth: 215 MB. Budget: about 4x.

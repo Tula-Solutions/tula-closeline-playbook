@@ -4,7 +4,13 @@ import {
   MAX_DEAL_IMPORT_ROWS,
   organizationIdSchema,
 } from 'tula-closeline-contract'
-import { DEAL_IMPORT_APPLY, DEAL_IMPORT_CLAIM, DEAL_IMPORT_HEARTBEAT } from 'tula-closeline-db'
+import {
+  DEAL_IMPORT_APPLY,
+  DEAL_IMPORT_CLAIM,
+  DEAL_IMPORT_HEARTBEAT,
+  QUOTA_LOCK,
+} from 'tula-closeline-db'
+import { newKey, personIn } from '~/modules/document/test-support'
 import { ShuttingDown } from '~/modules/ingestion/runtime'
 import { newOrganizationId } from '~/testing'
 import { claimedImports, parseImportFile, runImport } from './job'
@@ -324,6 +330,23 @@ describe('crashes, redelivery and lost leases', () => {
     expect(h.deps.database.imports(h.organizationId)[0]?.attempts).toBe(2)
   })
 
+  test('a job that did not take the upload lock first writes nothing', async () => {
+    const h = await createImportHarness()
+    await upload(h, csv(['A,won,,,,']))
+    const base = h.deps.scope
+    h.deps.scope = (organizationId, work) =>
+      base(organizationId, (run) =>
+        work(async (text, params) =>
+          text === QUOTA_LOCK ? { rows: [], rowCount: 0 } : run(text, params)
+        )
+      )
+
+    await h.runImports()
+
+    expect(dealsOf(h)).toEqual([])
+    expect(h.deps.database.imports(h.organizationId)[0]).toMatchObject({ state: 'uploaded' })
+  })
+
   test('a batch sent again after a lost answer changes nothing', async () => {
     const h = await createImportHarness()
     const id = await upload(h, csv(['A,won,,,,', 'B,lost,,,,']))
@@ -435,6 +458,25 @@ describe('the import gate and the shared pool', () => {
         .map((d) => d.deal_id)
         .sort()
     ).toEqual(['A', 'B'])
+  })
+
+  test('one Organization with many queued imports cannot take every slot: a pass claims one per Organization', async () => {
+    const h = await createImportHarness({ env: { INGESTION_CONCURRENCY: '2' } })
+    const stranger = personIn(newOrganizationId(), 'owner')
+    for (let i = 0; i < 5; i++) {
+      await upload(h, csv([`A${i},open,,,,`]), newKey())
+    }
+    const otherResponse = await h.uploadCsv(csv(['B,open,,,,']), { as: stranger })
+    expect(otherResponse.status).toBe(202)
+
+    const ran = await h.deps.workers.ingestion.runPass()
+
+    expect(ran).toBe(2)
+    const states = (organizationId: string) =>
+      h.deps.database.imports(organizationId).map((i) => i.state)
+    expect(states(stranger.organizationId)).toEqual(['completed'])
+    expect(states(h.organizationId).filter((state) => state === 'completed')).toHaveLength(1)
+    expect(states(h.organizationId).filter((state) => state === 'uploaded')).toHaveLength(4)
   })
 })
 

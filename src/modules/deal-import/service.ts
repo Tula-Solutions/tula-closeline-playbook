@@ -13,6 +13,7 @@ import {
   type ListDealImportsQuery,
   type ListDealImportsResponse,
   MAX_DEAL_IMPORT_BYTES,
+  MAX_DEAL_IMPORT_ROWS,
   normaliseMediaType,
   SALES_HISTORY_READ_ROLES,
 } from 'tula-closeline-contract'
@@ -341,24 +342,28 @@ export async function listRows(
   let after = 0
   if (query.cursor !== undefined) {
     const decoded = decodeCursor(query.cursor, dealImportRowCursorSchema)
-    if (decoded === undefined) {
+    // The last row of a file is record MAX + 1 (the header is record 1); a cursor past it names no row
+    // and would overflow the statement's int.
+    if (decoded === undefined || decoded.rowNumber > MAX_DEAL_IMPORT_ROWS + 1) {
       throw failure('request.invalid')
     }
     after = decoded.rowNumber
   }
-  const found = await transaction(deps, organizationId, async (run) => {
-    const parent = (await run(DEAL_IMPORT_GET, [organizationId, importId])).rows[0]
-    if (parent === undefined) {
-      return undefined
-    }
-    const statement =
-      query.result === undefined ? DEAL_IMPORT_ROWS_LIST : DEAL_IMPORT_ROWS_LIST_BY_RESULT
-    const params =
-      query.result === undefined
-        ? [organizationId, importId, after, query.limit]
-        : [organizationId, importId, after, query.limit, query.result]
-    return (await run(statement, params)).rows
-  })
+  const found = await mappingBadCursor(() =>
+    transaction(deps, organizationId, async (run) => {
+      const parent = (await run(DEAL_IMPORT_GET, [organizationId, importId])).rows[0]
+      if (parent === undefined) {
+        return undefined
+      }
+      const statement =
+        query.result === undefined ? DEAL_IMPORT_ROWS_LIST : DEAL_IMPORT_ROWS_LIST_BY_RESULT
+      const params =
+        query.result === undefined
+          ? [organizationId, importId, after, query.limit]
+          : [organizationId, importId, after, query.limit, query.result]
+      return (await run(statement, params)).rows
+    })
+  )
   if (found === undefined) {
     throw failure('deal_import.not_found')
   }

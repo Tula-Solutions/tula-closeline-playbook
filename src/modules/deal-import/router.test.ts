@@ -1,11 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import {
   dealImportSchema,
+  encodeCursor,
   errorBodySchema,
   listDealImportsResponseSchema,
   MAX_DEAL_IMPORT_BYTES,
 } from 'tula-closeline-contract'
-import { DEAL_IMPORT_INSERT, DEAL_IMPORT_LIST } from 'tula-closeline-db'
+import { DEAL_IMPORT_INSERT, DEAL_IMPORT_LIST, DEAL_IMPORT_ROWS_LIST } from 'tula-closeline-db'
 import { StorageError } from 'tula-closeline-kit'
 import { postgresError } from '~/adapters/memory/playbook-database'
 import { UPLOAD_ATTEMPT_ROUTE } from '~/modules/document/service'
@@ -367,6 +368,32 @@ describe('reading imports', () => {
 
     expect(response.status).toBe(400)
     expect(await errorCode(response)).toBe('request.invalid')
+  })
+
+  test('a row cursor beyond the last possible row is request.invalid, and the statement is never run', async () => {
+    const h = await createImportHarness()
+    const id = dealImportSchema.parse(await (await h.uploadCsv(csv(['A,open,,,,']))).json()).id
+    const before = h.deps.database.statements.length
+    const cursor = encodeURIComponent(encodeCursor({ rowNumber: 2 ** 40 }))
+
+    const response = await h.send('GET', `${IMPORTS}/${id}/rows?cursor=${cursor}`)
+
+    expect(response.status).toBe(400)
+    expect(await errorCode(response)).toBe('request.invalid')
+    expect(h.deps.database.statements.slice(before)).not.toContain(DEAL_IMPORT_ROWS_LIST)
+  })
+
+  test('a data exception from the report (SQLSTATE class 22) is request.invalid, not a 500', async () => {
+    const h = await createImportHarness()
+    const id = dealImportSchema.parse(await (await h.uploadCsv(csv(['A,open,,,,']))).json()).id
+    h.deps.database.failNext(DEAL_IMPORT_ROWS_LIST, postgresError('22003', 'secret row text'))
+
+    const response = await h.send('GET', `${IMPORTS}/${id}/rows`)
+    const text = await response.text()
+
+    expect(response.status).toBe(400)
+    expect(text).not.toContain('secret row text')
+    expect(h.deps.reported).toEqual([])
   })
 
   test('a data exception from the list (SQLSTATE class 22) is request.invalid, not a 500', async () => {
