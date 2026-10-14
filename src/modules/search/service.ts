@@ -8,19 +8,29 @@ import {
   searchMomentsResponseSchema,
 } from 'tula-closeline-contract'
 import { CALL_SEARCH_STATE, MAX_SEARCH_STATE_IDS } from 'tula-closeline-db'
+import { postgresErrorOf } from '~/adapters/postgres/retry'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
 import type { Container } from '~/container'
 import { RetryAfterError } from '~/http/domain-error'
 import { type MomentTag, momentMayBeReturned } from '~/modules/call/eligibility'
 import { MOMENT_VECTOR_VERSION } from '~/modules/call/moment-vectors'
 import { CallTimeout, within } from '~/modules/ingestion/runtime'
-import { assertRole, type CallContext, failure, transaction } from '~/modules/service-kit'
+import {
+  assertRole,
+  type CallContext,
+  failure,
+  isTransientFailure,
+  transaction,
+} from '~/modules/service-kit'
 
 /** What a search needs from the container. */
 export type SearchDeps = Pick<
   Container,
   'scope' | 'vectors' | 'embedder' | 'logger' | 'env' | 'sleep'
 >
+
+/** The SQLSTATE of a statement Postgres cancelled at its `statement_timeout`. */
+const QUERY_CANCELED = '57014'
 
 /** The seconds a 503 from a search asks the caller to wait. */
 export const SEARCH_RETRY_AFTER_SECONDS = 1
@@ -83,8 +93,12 @@ async function outside<T>(
       fn
     )
   } catch (error) {
-    if (error instanceof CallTimeout) {
+    if (error instanceof CallTimeout || postgresErrorOf(error)?.code === QUERY_CANCELED) {
       throw failure('server.timeout')
+    }
+    if (label === 'database' && !isTransientFailure(error)) {
+      // A database error that a repeat cannot cure is a bug: let it be a 500 and be reported.
+      throw error
     }
     deps.logger.warn('a search could not be answered by the model or the store', {
       organizationId,
@@ -156,11 +170,12 @@ export async function searchMoments(
     { inSearch: boolean; epoch: number; repSeq: number; dealRecordId: string }
   >()
   if (callIds.length > 0) {
-    const rows = await transaction(
-      deps,
-      organizationId,
-      async (run) =>
-        (await run(CALL_SEARCH_STATE, [organizationId, toTextArrayLiteral(callIds)])).rows
+    const rows = await outside(deps, 'database', organizationId, () =>
+      transaction(deps, organizationId, async (run) => {
+        // Postgres cancels the read itself at the step deadline; the wait above covers a stall that never reaches it.
+        await run(`set local statement_timeout = '${deps.env.SEARCH_STEP_TIMEOUT_MS}ms'`, [])
+        return (await run(CALL_SEARCH_STATE, [organizationId, toTextArrayLiteral(callIds)])).rows
+      })
     )
     for (const row of rows) {
       states.set(String(row.call_id), {

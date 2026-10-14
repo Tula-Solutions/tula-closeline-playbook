@@ -249,6 +249,15 @@ describe('what a search refuses', () => {
     ['a limit of 21', ask('price', 21)],
     ['a non-integer limit', { ...ask('price'), limit: 1.5 }],
     ['more than 2000 characters', ask('x'.repeat(2001))],
+    [
+      'more than 2000 characters across two turns',
+      {
+        turns: [
+          { role: 'rep', text: 'x'.repeat(1000) },
+          { role: 'prospect', text: 'y'.repeat(1001) },
+        ],
+      },
+    ],
     ['a turn of whitespace only', ask('   \n\t ')],
     ['an empty turn', ask('')],
     ['an unknown role', { turns: [{ role: 'agent', text: 'hi' }] }],
@@ -325,6 +334,73 @@ describe('when the model or the store cannot answer', () => {
 
     expect(response.status).toBe(504)
     expect(await errorCode(response)).toBe('server.timeout')
+  })
+
+  test('a database read that never answers is cut off: 504 server.timeout', async () => {
+    const h = await createCallHarness()
+    await wonCall(h, 'WON-1', conversation(PROSPECT_LINE))
+    h.deps.scope = () => new Promise(() => undefined)
+
+    const pending = search(h, ask('worried about the price of onboarding'))
+    for (let tick = 0; tick < 20; tick++) {
+      await Bun.sleep(0)
+      await h.deps.time.advance(h.deps.env.SEARCH_STEP_TIMEOUT_MS + 1)
+    }
+    const response = await pending
+
+    expect(response.status).toBe(504)
+    expect(await errorCode(response)).toBe('server.timeout')
+  })
+
+  test('a database that cancels the read at its statement timeout is 504 server.timeout', async () => {
+    const h = await createCallHarness()
+    await wonCall(h, 'WON-1', conversation(PROSPECT_LINE))
+    h.deps.scope = async () => {
+      throw Object.assign(new Error('canceling statement due to statement timeout'), {
+        code: '57014',
+      })
+    }
+
+    const response = await search(h, ask('worried about the price of onboarding'))
+
+    expect(response.status).toBe(504)
+    expect(await errorCode(response)).toBe('server.timeout')
+  })
+
+  test('a lost database connection is 503 with Retry-After', async () => {
+    const h = await createCallHarness()
+    await wonCall(h, 'WON-1', conversation(PROSPECT_LINE))
+    h.deps.scope = async () => {
+      throw Object.assign(new Error('connection terminated'), { code: 'ECONNRESET' })
+    }
+
+    const response = await search(h, ask('worried about the price of onboarding'))
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).not.toBeNull()
+  })
+
+  test('a database error that a repeat cannot cure is a 500, not a 503', async () => {
+    const h = await createCallHarness()
+    await wonCall(h, 'WON-1', conversation(PROSPECT_LINE))
+    h.deps.scope = async () => {
+      throw new Error('syntax error')
+    }
+
+    expect((await search(h, ask('worried about the price of onboarding'))).status).toBe(500)
+  })
+
+  test('the read sets a statement timeout of the step deadline first, in its own transaction', async () => {
+    const h = await createCallHarness()
+    await wonCall(h, 'WON-1', conversation(PROSPECT_LINE))
+    const before = h.deps.database.transactionStatements.length
+
+    await search(h, ask('worried about the price of onboarding'))
+
+    const [statements] = h.deps.database.transactionStatements.slice(before)
+    expect(statements?.[0]).toBe(
+      `set local statement_timeout = '${h.deps.env.SEARCH_STEP_TIMEOUT_MS}ms'`
+    )
   })
 
   test('a model that answers a vector of the wrong length is 503, not a crash', async () => {
