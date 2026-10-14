@@ -10,6 +10,7 @@ import {
   DEAL_IMPORT_HEARTBEAT,
   DEAL_IMPORT_INSERT,
   DEAL_IMPORT_LIST,
+  DEAL_IMPORT_LIST_ERASED,
   DEAL_IMPORT_OBJECT_REMOVED,
   DEAL_IMPORT_PURGE_BATCH,
   DEAL_IMPORT_RETRY,
@@ -452,6 +453,27 @@ describe('erasure of imports', () => {
       run(ORGANIZATION_REMOVE_REST, [ORG, 'documents.remove_all'])
     )
     expect(rest.rows[0]).toMatchObject({ removed: false }) // the Deals remain
+  })
+
+  test('DEAL_IMPORT_LIST_ERASED lists erased, unpurged imports by id after a cursor, for one Organization', async () => {
+    const { db } = setup()
+    for (const n of [3, 1, 2]) {
+      await claimed(db, n)
+    }
+    await claimed(db, 9, OTHER)
+    await db.scope(ORG, (run) => run(DEAL_IMPORT_ERASE_BATCH, [ORG, 2]))
+    await db.scope(ORG, (run) => run(DEAL_IMPORT_OBJECT_REMOVED, [ORG, imp(2)]))
+
+    const first = await db.scope(ORG, (run) => run(DEAL_IMPORT_LIST_ERASED, [ORG, '', 100]))
+    const next = await db.scope(ORG, (run) => run(DEAL_IMPORT_LIST_ERASED, [ORG, imp(1), 1]))
+    const other = await db.scope(OTHER, (run) => run(DEAL_IMPORT_LIST_ERASED, [OTHER, '', 100]))
+
+    expect(first.rows).toEqual([
+      { id: imp(1), object_key: `deal-imports/${imp(1)}/original.csv`, object_pending: true },
+      { id: imp(2), object_key: `deal-imports/${imp(2)}/original.csv`, object_pending: false },
+    ])
+    expect(next.rows.map((r) => r.id)).toEqual([imp(2)])
+    expect(other.rows).toEqual([])
   })
 
   test('the removal status and the rest wait for imports', async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { DEAL_IMPORT_ERASE_BATCH, DEAL_IMPORT_PURGE_BATCH } from 'tula-closeline-db'
+import { DEAL_IMPORT_OBJECT_REMOVED, DEAL_IMPORT_PURGE_BATCH } from 'tula-closeline-db'
+import { postgresError } from '~/adapters/memory/playbook-database'
 import { INTERNAL_SECRET, newKey } from '~/modules/document/test-support'
 import { newOrganizationId } from '~/testing'
 import { IMPORT_PURGE_STEP_ROWS, IMPORTS_ERASED_PER_REQUEST } from './erase'
@@ -84,62 +85,6 @@ describe('remove-all erases imports, their reports and their files', () => {
     expect(h.deps.database.imports(h.organizationId)).toEqual([])
   })
 
-  test('an object store that fails stops the request before any import is erased, and the repeat succeeds', async () => {
-    const h = await createImportHarness()
-    await h.uploadCsv(csv(['A,open,,,,']))
-    await h.runImports()
-    const original = h.deps.objects.delete.bind(h.deps.objects)
-    h.deps.objects.delete = async () => {
-      throw new Error('storage is down')
-    }
-
-    const failed = await removeAll(h, h.organizationId)
-    const stillThere = h.deps.database.imports(h.organizationId)
-    h.deps.objects.delete = original
-    const repeated = await removeAll(h, h.organizationId)
-
-    expect(failed.status).toBe(500)
-    expect(stillThere).toHaveLength(1)
-    expect(stillThere[0]?.erased_at).toBeNull()
-    expect(repeated.status).toBe(200)
-  })
-
-  test('with more imports than one request erases, every file it needs is removed before any import is erased', async () => {
-    const h = await createImportHarness()
-    const total = IMPORTS_ERASED_PER_REQUEST + 3
-    for (let i = 0; i < total; i++) {
-      const id = `dimp_${(i * 7919).toString(16).padStart(32, '0')}`
-      h.deps.database.seedImport({ id, organization_id: h.organizationId })
-      await h.deps.objects.put(
-        h.organizationId,
-        `deal-imports/${id}/original.csv`,
-        new Uint8Array([1])
-      )
-    }
-    const events: string[] = []
-    const base = h.deps.scope
-    h.deps.scope = (organizationId, work) =>
-      base(organizationId, (run) =>
-        work(async (text, params) => {
-          if (text === DEAL_IMPORT_ERASE_BATCH) {
-            events.push('erase')
-          }
-          return run(text, params)
-        })
-      )
-    const remove = h.deps.objects.delete.bind(h.deps.objects)
-    h.deps.objects.delete = async (...args) => {
-      events.push('delete')
-      return remove(...args)
-    }
-
-    await removeAll(h, h.organizationId)
-
-    const firstErase = events.indexOf('erase')
-    expect(firstErase).toBeGreaterThan(-1)
-    expect(events.slice(firstErase)).not.toContain('delete')
-  })
-
   test('an import that was running is fenced: the job it had cannot write after the erase', async () => {
     const h = await createImportHarness()
     await h.uploadCsv(csv(['A,open,,,,']))
@@ -155,5 +100,109 @@ describe('remove-all erases imports, their reports and their files', () => {
 
     expect(h.deps.database.deals(h.organizationId)).toEqual([])
     expect(h.deps.database.imports(h.organizationId)).toEqual([])
+  })
+})
+
+describe('an interrupted erasure is finished by the next request', () => {
+  /** An Organization with an import that has a multi-step report, one that is still queued, and their files. */
+  async function seeded() {
+    const h = await createImportHarness({ env: { MAX_DEALS_PER_ORGANIZATION: '100000' } })
+    await h.uploadCsv(
+      csv(Array.from({ length: IMPORT_PURGE_STEP_ROWS * 2 + 5 }, (_, i) => `D${i},open,,,,`))
+    )
+    await h.runImports()
+    await h.uploadCsv(csv(['Q,open,,,,']), { key: newKey() })
+    return h
+  }
+
+  /** Repeats remove-all until it answers something other than 503; returns every status. */
+  async function untilDone(h: Harness): Promise<number[]> {
+    const statuses: number[] = []
+    for (let call = 0; call < 30; call++) {
+      const { status } = await removeAll(h, h.organizationId)
+      statuses.push(status)
+      if (status !== 503) {
+        break
+      }
+    }
+    return statuses
+  }
+
+  async function expectNothingLeft(h: Harness): Promise<void> {
+    expect(h.deps.database.imports(h.organizationId)).toEqual([])
+    expect(h.deps.database.deals(h.organizationId)).toEqual([])
+    expect(await h.objectKeys()).toEqual([])
+  }
+
+  test('a failure on the second purge step', async () => {
+    const h = await seeded()
+    const base = h.deps.scope
+    let purges = 0
+    h.deps.scope = (organizationId, work) =>
+      base(organizationId, (run) =>
+        work(async (text, params) => {
+          if (text === DEAL_IMPORT_PURGE_BATCH && ++purges === 2) {
+            throw new Error('connection lost')
+          }
+          return run(text, params)
+        })
+      )
+
+    const first = await removeAll(h, h.organizationId)
+    expect(first.status).toBe(500)
+    expect(h.deps.database.imports(h.organizationId).length).toBeGreaterThan(0)
+    const statuses = await untilDone(h)
+
+    expect(statuses.at(-1)).toBe(200)
+    await expectNothingLeft(h)
+  })
+
+  test('a failure recording that the file was removed', async () => {
+    const h = await seeded()
+    h.deps.database.failNext(DEAL_IMPORT_OBJECT_REMOVED, postgresError('08006'))
+
+    const first = await removeAll(h, h.organizationId)
+    expect(first.status).toBe(500)
+    const statuses = await untilDone(h)
+
+    expect(statuses.at(-1)).toBe(200)
+    await expectNothingLeft(h)
+  })
+
+  test('a failure deleting the file right after the import was erased', async () => {
+    const h = await seeded()
+    const original = h.deps.objects.delete.bind(h.deps.objects)
+    let failures = 1
+    h.deps.objects.delete = async (...args) => {
+      if (failures-- > 0) {
+        throw new Error('storage is down')
+      }
+      return original(...args)
+    }
+
+    const first = await removeAll(h, h.organizationId)
+    expect(first.status).toBe(500)
+    expect(h.deps.database.imports(h.organizationId).some((i) => i.erased_at !== null)).toBe(true)
+    const statuses = await untilDone(h)
+
+    expect(statuses.at(-1)).toBe(200)
+    await expectNothingLeft(h)
+  })
+
+  test('erased imports are finished before more are erased, within the per-request bound', async () => {
+    const h = await createImportHarness()
+    for (let i = 0; i < IMPORTS_ERASED_PER_REQUEST + 2; i++) {
+      h.deps.database.seedImport({
+        id: `dimp_${i.toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        erased_at: 1,
+      })
+    }
+
+    const first = await removeAll(h, h.organizationId)
+
+    expect(first.status).toBe(503)
+    expect(h.deps.database.imports(h.organizationId)).toHaveLength(2)
+    expect((await removeAll(h, h.organizationId)).status).toBe(200)
   })
 })

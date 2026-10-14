@@ -10,6 +10,7 @@ import {
   DEAL_IMPORT_HEARTBEAT,
   DEAL_IMPORT_INSERT,
   DEAL_IMPORT_LIST,
+  DEAL_IMPORT_LIST_ERASED,
   DEAL_IMPORT_MAX_ATTEMPTS,
   DEAL_IMPORT_OBJECT_REMOVED,
   DEAL_IMPORT_PURGE_BATCH,
@@ -394,6 +395,20 @@ export function runImportStatement(
             object_pending: i.object_removed_at === null,
           }
         })
+      )
+    }
+    case DEAL_IMPORT_LIST_ERASED: {
+      const [organization, idAfter, size] = params as [string, string, number | null]
+      return rows(
+        mine(organization)
+          .filter((i) => i.erased_at !== null && i.id > idAfter)
+          .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+          .slice(0, batch(size, 100))
+          .map((i) => ({
+            id: i.id,
+            object_key: i.object_key,
+            object_pending: i.object_removed_at === null,
+          }))
       )
     }
     case DEAL_IMPORT_PURGE_BATCH: {

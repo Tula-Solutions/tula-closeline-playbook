@@ -15,6 +15,8 @@ import {
 import {
   createDb,
   DEAL_IMPORT_APPLY,
+  DEAL_IMPORT_OBJECT_REMOVED,
+  DEAL_IMPORT_PURGE_BATCH,
   ORGANIZATIONS_WITH_WORK,
   type WorkDiscoveryRow,
   withOrganization,
@@ -52,6 +54,7 @@ async function harness() {
 type Harness = Awaited<ReturnType<typeof harness>>
 
 /** The budget for the real apply of 50,000 rows, in 100 batches; set from the first CI run's number. */
+// Measured on CI Postgres: 21 s.
 const APPLY_BUDGET_MS = 120_000
 
 const deal = (n: number) => `deal_${n.toString(16).padStart(32, '0')}`
@@ -297,36 +300,100 @@ describe('remove-all against Postgres, with imports', () => {
     expect(await h.objectKeys()).toEqual([])
   })
 
-  test('a failing object store stops remove-all before any import is erased, with more imports than one request takes', async () => {
-    const h = await harness()
-    for (let i = 0; i < 8; i++) {
-      await upload(h, csv([`${deal(400 + i)},open,,,,`]), newKey())
+  describe('an interrupted erasure is finished by the next request', () => {
+    /** An Organization with an import whose report takes three purge steps, and a queued one. */
+    async function seeded() {
+      const h = await harness()
+      await upload(h, csv(Array.from({ length: 1100 }, (_, i) => `${deal(500 + i)},open,,,,`)))
+      await h.runImports()
+      await upload(h, csv([`${deal(9000)},open,,,,`]), newKey())
+      return h
     }
-    const original = h.deps.objects.delete.bind(h.deps.objects)
-    h.deps.objects.delete = async () => {
-      throw new Error('storage is down')
-    }
-    const removeAll = () =>
+
+    const removeAll = (h: Harness) =>
       h.app.request(`/internal/playbook/organizations/${h.organizationId}/remove-all`, {
         method: 'POST',
         headers: { authorization: `Bearer ${INTERNAL_SECRET}`, 'idempotency-key': newKey() },
       })
 
-    const failed = await removeAll()
-    const erased = await withOrganization(owner.db, h.organizationId, (tx) =>
-      tx.execute<{ n: number }>(
-        sql`select count(*)::int as n from playbook.deal_imports where erased_at is not null`
-      )
-    )
-    h.deps.objects.delete = original
-
-    expect(failed.status).toBe(500)
-    expect(erased.rows[0]?.n).toBe(0)
-    let status = 503
-    for (let call = 0; call < 20 && status === 503; call++) {
-      status = (await removeAll()).status
+    async function untilDone(h: Harness): Promise<number> {
+      let status = 503
+      for (let call = 0; call < 30 && status === 503; call++) {
+        status = (await removeAll(h)).status
+      }
+      return status
     }
-    expect(status).toBe(200)
-    expect(await count(h.organizationId, 'deal_imports')).toBe(0)
+
+    async function expectNothingLeft(h: Harness): Promise<void> {
+      expect(await count(h.organizationId, 'deal_imports')).toBe(0)
+      expect(await count(h.organizationId, 'deal_import_rows')).toBe(0)
+      expect(await h.objectKeys()).toEqual([])
+    }
+
+    test('after a failure on the second purge step', async () => {
+      const h = await seeded()
+      const base = h.deps.scope
+      let purges = 0
+      h.deps.scope = (organizationId, work) =>
+        base(organizationId, (run) =>
+          work(async (text, params) => {
+            if (text === DEAL_IMPORT_PURGE_BATCH && ++purges === 2) {
+              throw new Error('connection lost')
+            }
+            return run(text, params)
+          })
+        )
+
+      expect((await removeAll(h)).status).toBe(500)
+      expect(await count(h.organizationId, 'deal_imports')).toBeGreaterThan(0)
+      h.deps.scope = base
+
+      expect(await untilDone(h)).toBe(200)
+      await expectNothingLeft(h)
+    })
+
+    test('after a failure recording that the file was removed', async () => {
+      const h = await seeded()
+      const base = h.deps.scope
+      let failures = 1
+      h.deps.scope = (organizationId, work) =>
+        base(organizationId, (run) =>
+          work(async (text, params) => {
+            if (text === DEAL_IMPORT_OBJECT_REMOVED && failures-- > 0) {
+              throw new Error('connection lost')
+            }
+            return run(text, params)
+          })
+        )
+
+      expect((await removeAll(h)).status).toBe(500)
+      h.deps.scope = base
+
+      expect(await untilDone(h)).toBe(200)
+      await expectNothingLeft(h)
+    })
+
+    test('after a failure deleting the file right after the import was erased', async () => {
+      const h = await seeded()
+      const original = h.deps.objects.delete.bind(h.deps.objects)
+      let failures = 1
+      h.deps.objects.delete = async (...args) => {
+        if (failures-- > 0) {
+          throw new Error('storage is down')
+        }
+        return original(...args)
+      }
+
+      expect((await removeAll(h)).status).toBe(500)
+      const erased = await withOrganization(owner.db, h.organizationId, (tx) =>
+        tx.execute<{ n: number }>(
+          sql`select count(*)::int as n from playbook.deal_imports where erased_at is not null`
+        )
+      )
+      expect(erased.rows[0]?.n).toBeGreaterThan(0)
+
+      expect(await untilDone(h)).toBe(200)
+      await expectNothingLeft(h)
+    })
   })
 })

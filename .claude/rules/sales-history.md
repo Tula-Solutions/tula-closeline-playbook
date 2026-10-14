@@ -43,8 +43,11 @@ paths:
   logs and errors carry row numbers, counts and reasons only: no cell, deal id, name or amount.
 - The CSV is held whole (at most 10 MB): the object store port and the contract's reader do not
   stream. Records are released as batches finish.
-- Remove-all deletes import files first, then erases and purges up to 5 imports per request
-  (`DEAL_IMPORT_ERASE_BATCH`, `DEAL_IMPORT_PURGE_BATCH`), before it erases Deals.
+- Remove-all finishes erased-but-unpurged imports first (`DEAL_IMPORT_LIST_ERASED`: remove the CSV
+  when `object_pending`, `DEAL_IMPORT_OBJECT_REMOVED`, `DEAL_IMPORT_PURGE_BATCH` to the end), then
+  erases more with `DEAL_IMPORT_ERASE_BATCH` one at a time and finishes each at once, at most 5
+  imports per request, before it erases Deals. Any failure leaves the import listed, so the repeat
+  finishes it; never add a step that loses the id (db README, v0.16.0 section).
 - A blank record in the middle of the file is reported as a rejected `wrong_column_count` row, since
   the report must be contiguous; trailing blank records are dropped.
 - A CSV whose delete failed after its import ended stays until the orphan sweep next visits the

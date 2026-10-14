@@ -41,3 +41,10 @@ Sizing (memory per instance, from the reviewer's measurements):
   `MAX_CONCURRENT_UPLOADS` (shared with document uploads).
 - A running import job holds about 100 MB (the file, its text and 50,000 parsed records), so about
   200 MB at the default `INGESTION_CONCURRENCY` of 2 and about 1.6 GB at 16.
+
+### Erasing imports (remove-all)
+
+Remove-all takes at most 5 imports to their end per request and answers 503 until none remain.
+It first finishes imports an earlier request erased but did not finish (the CSV removed, that
+recorded, the report purged in steps), then erases more, so a crash or a storage failure at any step
+is finished by the next call and never strands an import.
