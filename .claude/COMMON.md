@@ -71,7 +71,24 @@ bench/                 benchmark suite (see Performance)
 - To use a newer version, change the tag and run `bun install`. Never `bun update` a git dependency.
 - In a library: the pre-commit hook rebuilds and stages `dist/`; CI rebuilds and fails on any
   difference. Release by bumping `version`, merging, then tagging `v<version>` on `develop`.
+- `bun run verify` in a library fails `dist:check` on the first run after a source change, because
+  it rebuilds `dist/`. Commit the rebuilt `dist/` and run it again.
+- `no commit matching "vX.Y.Z"` for a tag that exists is a stale Bun git cache: run
+  `git fetch --tags` in the cached bare repo under `~/.bun/install/cache/`, or use a fresh
+  `BUN_INSTALL_CACHE_DIR`.
 - A change that crosses repos lands in order: library, tag, then consumers.
+
+## Packages
+
+Add every dependency at its latest release, and have `bun outdated` clean before a PR. A `*` there
+is a release younger than the 3-day minimum release age; leave it alone.
+
+## Errors
+
+- Sentry is the error tracker. Services report through the kit's error reporter and never import
+  a Sentry package; nothing leaves the process unredacted.
+- Clients and services branch on the contract's `area.reason` code, never on the HTTP status alone
+  (401, 422 and 503 each map to several codes).
 
 ## Data
 
@@ -110,6 +127,9 @@ A change on a **hot path** (named in this repo's `AGENTS.md`) also states its ex
 in the PR and ships a benchmark in `bench/` with a budget. `bun run bench` enforces the budgets
 and is part of `bun run verify`.
 
+A budget gates on the fastest (or median) of several batches after a warm-up, at about five times
+the typical time, with the measured number in a comment. A single-sample p99 gate flakes.
+
 ## Testing
 
 `bun:test`, colocated, behaviour through the public function or HTTP route. See
@@ -120,7 +140,8 @@ and is part of `bun run verify`.
 1. `bun run verify` is green. It is exactly what CI runs.
 2. `/run-check` passes: the change is run for real against the local stack (smoke test,
    integration suite, the changed routes or screens; `agent-browser` for the portal).
-3. `/review-loop` reports no blocking findings (the `ollie-reviewer` subagent on Sonnet 5.5).
+3. `/review-loop` reports no blocking findings (the `ollie-reviewer` subagent on Sonnet 5.5). A
+   fix commit after the last review round is named as unreviewed in the PR.
 4. Every fixed finding has a regression test that failed first.
 5. Repeat 1 to 4. After four rounds without converging, stop and report.
 

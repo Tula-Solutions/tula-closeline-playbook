@@ -1,5 +1,50 @@
-bunx biome check --write --staged --no-errors-on-unmatched && git update-index --again
-bun run typecheck
+# Biome checks only what the repo's `check` script covers (src, bench, ...), not committed `dist/`
+# or `migrations/meta/*.json`. `biome check --staged` takes no path filter, so pass the files.
+# POSIX sh; husky runs it with `sh -e`, so every step that can fail says so with `|| exit 1`.
+script=$(bun -e 'console.log(JSON.parse(require("fs").readFileSync("package.json","utf8")).scripts?.check??"")') || exit 1
+
+if [ -z "$script" ]; then
+  bunx biome check --write --staged --no-errors-on-unmatched || exit 1
+  git update-index --again || exit 1
+else
+  # Only `biome check [flags] <paths>` is understood: a flag starts with `-`, a path is plain.
+  # A flag is one token (`--write`, `--max-diagnostics=50`), never a flag plus a separate value.
+  case $script in
+    "biome check" | "biome check "*) ;;
+    *)
+      echo "pre-commit: the check script must be 'biome check [flags] <paths>', got: $script" >&2
+      exit 1
+      ;;
+  esac
+  paths=
+  flags=
+  set -f
+  for token in ${script#biome check}; do
+    case $token in
+      -*[!A-Za-z0-9._=/-]* | *[!A-Za-z0-9._=/-]*)
+        echo "pre-commit: the check script must be 'biome check [flags] <paths>', got: $script" >&2
+        exit 1
+        ;;
+      -*) flags="$flags $token" ;;
+      *) paths="$paths $token" ;;
+    esac
+  done
+  if [ -z "$paths" ]; then
+    echo "pre-commit: the check script names no path to check, got: $script" >&2
+    exit 1
+  fi
+  list=$(mktemp) || exit 1
+  trap 'rm -f "$list"' EXIT
+  # shellcheck disable=SC2086
+  git diff --cached -z --name-only --diff-filter=ACMR -- $paths >"$list" || exit 1
+  if [ -s "$list" ]; then
+    # shellcheck disable=SC2086
+    xargs -0 bunx biome check --write --no-errors-on-unmatched $flags -- <"$list" || exit 1
+  fi
+  set +f
+  git update-index --again || exit 1
+fi
+bun run typecheck || exit 1
 # Shared libraries commit their build output; `precommit:dist` rebuilds and stages it. Repos
 # without a dist do not define the script, and `--if-present` makes that a no-op.
-bun run --if-present precommit:dist
+bun run --if-present precommit:dist || exit 1
