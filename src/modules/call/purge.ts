@@ -5,6 +5,7 @@ import {
   CALL_LIST_SPENT_PURGES,
   CALL_PURGE_CLAIM,
   CALL_PURGE_COMPLETE,
+  CALL_VENDOR_REMOVED,
 } from 'tula-closeline-db'
 import {
   CLEANUP_PENDING_AFTER_MS,
@@ -14,12 +15,21 @@ import {
   reportWorkerError,
   within,
 } from '~/modules/ingestion/runtime'
-import { callPrefix } from './keys'
+import { callPrefix, clientReferenceOf, clientReferencePrefix } from './keys'
 
 /** What the Call cleanup and purge need from the container. */
 export type CallPurgeDeps = Pick<
   PipelineDeps,
-  'scope' | 'sleep' | 'random' | 'vectors' | 'objects' | 'logger' | 'clock' | 'env'
+  | 'scope'
+  | 'sleep'
+  | 'random'
+  | 'vectors'
+  | 'objects'
+  | 'transcriber'
+  | 'logger'
+  | 'clock'
+  | 'env'
+  | 'reportError'
 >
 
 /** What one Call purge pass of an Organization did. */
@@ -116,6 +126,77 @@ async function deleteCallObjects(
   }
 }
 
+/** The purge attempts after which a Call whose vendor copy will not go is reported to the error tracker (alerting a person), not only logged. */
+const VENDOR_ALERT_ATTEMPTS = 5
+
+/** The pages of the vendor's list one purge reads, so a runaway listing ends. */
+const MAX_VENDOR_LIST_PAGES = 20
+
+/** The sends of a Call as the purge claim returns them: `seq` and the vendor id when one was recorded. */
+function vendorSendsOf(row: Record<string, unknown>): Map<number, string | null> {
+  const sends = new Map<number, string | null>()
+  const raw: unknown =
+    typeof row.vendor_sends === 'string' ? JSON.parse(row.vendor_sends) : row.vendor_sends
+  if (Array.isArray(raw)) {
+    for (const entry of raw as unknown[]) {
+      const record = entry as { seq?: unknown; vendor_id?: unknown }
+      if (typeof record.seq === 'number') {
+        sends.set(record.seq, typeof record.vendor_id === 'string' ? record.vendor_id : null)
+      }
+    }
+  }
+  return sends
+}
+
+/**
+ * Deletes every copy of a Recording at the transcription vendor. For each counted send (1 to
+ * `vendor_send_seq`) it deletes by client reference with the stored vendor id as a hint, or by the
+ * reference alone when no id was stored (a worker died between the vendor accepting and the id
+ * being recorded); the vendor removes every copy carrying the reference. It then lists the vendor's
+ * jobs under the Call's prefix and deletes what is left. Any failure throws and the purge is
+ * retried by its claim, bounded; nothing is confirmed here. Idempotent. Nothing it logs holds an id.
+ */
+async function deleteVendorCopies(
+  deps: CallPurgeDeps,
+  organizationId: string,
+  callId: string,
+  row: Record<string, unknown>,
+  signal: AbortSignal
+): Promise<void> {
+  const timeout = deps.env.INGESTION_IO_TIMEOUT_MS
+  const known = vendorSendsOf(row)
+  const sent = Number(row.vendor_send_seq)
+  for (let seq = 1; seq <= sent; seq++) {
+    const vendorId = known.get(seq)
+    await within(deps, 'transcriber', timeout, signal, () =>
+      deps.transcriber.delete(
+        organizationId,
+        clientReferenceOf(callId, seq),
+        vendorId === null || vendorId === undefined ? undefined : { vendorId }
+      )
+    )
+  }
+  let cursor: string | undefined
+  for (let page = 0; page < MAX_VENDOR_LIST_PAGES; page++) {
+    const listed = await within(deps, 'transcriber', timeout, signal, () =>
+      deps.transcriber.list(organizationId, {
+        prefix: clientReferencePrefix(callId),
+        ...(cursor === undefined ? {} : { cursor }),
+      })
+    )
+    for (const item of listed.items) {
+      await within(deps, 'transcriber', timeout, signal, () =>
+        deps.transcriber.delete(organizationId, item.clientReference, { vendorId: item.vendorId })
+      )
+    }
+    cursor = listed.nextCursor
+    if (cursor === undefined) {
+      return
+    }
+  }
+  throw new Error('the vendor list for a Call did not end')
+}
+
 /**
  * Purges the Organization's Calls that are due: claims a bounded batch under a lease (the claim
  * ends restores for good), runs the vector cleanup if it is not recorded, deletes every vector of
@@ -158,6 +239,30 @@ export async function purgeCalls(
       result.deferred++
       continue
     }
+    // A Recording that was sent to the vendor: its copies go first, then the audio, then the
+    // confirmation. A failure here leaves the Call for the claim's next attempt (bounded); the
+    // confirmation is never made before every send is handled.
+    const vendorPending = row.sent_to_vendor_at !== null && row.vendor_removed_at === null
+    if (vendorPending) {
+      try {
+        await deleteVendorCopies(deps, organizationId, callId, row, signal)
+      } catch (error) {
+        if (signal.aborted) {
+          throw error
+        }
+        deps.logger.warn('the vendor copies of a Call could not be deleted; the purge is retried', {
+          organizationId,
+          callId,
+          attempts: Number(row.purge_attempts),
+          error: error instanceof Error ? error.name : 'unknown',
+        })
+        if (Number(row.purge_attempts) >= VENDOR_ALERT_ATTEMPTS) {
+          reportWorkerError(deps, error, { worker: 'call_purge', organizationId })
+        }
+        result.deferred++
+        continue
+      }
+    }
     await deleteCallObjects(deps, organizationId, callId, signal)
     // The original's and the kept Transcript's own keys too, in case they were written outside the prefix.
     for (const key of [row.object_key, row.transcript_key]) {
@@ -165,6 +270,17 @@ export async function purgeCalls(
         await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
           deps.objects.delete(organizationId, key)
         )
+      }
+    }
+    if (vendorPending) {
+      // For the sequence this claim returned: a send made after it would be a later one.
+      const confirmed = await inTransaction(deps, organizationId, (run) =>
+        run(CALL_VENDOR_REMOVED, [organizationId, callId, Number(row.vendor_send_seq)])
+      )
+      if (confirmed.rows.length === 0) {
+        // A job of the Call may still hold its lease: confirm after it ends.
+        result.deferred++
+        continue
       }
     }
     const completed = await inTransaction(deps, organizationId, (run) =>

@@ -18,7 +18,13 @@ import { type Discover, scopeOver, statementOf } from '~/adapters/postgres/proce
 import { integrationUrls } from '~/integration-support'
 import { errorCode, INTERNAL_SECRET, newKey, personIn } from '~/modules/document/test-support'
 import { purgeCalls } from './purge'
-import { CALLS, type CallHarness, createCallHarness, transcriptText } from './test-support'
+import {
+  CALLS,
+  type CallHarness,
+  channelRep,
+  createCallHarness,
+  transcriptText,
+} from './test-support'
 
 const urls = integrationUrls()
 const service = createDb(urls.service)
@@ -339,5 +345,88 @@ describe('the Outcome re-tag, Rep change, delete and restore against Postgres', 
 
     expect(response.status).toBe(410)
     expect(await errorCode(response)).toBe('call.not_restorable')
+  })
+})
+
+describe('a Recording against Postgres', () => {
+  test('is uploaded, transcribed with its sends and vendor ids recorded, picked, and made ready', async () => {
+    const h = await harness()
+    const response = await h.uploadRecording('pg-mono')
+    expect(response.status).toBe(201)
+    const call = callSchema.parse(await response.json())
+
+    await h.runCalls()
+
+    expect(await h.readCall(call.id)).toMatchObject({ state: 'awaiting_rep', durationSeconds: 20 })
+    expect(await count(h.organizationId, 'call_vendor_sends')).toBe(1)
+    const sends = await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute<{ seq: number; has_id: boolean }>(
+        sql`select seq, vendor_id is not null as has_id from playbook.call_vendor_sends`
+      )
+    )
+    expect(sends.rows).toEqual([{ seq: 1, has_id: true }])
+
+    const picked = await h.send('PUT', `${CALLS}/${call.id}/rep`, {
+      body: { rep: { by: 'speaker', label: 'A' } },
+    })
+    expect(picked.status).toBe(200)
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('ready')
+  })
+
+  test('a per-side Recording is ready by channel; its purge deletes the vendor copy and confirms it', async () => {
+    const h = await harness()
+    const response = await h.uploadRecording('pg-stereo', { rep: channelRep('left') })
+    const call = callSchema.parse(await response.json())
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    expect(h.deps.transcriber.copies(h.organizationId)).toHaveLength(1)
+
+    expect((await h.send('DELETE', `${CALLS}/${call.id}`)).status).toBe(200)
+    await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute(
+        sql`update playbook.calls set deleted_at = now() - interval '2 minutes', purge_due_at = now() - interval '1 minute'`
+      )
+    )
+    const result = await purgeCalls(h.deps, h.organizationId, new AbortController().signal)
+
+    expect(result).toEqual({ purged: 1, deferred: 0 })
+    expect(h.deps.transcriber.copies(h.organizationId)).toEqual([])
+    expect(await count(h.organizationId, 'calls')).toBe(0)
+    expect(await count(h.organizationId, 'call_vendor_sends')).toBe(0)
+    expect(await h.objectKeys()).toEqual([])
+  })
+
+  test('a send whose id was never stored, and a vendor that fails once, still end with no copy', async () => {
+    const h = await harness()
+    const response = await h.uploadRecording('pg-crash')
+    const call = callSchema.parse(await response.json())
+    h.deps.transcriber.acceptThenFailNext()
+    await h.runCalls()
+    expect(h.deps.transcriber.copies(h.organizationId)).toHaveLength(1)
+    await h.deps.time.advance(20 * 60 * 1000)
+    // Job due-times are the database's clock, so make the retry due there.
+    await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute(sql`update playbook.call_jobs set next_attempt_at = now() - interval '1 second'`)
+    )
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('awaiting_rep')
+
+    expect((await h.send('DELETE', `${CALLS}/${call.id}`)).status).toBe(200)
+    await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute(
+        sql`update playbook.calls set deleted_at = now() - interval '2 minutes', purge_due_at = now() - interval '1 minute'`
+      )
+    )
+    h.deps.transcriber.failNext('delete', 'transcriber.unavailable')
+    const first = await purgeCalls(h.deps, h.organizationId, new AbortController().signal)
+    expect(first).toEqual({ purged: 0, deferred: 1 })
+    await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute(sql`update playbook.calls set purge_lease_until = now() - interval '1 second'`)
+    )
+    const second = await purgeCalls(h.deps, h.organizationId, new AbortController().signal)
+
+    expect(second).toEqual({ purged: 1, deferred: 0 })
+    expect(h.deps.transcriber.copies(h.organizationId)).toEqual([])
   })
 })

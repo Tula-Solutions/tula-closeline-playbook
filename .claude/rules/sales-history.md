@@ -67,7 +67,17 @@ paths:
   role, upload gate, body cap (5 MB + 64 KB; a Recording body over it is `request.too_large`), multipart
   with only `file`, `dealId`, `rep`, size/type, `rep` must be a speaker label for a Transcript
   (`call.rep_invalid`), content check, SHA-256, then the key, `QUOTA_LOCK` and `CALL_INSERT` around the
-  object write. A Recording upload is `call.unsupported_type` until the Recording ticket.
+  object write. 
+- Recordings (hub issue 75): the body is streamed (`src/http/multipart.ts`), never held whole. `dealId` and
+  `rep` (channel only, else `call.rep_invalid`) must come before `file` and nothing after it; a Transcript
+  keeps any order. Rights confirmation is checked before any byte is stored; the object goes through
+  `putStream` with `maxBytes` 500 MB (`call.too_large`), a partial object is deleted, and the container's
+  magic bytes must match (`call.unsupported_type`). The `transcribe` job presigns just before submit,
+  uses client reference `<callId>:<vendor_send_seq>`, counts each send (`CALL_SENT_TO_VENDOR`, max 20),
+  records the vendor id (`CALL_VENDOR_ID_RECORD`; a conflict is non-fatal), polls with a deadline, keeps
+  the JSON transcript at `calls/<id>/transcript.json`; mono with no Rep waits in `awaiting_rep`.
+  Purge/erase delete vendor copies (per send, then by reference prefix), then the audio, then
+  `CALL_VENDOR_REMOVED`, then confirm. Re-tag resumes per Organization after the last Deal it examined.
 - `CALL_INSERT` answers five ways: `created` 201; `existing` 200 (a deleted Call is restored, a failed
   one with a transient reason is requeued, the new object is removed); `other_deal` is
   `call.content_in_other_deal` and says nothing of the other Call; `rights_required` is

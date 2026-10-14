@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { errorBodySchema, MAX_DOCUMENT_BYTES } from 'tula-closeline-contract'
+import { errorBodySchema } from 'tula-closeline-contract'
 import { createApp } from '~/app'
 import { createTestDeps } from '~/testing'
-import { IMPORT_BODY_LIMIT, UPLOAD_BODY_OVERHEAD_BYTES } from './limits'
+import { CALL_BODY_LIMIT } from './limits'
 import { BODY_LIMIT_MARGIN_BYTES, serveOptions } from './serve'
 
 function optionsFor(env: Record<string, string>) {
@@ -43,25 +43,20 @@ describe('Bun.serve options', () => {
     expect(optionsFor({ PORT: '4100' }).options.port).toBe(4100)
   })
 
-  test('Bun is given the largest route limit, the upload route, because it cannot limit one route', () => {
+  test('Bun is given the largest route limit, the Call upload, because it cannot limit one route', () => {
     const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '2048', MAX_UPLOAD_BYTES: '5000' })
 
-    // The Deal import upload keeps its own, larger limit when the document limit is lowered.
-    expect(options.maxRequestBodySize).toBe(IMPORT_BODY_LIMIT + BODY_LIMIT_MARGIN_BYTES)
+    // A Recording (500 MB, streamed) is the largest body any route takes.
+    expect(options.maxRequestBodySize).toBe(CALL_BODY_LIMIT + BODY_LIMIT_MARGIN_BYTES)
   })
 
-  test('with the document limit at its maximum, the document upload route sets the limit', () => {
-    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '2048' })
+  test('a request limit raised to its maximum is still below the Call upload limit, so that wins', () => {
+    const { options } = optionsFor({
+      MAX_REQUEST_BODY_BYTES: '104857600',
+      MAX_UPLOAD_BYTES: '5000',
+    })
 
-    expect(options.maxRequestBodySize).toBe(
-      MAX_DOCUMENT_BYTES + UPLOAD_BODY_OVERHEAD_BYTES + BODY_LIMIT_MARGIN_BYTES
-    )
-  })
-
-  test('a limit raised above the upload limit wins, so no route is cut by Bun first', () => {
-    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '50000000', MAX_UPLOAD_BYTES: '5000' })
-
-    expect(options.maxRequestBodySize).toBe(50_000_000 + BODY_LIMIT_MARGIN_BYTES)
+    expect(options.maxRequestBodySize).toBe(CALL_BODY_LIMIT + BODY_LIMIT_MARGIN_BYTES)
   })
 })
 

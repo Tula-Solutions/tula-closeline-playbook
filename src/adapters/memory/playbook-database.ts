@@ -72,7 +72,12 @@ import {
 import type { Clock } from 'tula-closeline-kit'
 import type { Discover, InScope, Result, Run } from '~/adapters/postgres/processed-store'
 import { CLEANUP_PENDING_AFTER_MS } from '~/modules/ingestion/runtime'
-import { type MemoryCallJobRow, type MemoryCallRow, runCallStatement } from './calls'
+import {
+  type MemoryCallJobRow,
+  type MemoryCallRow,
+  type MemoryVendorSendRow,
+  runCallStatement,
+} from './calls'
 import {
   type MemoryImportReportRow,
   type MemoryImportRow,
@@ -203,6 +208,8 @@ type State = {
   /** The Calls and their jobs. */
   calls: MemoryCallRow[]
   callJobs: MemoryCallJobRow[]
+  /** The counted sends of Recordings to the transcription vendor, with the vendor's id once recorded. */
+  vendorSends: MemoryVendorSendRow[]
   jobs: MemoryJobRow[]
   keys: KeyRow[]
   settings: MemorySettingsRow[]
@@ -246,6 +253,8 @@ export type MemoryPlaybookDatabase = {
   calls(organizationId: string): MemoryCallRow[]
   /** The committed Call jobs of an Organization. */
   callJobs(organizationId: string): MemoryCallJobRow[]
+  /** The committed vendor sends of an Organization's Calls. */
+  vendorSends(organizationId: string): MemoryVendorSendRow[]
   /** Adds a Call row directly (its Deal must exist), as a test's starting point. */
   seedCall(
     row: Partial<MemoryCallRow> & Pick<MemoryCallRow, 'id' | 'organization_id' | 'deal_record_id'>
@@ -404,6 +413,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     importRows: [],
     calls: [],
     callJobs: [],
+    vendorSends: [],
     jobs: [],
     keys: [],
     settings: [],
@@ -1608,6 +1618,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           const called = runCallStatement(text, params, {
             calls: state.calls,
             callJobs: state.callJobs,
+            vendorSends: state.vendorSends,
             deals: state.deals,
             rights: state.rights,
             own,
@@ -1785,6 +1796,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         importRows: [...committed.importRows],
         calls: structuredClone(committed.calls),
         callJobs: structuredClone(committed.callJobs),
+        vendorSends: structuredClone(committed.vendorSends),
         jobs: structuredClone(committed.jobs),
         keys: structuredClone(committed.keys),
         settings: structuredClone(committed.settings),
@@ -1834,6 +1846,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         .sort((a, b) => a.created_at_us - b.created_at_us),
     callJobs: (organizationId) =>
       committed.callJobs.filter((j) => j.organization_id === organizationId),
+    vendorSends: (organizationId) =>
+      committed.vendorSends.filter((v) => v.organization_id === organizationId),
     seedCall: (row) => {
       const at = now()
       committed.calls.push({

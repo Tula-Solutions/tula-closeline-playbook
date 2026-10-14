@@ -4646,7 +4646,7 @@
       "post": {
         "description": "Uploads one Call as a Transcript (txt, vtt, srt or json, up to 5 MB) or a Recording (mp3, m4a, wav, ogg, webm or flac, up to 500 MB, streamed to storage and never held whole), as multipart/form-data with one file part named \"file\" and the text fields \"dealId\" and \"rep\". Owner and Admin only; Managers and Reps get auth.forbidden. A Transcript needs \"rep\", the JSON {\"by\":\"speaker\",\"label\":...}; a per-side Recording takes {\"by\":\"channel\",\"channel\":\"left\"|\"right\"}; a Recording with no \"rep\" waits in state \"awaiting_rep\" after transcription until an Owner or Admin picks one. A Deal that does not exist yet is created \"open\". Refused with rights.confirmation_required (403, its details name the wording version to show) until the Organization has a current rights confirmation. The type and size of the file part are checked before anything is stored: call.unsupported_type (415) and call.too_large (413); a malformed name, an empty file or a bad field is request.invalid, and a Rep choice that does not suit the kind is call.rep_invalid. The common request.too_large and request.unsupported_media_type apply to the whole request instead. Answers 201 with the new Call in state \"uploaded\". If the content matches a Call the Organization already has under the same Deal, answers 200 with that stored Call: a match on a \"deleted\" Call restores it (state \"processing\") and a match on a \"failed\" Call under the same Deal whose failureReason is transcription_failed, transcription_timed_out or processing_failed (reasons that can be transient) re-queues it for processing (state \"uploaded\"); a match on a failed Call with any other reason answers 200 with the failed Call unchanged, because the same file would fail the same way: rep_label_not_found and not_per_side are fixed by changing the Rep, and too_many_speakers, no_turns, too_few_speakers, too_long and unreadable by choosing to delete the Call and upload a corrected file; any other match returns the Call as it is. The same content under another deal id is call.content_in_other_deal. A recording over 3 hours, a Transcript with no turns or fewer than two speakers, or a Rep label not in the file is not checked here: the Call ends in state \"failed\" with a failureReason. Accepts an Idempotency-Key header.",
         "tags": ["calls"],
-        "summary": "Upload a Call Transcript",
+        "summary": "Upload a Call Transcript or Recording",
         "security": [
           {
             "accessToken": []
@@ -4677,7 +4677,7 @@
                   "file": {
                     "type": "string",
                     "format": "binary",
-                    "description": "The Transcript file."
+                    "description": "The Transcript or Recording file. A Recording is streamed to storage (500 MB at most), so `dealId` and `rep` must come before `file` in the form."
                   },
                   "dealId": {
                     "type": "string",
@@ -4685,7 +4685,7 @@
                   },
                   "rep": {
                     "type": "string",
-                    "description": "JSON text naming the Rep: {\"by\":\"speaker\",\"label\":\"...\"}."
+                    "description": "JSON text naming the Rep: {\"by\":\"speaker\",\"label\":\"...\"} for a Transcript; {\"by\":\"channel\",\"channel\":\"left\"|\"right\"} for a per-side Recording; absent for a Recording whose Rep is picked after transcription."
                   }
                 },
                 "required": ["file", "dealId"]
@@ -4877,7 +4877,7 @@
             }
           },
           "201": {
-            "description": "The Transcript was stored and queued for processing.",
+            "description": "The Transcript or Recording was stored and queued.",
             "content": {
               "application/json": {
                 "schema": {

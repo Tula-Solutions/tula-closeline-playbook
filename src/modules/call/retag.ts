@@ -17,7 +17,7 @@ import {
   reportWorkerError,
   within,
 } from '~/modules/ingestion/runtime'
-import { callObjectKey, momentVectorId } from './keys'
+import { callObjectKey, momentVectorId, recordingTranscriptKey, repLabelOf } from './keys'
 import { writeMomentVectors } from './moment-vectors'
 import { buildMoments } from './moments'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
@@ -57,6 +57,9 @@ function objectKeyOf(callId: string, mediaType: string): string | undefined {
 }
 
 type CallResult = 'tagged' | 'skipped'
+
+/** Where each Organization's last re-tag pass stopped paging (the id of the last Deal it examined). */
+const resumeAfter = new Map<string, string>()
 
 /** The count of stuck Calls last logged per Organization, so a repeating stall is logged once. */
 const stuckSeen = new Map<string, number>()
@@ -127,26 +130,34 @@ async function retagCall(
     }
     const epoch = Number(call.epoch)
     const repSeq = Number(call.rep_seq)
+    // A Transcript is read from its upload; a Recording from the Transcript its transcribe job kept.
+    const recording = call.kind === 'recording'
+    const repLabel = repLabelOf(call)
+    const transcriptKey = recording
+      ? recordingTranscriptKey(callId)
+      : objectKeyOf(callId, String(call.media_type))
     if (
-      call.kind !== 'transcript' ||
-      call.rep_label === null ||
-      objectKeyOf(callId, String(call.media_type)) === undefined
+      (!recording && call.kind !== 'transcript') ||
+      repLabel === null ||
+      transcriptKey === undefined
     ) {
-      // Recordings keep their Transcript elsewhere; they are not re-tagged by this code yet.
       return 'skipped'
     }
     const object = await within(deps, 'object store', timeout, signal, () =>
-      deps.objects.get(organizationId, objectKeyOf(callId, String(call.media_type)) ?? '')
+      deps.objects.get(organizationId, transcriptKey)
     )
     if (object === undefined) {
       return 'skipped'
     }
-    const parsed = parseTranscript(object.body, call.media_type as TranscriptMediaType)
+    const parsed = parseTranscript(
+      object.body,
+      recording ? 'application/json' : (call.media_type as TranscriptMediaType)
+    )
     if (!parsed.ok) {
       return 'skipped'
     }
     // The patch needs only the ids, so no embedder call: the Moments are rebuilt to name their vectors.
-    const moments = buildMoments(parsed.transcript.turns, String(call.rep_label))
+    const moments = buildMoments(parsed.transcript.turns, repLabel)
     const ids = moments.map((moment) => momentVectorId(callId, epoch, repSeq, moment.index))
     const missing = await patchTags(deps, organizationId, ids, tag, signal)
     if (missing > 0) {
@@ -316,7 +327,13 @@ export async function retagOutcomes(
 ): Promise<RetagResult> {
   const result: RetagResult = { deals: 0, calls: 0, skipped: 0 }
   let scanned = 0
-  let after = ''
+  // Where the last pass of this Organization stopped, so Deals that cannot finish are not the only
+  // ones each pass examines: it carries on after the last Deal it looked at, and starts over from
+  // the beginning only when it reaches the end (one extra read). The point is a fairness hint kept
+  // in this process; losing it (a restart, another instance) only starts the next pass from the top.
+  let after = resumeAfter.get(organizationId) ?? ''
+  let wrapped = after === ''
+  let exhausted = false
   // Deals that cannot finish (an unreadable Call) are paged past, so they never starve the Deals
   // behind them; a pass stops after RETAG_DEALS_PER_PASS completed Deals or RETAG_SCAN_LIMIT examined.
   scan: while (result.deals < RETAG_DEALS_PER_PASS && scanned < RETAG_SCAN_LIMIT) {
@@ -327,6 +344,12 @@ export async function retagOutcomes(
         (await run(DEAL_LIST_PENDING_RETAG, [organizationId, after, RETAG_DEALS_PER_PASS])).rows
     )
     if (page.length === 0) {
+      if (!wrapped) {
+        wrapped = true
+        after = ''
+        continue
+      }
+      exhausted = true
       break
     }
     for (const row of page) {
@@ -342,6 +365,11 @@ export async function retagOutcomes(
         result.deals++
       }
     }
+  }
+  if (exhausted) {
+    resumeAfter.delete(organizationId)
+  } else {
+    resumeAfter.set(organizationId, after)
   }
   // A pass that did work is logged; a pass that only found the same stuck Deals again is logged
   // when its count of stuck Calls changes, not every poll (the log is per process, for noise only).

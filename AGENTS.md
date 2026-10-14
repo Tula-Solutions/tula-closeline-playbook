@@ -34,7 +34,7 @@ What does not: the vendor adapters for the vector store, embedder and OCR, and s
 is real (`src/adapters/parser/`).
 **The pipeline is not deployable until plan steps 1.35 and 1.36 (hub issue 48 and the
 embedder/OCR adapters) land.** Until then `WORKERS_ENABLED=true` is refused at
-boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`), and the
+boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`, which now includes the `transcriber`; env keys `RECORDING_BODY_TIMEOUT_MS`, `TRANSCRIBE_POLL_INTERVAL_MS`, `TRANSCRIBE_MAX_WAIT_MS`), and the
 default there is false: an API-only instance whose uploads stay `uploaded`, nothing claiming them.
 The sweeps (`SWEEPS_ENABLED`, default true everywhere) run regardless, so deletes are purged.
 
@@ -136,7 +136,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   stores no key; the caller repeats until 200. The key is required and stored with the final answer.
 - Search drops results whose document is deleted or gone (ADR 0016); that state check is the
   guarantee, the vector cleanup is not.
-- Uploads are held whole in memory: `MAX_CONCURRENT_UPLOADS` bounds them per instance, and sizes and
+- Uploads (except Recordings, which stream to the object store in constant memory, up to 500 MB / 3 h) are held whole in memory: `MAX_CONCURRENT_UPLOADS` bounds them per instance, and sizes and
   page counts come from the contract's constants (`env.ts` may lower them, never raise them).
   Measured on Bun 1.4.2 against a real server: a 25 MiB upload peaks at about 26 MiB of buffers and
   25 to 50 MiB of resident memory once warm (up to about 100 MiB on the first), so plan 4 times the
@@ -177,7 +177,7 @@ Each has a benchmark in `bench/` with a budget; a change to one states its compl
   O(1) per message in the store: `bench/consumer.bench.test.ts`. The Postgres store adds one
   statement per step, and the removed-Organization guard one more indexed read per consumed
   message (`ORGANIZATION_REMOVAL_STATUS`); a second bench times it over the database double.
-- **Deal import** (`runImport`): O(rows), 500 rows per apply, 50,000 rows at most; the file is held whole in memory (no streaming port): `bench/deal-import.bench.test.ts`. **Call Transcript parse and Moments**: O(file size), 5 MB at most: `bench/call-transcript.bench.test.ts`.
+- **Deal import** (`runImport`): O(rows), 500 rows per apply, 50,000 rows at most; the file is held whole in memory (no streaming port): `bench/deal-import.bench.test.ts`. **Call Transcript parse and Moments**: O(file size), 5 MB at most: `bench/call-transcript.bench.test.ts`. **Recording upload**: O(file size) time, O(chunk) memory (streamed multipart to `putStream`), 500 MB at most: `bench/recording-upload.bench.test.ts`.
 - **Chunking** (`chunkPages`): O(total characters) time, O(input + output) memory, bounded by
   `MAX_CHUNKS_PER_DOCUMENT`: `bench/chunker.bench.test.ts` (the ordinary budget has runner headroom; the hostile-input cases guard against super-linear time). **The claim loop** is O(`INGESTION_CONCURRENCY`)
   per Organization per pass plus O(Organizations with work) discovery, in pages of `DISCOVERY_BATCH`.

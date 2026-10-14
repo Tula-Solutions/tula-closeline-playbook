@@ -9,6 +9,7 @@ import {
   type ClaimedCallJob,
   DEAL_GET,
 } from 'tula-closeline-db'
+import { TranscriberError } from 'tula-closeline-kit'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
 import { ensureIndexSettings } from '~/modules/ingestion/job'
 import {
@@ -24,8 +25,11 @@ import {
   ShuttingDown,
   within,
 } from '~/modules/ingestion/runtime'
+import { CallFailure } from './failure'
+import { repLabelOf } from './keys'
 import { writeMomentVectors } from './moment-vectors'
 import { buildMoments } from './moments'
+import { runTranscribe } from './transcribe'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
 /** The most epochs below the current one a Call's cleanup looks at, as for documents. */
@@ -45,14 +49,6 @@ export type CallJobOutcome =
   | 'released'
   /** The database or the vector store could not be told how it ended; the lease lapses and the job is claimed again. */
   | 'uncertain'
-
-/** A Transcript that cannot be processed by trying again: the Call ends `failed` with this reason. */
-class CallFailure extends Error {
-  constructor(readonly reason: CallFailureReason) {
-    super(`the Call failed: ${reason}`)
-    this.name = 'CallFailure'
-  }
-}
 
 /** A vector write that timed out: it may still land, so the claim is left to lapse rather than renewed. */
 class UncertainWrite extends Error {
@@ -240,16 +236,36 @@ async function writeMoments(
 /** Parses, records the speakers, builds and writes the Moments, and completes the Call. */
 async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void> {
   const { deps } = c
+  if (claim.job_kind === 'transcribe') {
+    await runTranscribe(
+      {
+        deps,
+        organizationId: c.organizationId,
+        jobId: c.jobId,
+        callId: c.callId,
+        token: c.token,
+        signal: c.signal,
+        beat: () => beat(c),
+      },
+      claim
+    )
+    return
+  }
+  // A Transcript is read from its upload; a Recording from the Transcript the transcribe job kept.
+  const recording = claim.call_kind === 'recording'
+  const keptKey = recording ? claim.transcript_key : claim.object_key
   if (
     (claim.job_kind !== 'process' && claim.job_kind !== 'rebuild') ||
-    claim.call_kind !== 'transcript' ||
-    claim.object_key === null
+    (claim.call_kind !== 'transcript' && !recording) ||
+    keptKey === null
   ) {
-    // Recordings are later work; a job of another kind is not run by this code.
     throw new CallFailure('processing_failed')
   }
-  const bytes = await readTranscript(c, claim.object_key)
-  const parsed = parseTranscript(bytes, (claim.media_type ?? 'text/plain') as TranscriptMediaType)
+  const bytes = await readTranscript(c, keptKey)
+  const parsed = parseTranscript(
+    bytes,
+    recording ? 'application/json' : ((claim.media_type ?? 'text/plain') as TranscriptMediaType)
+  )
   if (!parsed.ok) {
     throw new CallFailure(parsed.reason)
   }
@@ -271,14 +287,12 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
     throw new ClaimLost()
   }
   // After the speakers are recorded, so a Call that fails here keeps the labels the Rep can be changed to.
-  if (
-    claim.rep_by !== 'speaker' ||
-    claim.rep_label === null ||
-    !speakers.includes(claim.rep_label)
-  ) {
-    throw new CallFailure('rep_label_not_found')
+  const repLabel = repLabelOf(claim)
+  if (repLabel === null || !speakers.includes(repLabel)) {
+    // A channel that did not speak in the kept Transcript means the file is not per-side.
+    throw new CallFailure(claim.rep_by === 'channel' ? 'not_per_side' : 'rep_label_not_found')
   }
-  const moments = buildMoments(turns, claim.rep_label)
+  const moments = buildMoments(turns, repLabel)
   const tag = await readDealOutcome(c)
   if (moments.length > 0) {
     await ensureIndexSettings(deps, c.organizationId)
@@ -353,6 +367,15 @@ export async function runCallJob(
 function failureReasonOf(error: unknown): CallFailureReason | undefined {
   if (error instanceof CallFailure) {
     return error.reason
+  }
+  if (
+    error instanceof TranscriberError &&
+    (error.code === 'transcriber.invalid_request' ||
+      error.code === 'transcriber.conflict' ||
+      error.code === 'transcriber.rejected')
+  ) {
+    // A request the vendor refuses for good: another attempt would be refused the same way.
+    return 'transcription_failed'
   }
   if (error instanceof PermanentFailure) {
     return 'processing_failed'

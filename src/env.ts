@@ -43,7 +43,7 @@ const MAX_INTERNAL_TOKEN_LENGTH = 512
  * 48). Remove a name as its real adapter lands; while any remains, the workers may not run outside
  * `local`, because they would mark real uploads `ready` over vectors that live in one process.
  */
-export const PIPELINE_FAKE_PORTS = ['embedder', 'ocr', 'vector store'] as const
+export const PIPELINE_FAKE_PORTS = ['embedder', 'ocr', 'vector store', 'transcriber'] as const
 
 /** A secret is printable ASCII with no space, so it travels in a bearer header unchanged. */
 const PRINTABLE_ASCII = /^[!-~]+$/
@@ -157,6 +157,13 @@ const schema = z
      * then is cut off with `server.timeout` (504) and the place is given back.
      */
     UPLOAD_BODY_TIMEOUT_MS: integer(100, 600_000).default(60_000),
+    /**
+     * The longest a Recording upload's body may take to arrive, in milliseconds (500 MB at about
+     * 2.4 Mbit/s up fits in the default 30 minutes). The body is streamed to the object store, never
+     * held, but the upload keeps one of `MAX_CONCURRENT_UPLOADS` places for as long as it runs; a
+     * stream that stays silent is cut off sooner by the object store's own idle timeout.
+     */
+    RECORDING_BODY_TIMEOUT_MS: integer(1_000, 7_200_000).default(1_800_000),
 
     /**
      * The secrets the callers of the internal routes may present, comma separated (ADR 0013): more
@@ -220,6 +227,10 @@ const schema = z
     INGESTION_RETRY_BASE_MS: integer(100, 600_000).default(5_000),
     /** How long the job loop sleeps when it found nothing due, in ms, jittered by up to a quarter. */
     INGESTION_POLL_INTERVAL_MS: integer(100, 300_000).default(5_000),
+    /** How often a transcribe job asks the vendor for its result, in ms, jittered by up to a quarter. */
+    TRANSCRIBE_POLL_INTERVAL_MS: integer(100, 300_000).default(5_000),
+    /** The longest one transcribe attempt waits for the vendor's result, in ms; past it the Call fails with `transcription_timed_out`. */
+    TRANSCRIBE_MAX_WAIT_MS: integer(1_000, 21_600_000).default(3_600_000),
     /** The size a chunk is cut towards, in characters (about 250 tokens). */
     CHUNK_TARGET_CHARS: integer(200, 8_000).default(1_000),
     /** The size no chunk exceeds, in characters (about 400 tokens). */

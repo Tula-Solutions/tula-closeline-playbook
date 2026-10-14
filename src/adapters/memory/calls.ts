@@ -12,12 +12,14 @@ import {
   CALL_JOB_MAX_ATTEMPTS,
   CALL_JOB_RECORD,
   CALL_JOB_RETRY,
+  CALL_JOB_TRANSCRIBED,
   CALL_LIST,
   CALL_LIST_BY_DEAL,
   CALL_LIST_BY_DEAL_STATE,
   CALL_LIST_BY_STATE,
   CALL_LIST_PENDING_CLEANUP,
   CALL_LIST_SPENT_PURGES,
+  CALL_MAX_VENDOR_SENDS,
   CALL_PURGE_CLAIM,
   CALL_PURGE_COMPLETE,
   CALL_PURGE_MAX_ATTEMPTS,
@@ -25,9 +27,13 @@ import {
   CALL_RESTORE,
   CALL_RESTORE_FOR_UPLOAD,
   CALL_RETAGGED,
+  CALL_SENT_TO_VENDOR,
   CALL_SET_REP,
   CALL_SOFT_DELETE,
   CALL_USAGE,
+  CALL_VENDOR_ID_PATTERN,
+  CALL_VENDOR_ID_RECORD,
+  CALL_VENDOR_REMOVED,
   DEAL_LIST_PENDING_RETAG,
   DEAL_RETAG_BATCH,
   DEAL_RETAG_DONE,
@@ -101,6 +107,14 @@ export type MemoryCallJobRow = {
   failure_reason: string | null
 }
 
+/** One row of `playbook.call_vendor_sends`: a counted send of a Recording to the vendor and, once recorded, the vendor's id of it. */
+export type MemoryVendorSendRow = {
+  organization_id: string
+  call_id: string
+  seq: number
+  vendor_id: string | null
+}
+
 /** A Deal as the Call statements read and write it; `retag_through` belongs to the re-tag job (PR B). */
 export type MemoryCallDeal = MemoryApplyDeal & { retag_through?: number }
 
@@ -108,6 +122,7 @@ export type MemoryCallDeal = MemoryApplyDeal & { retag_through?: number }
 export type CallStatementContext = {
   calls: MemoryCallRow[]
   callJobs: MemoryCallJobRow[]
+  vendorSends: MemoryVendorSendRow[]
   deals: MemoryCallDeal[]
   rights: { organization_id: string; wording_version: number }[]
   /** Whether the statement runs in `organization`'s scope. */
@@ -209,6 +224,11 @@ export function runCallStatement(
           c.restore_barred_at !== null),
     }
   }
+  const sendsOf = (c: MemoryCallRow) =>
+    ctx.vendorSends
+      .filter((v) => v.organization_id === c.organization_id && v.call_id === c.id)
+      .sort((a, b) => a.seq - b.seq)
+      .map((v) => ({ seq: v.seq, vendor_id: v.vendor_id }))
   const touch = (c: MemoryCallRow) => {
     c.updated_at = now()
   }
@@ -422,6 +442,98 @@ export function runCallStatement(
       queueJob(call, jobId, kind === 'recording' ? 'transcribe' : 'process')
       return rows([{ result: 'created', id, state: 'uploaded', failure_reason: null }])
     }
+    case CALL_SENT_TO_VENDOR: {
+      const [organization, jobId, token] = params as [string, string, string]
+      const j = jobsOf(organization).find(
+        (x) => x.id === jobId && x.claim_token === token && x.state === 'running'
+      )
+      const c = j === undefined ? undefined : findCall(organization, j.call_id)
+      if (j === undefined || c === undefined || !live(j, c)) {
+        return none
+      }
+      if (c.vendor_send_seq >= CALL_MAX_VENDOR_SENDS) {
+        return rows([{ id: c.id, vendor_send_seq: c.vendor_send_seq, sent: false }])
+      }
+      c.vendor_send_seq += 1
+      c.sent_to_vendor_at = now()
+      c.vendor_removed_at = null
+      touch(c)
+      ctx.vendorSends.push({
+        organization_id: organization,
+        call_id: c.id,
+        seq: c.vendor_send_seq,
+        vendor_id: null,
+      })
+      return rows([{ id: c.id, vendor_send_seq: c.vendor_send_seq, sent: true }])
+    }
+    case CALL_VENDOR_ID_RECORD: {
+      const [organization, callId, seq, vendorId] = params as [string, string, number, string]
+      const current = ctx.vendorSends.find(
+        (v) =>
+          own(organization) &&
+          v.organization_id === organization &&
+          v.call_id === callId &&
+          v.seq === seq
+      )
+      if (current === undefined) {
+        return none
+      }
+      if (typeof vendorId !== 'string' || !new RegExp(CALL_VENDOR_ID_PATTERN).test(vendorId)) {
+        return rows([{ result: 'invalid' }])
+      }
+      const taken = ctx.vendorSends.some(
+        (v) =>
+          v.organization_id === organization &&
+          v.vendor_id === vendorId &&
+          !(v.call_id === callId && v.seq === seq)
+      )
+      if (current.vendor_id === null && !taken) {
+        current.vendor_id = vendorId
+        return rows([{ result: 'recorded' }])
+      }
+      return rows([{ result: current.vendor_id === vendorId ? 'unchanged' : 'conflict' }])
+    }
+    case CALL_VENDOR_REMOVED: {
+      const [organization, id, seq] = params as [string, string, number]
+      const c = findCall(organization, id)
+      if (
+        c === undefined ||
+        c.state !== 'deleted' ||
+        c.vendor_send_seq !== seq ||
+        c.sent_to_vendor_at === null ||
+        jobHolds(c, ['cancelled', 'running'])
+      ) {
+        return none
+      }
+      c.vendor_removed_at ??= now()
+      touch(c)
+      return rows([{ id: c.id }])
+    }
+    case CALL_JOB_TRANSCRIBED: {
+      const [organization, id, token, processJobId] = params as [string, string, string, string]
+      const j = jobsOf(organization).find(
+        (x) =>
+          x.id === id && x.claim_token === token && x.state === 'running' && x.kind === 'transcribe'
+      )
+      const c = j === undefined ? undefined : findCall(organization, j.call_id)
+      if (
+        j === undefined ||
+        c === undefined ||
+        c.state !== 'transcribing' ||
+        c.epoch !== j.epoch ||
+        c.transcript_key === null
+      ) {
+        return none
+      }
+      j.state = 'succeeded'
+      j.claim_token = null
+      c.state = c.rep_by === null ? 'awaiting_rep' : 'processing'
+      touch(c)
+      if (c.state === 'processing') {
+        queueJob(c, processJobId, 'process')
+      }
+      return rows([{ id: c.id, state: c.state }])
+    }
     case CALL_GET: {
       const [organization, id] = params as [string, string]
       const c = findCall(organization, id)
@@ -467,7 +579,11 @@ export function runCallStatement(
       }
       if (text === CALL_REQUEUE) {
         const transient = ['transcription_failed', 'transcription_timed_out', 'processing_failed']
-        if (c.state === 'failed' && transient.includes(String(c.failure_reason))) {
+        if (
+          c.state === 'failed' &&
+          transient.includes(String(c.failure_reason)) &&
+          c.vendor_send_seq < CALL_MAX_VENDOR_SENDS
+        ) {
           cancelJobs(organization, c.id, false)
           c.state = 'uploaded'
           c.failure_reason = null
@@ -820,6 +936,7 @@ export function runCallStatement(
             vendor_send_seq: c.vendor_send_seq,
             vendor_removed_at: stamp(c.vendor_removed_at),
             purge_attempts: c.purge_attempts,
+            vendor_sends: sendsOf(c),
           }
         })
       )
@@ -838,6 +955,12 @@ export function runCallStatement(
         return none
       }
       ctx.calls.splice(ctx.calls.indexOf(c), 1)
+      // The vendor sends go with it (the foreign key cascades), like its jobs.
+      for (const v of ctx.vendorSends.filter(
+        (x) => x.call_id === c.id && x.organization_id === organization
+      )) {
+        ctx.vendorSends.splice(ctx.vendorSends.indexOf(v), 1)
+      }
       // The jobs of a Call go with it (the foreign key cascades).
       for (const j of ctx.callJobs.filter(
         (x) => x.call_id === c.id && x.organization_id === organization
@@ -864,6 +987,7 @@ export function runCallStatement(
             deletion_seq: c.deletion_seq,
             vectors_removed_seq: c.vectors_removed_seq,
             purge_attempts: c.purge_attempts,
+            vendor_sends: sendsOf(c),
           }))
       )
     }
@@ -899,6 +1023,7 @@ export function runCallStatement(
             kind: c.kind,
             sent_to_vendor_at: stamp(c.sent_to_vendor_at),
             vendor_send_seq: c.vendor_send_seq,
+            vendor_sends: sendsOf(c),
           }
         })
       )

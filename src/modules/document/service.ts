@@ -76,7 +76,17 @@ import {
 /** What the document service needs from the container. */
 export type DocumentDeps = Pick<
   Container,
-  'scope' | 'objects' | 'queue' | 'logger' | 'env' | 'vectors' | 'sleep' | 'random' | 'clock'
+  | 'scope'
+  | 'objects'
+  | 'queue'
+  | 'logger'
+  | 'env'
+  | 'vectors'
+  | 'sleep'
+  | 'random'
+  | 'clock'
+  | 'transcriber'
+  | 'reportError'
 >
 
 export type { CallContext }

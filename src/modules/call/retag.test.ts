@@ -5,8 +5,8 @@ import { personIn } from '~/modules/document/test-support'
 import { logged } from '~/modules/ingestion/test-support'
 import { momentVectorId } from './keys'
 import { cleanupPendingCalls } from './purge'
-import { RETAG_DEALS_PER_PASS, retagOutcomes } from './retag'
-import { type CallHarness, createCallHarness, transcriptText } from './test-support'
+import { RETAG_DEALS_PER_PASS, RETAG_SCAN_LIMIT, retagOutcomes } from './retag'
+import { type CallHarness, channelRep, createCallHarness, transcriptText } from './test-support'
 
 const never = new AbortController().signal
 
@@ -278,6 +278,37 @@ describe('the re-tag converges when things move under it', () => {
     await pass(h)
 
     expect((await h.moments(good.id)).returnable).toBe(2)
+  })
+
+  test('as many stuck Deals as a pass may examine do not starve the healthy Deal behind them', async () => {
+    const h = await createCallHarness()
+    for (let i = 0; i < RETAG_SCAN_LIMIT; i++) {
+      const stuck = await readyCall(h, `starve${i}`, `DEAL-S${i}`)
+      const key = h.deps.database.calls(h.organizationId).find((c) => c.id === stuck.id)?.object_key
+      await h.deps.objects.delete(h.organizationId, String(key))
+    }
+    const good = await readyCall(h, 'behind-all', 'DEAL-Z')
+    // Discovery pages by Deal id: give the healthy Deal the last id there is.
+    const lastId = `deal_${'f'.repeat(32)}`
+    const goodDeal = h.deps.database.deals(h.organizationId).find((d) => d.deal_id === 'DEAL-Z')
+    for (const call of h.deps.database.calls(h.organizationId)) {
+      if (call.deal_record_id === goodDeal?.id) {
+        call.deal_record_id = lastId
+      }
+    }
+    Object.assign(goodDeal ?? {}, { id: lastId })
+    for (const deal of h.deps.database.deals(h.organizationId)) {
+      Object.assign(deal, { outcome: 'won', outcome_seq: 1 })
+    }
+
+    let passes = 0
+    while ((await h.moments(good.id)).returnable === 0 && passes < 3) {
+      await pass(h)
+      passes++
+    }
+
+    expect((await h.moments(good.id)).returnable).toBe(2)
+    expect(passes).toBeLessThanOrEqual(3)
   })
 
   test('a pass takes a bounded number of Deals', async () => {
@@ -576,5 +607,56 @@ describe('a stuck Deal is not logged on every pass', () => {
     await pass(h)
 
     expect(logged(h.deps, 'an Outcome re-tag pass ended')).toHaveLength(1)
+  })
+})
+
+describe('the re-tag handles Recording Calls', () => {
+  test('a per-side and a picked-Rep Recording are re-tagged from their kept Transcripts and become returnable', async () => {
+    const h = await createCallHarness()
+    const side = callSchema.parse(
+      await (await h.uploadRecording('side', { rep: channelRep('left'), dealId: 'DEAL-R' })).json()
+    )
+    const mono = callSchema.parse(
+      await (await h.uploadRecording('mono', { dealId: 'DEAL-R' })).json()
+    )
+    await h.runCalls()
+    expect((await h.readCall(mono.id)).state).toBe('awaiting_rep')
+    const picked = await h.send('PUT', `/v1/playbook/calls/${mono.id}/rep`, {
+      body: { rep: { by: 'speaker', label: 'A' } },
+    })
+    expect(picked.status).toBe(200)
+    await h.runCalls()
+    expect((await h.readCall(side.id)).state).toBe('ready')
+    expect((await h.readCall(mono.id)).state).toBe('ready')
+    expect(await h.moments(side.id)).toMatchObject({ returnable: 0, outcomes: ['open'] })
+
+    await h.setOutcome(dealOf(h).id, 'won')
+    await pass(h)
+
+    for (const call of [side, mono]) {
+      const moments = await h.moments(call.id)
+      expect(moments.total).toBeGreaterThan(0)
+      expect(moments).toMatchObject({ returnable: moments.total, outcomes: ['won'] })
+      expect((await h.readCall(call.id)).inSearch).toBe(true)
+    }
+    expect(dealOf(h).retag_through).toBe(dealOf(h).outcome_seq)
+  })
+
+  test('a Recording whose kept Transcript is gone is reported as stuck and does not hold the Deals behind it', async () => {
+    const h = await createCallHarness()
+    const stuck = callSchema.parse(
+      await (await h.uploadRecording('gone', { rep: channelRep('left'), dealId: 'DEAL-A' })).json()
+    )
+    await h.runCalls()
+    await h.deps.objects.delete(h.organizationId, `calls/${stuck.id}/transcript.json`)
+    const good = await readyCall(h, 'fine', 'DEAL-B')
+    for (const deal of h.deps.database.deals(h.organizationId)) {
+      Object.assign(deal, { outcome: 'won', outcome_seq: 1 })
+    }
+
+    await pass(h)
+
+    expect((await h.moments(good.id)).returnable).toBe(2)
+    expect((await h.moments(stuck.id)).returnable).toBe(0)
   })
 })
