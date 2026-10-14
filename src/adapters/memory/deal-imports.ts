@@ -15,6 +15,7 @@ import {
   DEAL_IMPORT_OBJECT_REMOVED,
   DEAL_IMPORT_PURGE_BATCH,
   DEAL_IMPORT_RETRY,
+  DEAL_IMPORT_ROW_REASONS,
   DEAL_IMPORT_ROWS_LIST,
   DEAL_IMPORT_ROWS_LIST_BY_RESULT,
   DEAL_MAX_SEQ,
@@ -113,6 +114,17 @@ type SentRow = {
   currency: string | null
   name: string | null
 }
+
+/**
+ * The reasons a report row may have no deal id: the db check `deal_import_rows_deal_id_missing_only_when_unusable`.
+ * The db library does not export this list, so it is kept here in step with the migration; `blank_row`
+ * (a line with no id at all) joins it as soon as the db library's reason list has it.
+ */
+const UNUSABLE_DEAL_ID_REASONS: readonly string[] = [
+  'invalid_deal_id',
+  'wrong_column_count',
+  ...((DEAL_IMPORT_ROW_REASONS as readonly string[]).includes('blank_row') ? ['blank_row'] : []),
+]
 
 const MAX_ROW_NUMBER = 50_001
 
@@ -603,6 +615,17 @@ function applyBatch(
       result: bad === null ? 'applied' : 'rejected',
       reason: bad,
     })
+  }
+  for (const row of report) {
+    if (
+      row.reason !== null &&
+      !(DEAL_IMPORT_ROW_REASONS as readonly string[]).includes(row.reason)
+    ) {
+      throw ctx.postgresError('23514', 'deal_import_rows_reason_known')
+    }
+    if (row.deal_id === null && !UNUSABLE_DEAL_ID_REASONS.includes(row.reason ?? '')) {
+      throw ctx.postgresError('23514', 'deal_import_rows_deal_id_missing_only_when_unusable')
+    }
   }
   ctx.importRows.push(...report)
   const applied = report.filter((r) => r.result === 'applied').length
