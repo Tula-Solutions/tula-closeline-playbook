@@ -43,6 +43,15 @@ const vectorCount = async (h: CallHarness, callId: string, org: string = h.organ
     })
   ).length
 
+/** The first committed Call of the harness Organization. */
+function firstCall(h: CallHarness) {
+  const row = h.deps.database.calls(h.organizationId)[0]
+  if (row === undefined) {
+    throw new Error('no Call')
+  }
+  return row
+}
+
 const abort = () => new AbortController().signal
 
 describe('purging Calls', () => {
@@ -107,7 +116,7 @@ describe('purging Calls', () => {
     await expect(purgeCalls(h.deps, h.organizationId, abort())).rejects.toThrow('store down')
     expect(h.deps.database.calls(h.organizationId)).toHaveLength(1)
     await h.deps.time.advance(2 * 60_000)
-    h.deps.database.calls(h.organizationId)[0]!.purge_lease_until = null
+    firstCall(h).purge_lease_until = null
 
     expect(await purgeCalls(h.deps, h.organizationId, abort())).toEqual({ purged: 1, deferred: 0 })
     expect(await vectorCount(h, id)).toBe(0)
@@ -132,7 +141,7 @@ describe('purging Calls', () => {
     const h = await createCallHarness()
     const id = await readyCall(h, 'a')
     deleteNow(h, id)
-    h.deps.database.calls(h.organizationId)[0]!.purge_attempts = 99
+    firstCall(h).purge_attempts = 99
 
     expect(await logSpentCallPurges(h.deps, h.organizationId)).toBe(1)
     const line = h.deps.logLines.find((l) => l.includes('Call purges have given up'))
