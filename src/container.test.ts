@@ -248,7 +248,7 @@ test('outside local, one warning names every port still on a memory fake, and no
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatchObject({
       level: 40, // warn
-      ports: ['embedder', 'ocr', 'vector store'],
+      ports: ['embedder', 'ocr', 'vector store', 'transcriber'],
     })
     expect(Object.keys(warnings[0]).sort()).toEqual(['level', 'msg', 'ports', 'service', 'time'])
   } finally {

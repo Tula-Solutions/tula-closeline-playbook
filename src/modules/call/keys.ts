@@ -28,3 +28,46 @@ export function momentVectorId(
 ): string {
   return `${callId.slice('call_'.length)}:${epoch}:${repSeq}:${moment}`
 }
+
+/** The object key of the Transcript kept from a Recording: JSON turns, under the Call's prefix so the purge removes it. */
+export function recordingTranscriptKey(callId: string): string {
+  return `${callPrefix(callId)}transcript.json`
+}
+
+/** The client reference of send `seq` of a Call at the transcription vendor: `<call id>:<seq>`. */
+export function clientReferenceOf(callId: string, seq: number): string {
+  return `${callId}:${seq}`
+}
+
+/** The prefix that matches every client reference of one Call (it ends with the separator, so `call_1:` never matches `call_10:`). */
+export function clientReferencePrefix(callId: string): string {
+  return `${callId}:`
+}
+
+/** The send number inside a client reference made by {@link clientReferenceOf} for this Call, or `undefined` for any other text. */
+export function sendOfReference(callId: string, reference: string): number | undefined {
+  if (!reference.startsWith(clientReferencePrefix(callId))) {
+    return undefined
+  }
+  const tail = reference.slice(clientReferencePrefix(callId).length)
+  return /^[1-9][0-9]{0,2}$/.test(tail) ? Number(tail) : undefined
+}
+
+/**
+ * The label the Rep's turns carry in a Call's kept Transcript: a speaker label as chosen, or the
+ * channel's name (`left` or `right`, the labels a per-side Recording's turns get), or `null` while
+ * no Rep is chosen.
+ */
+export function repLabelOf(call: {
+  rep_by?: unknown
+  rep_label?: unknown
+  rep_channel?: unknown
+}): string | null {
+  if (call.rep_by === 'speaker' && typeof call.rep_label === 'string') {
+    return call.rep_label
+  }
+  if (call.rep_by === 'channel' && typeof call.rep_channel === 'string') {
+    return call.rep_channel
+  }
+  return null
+}

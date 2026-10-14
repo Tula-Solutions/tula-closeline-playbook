@@ -13,12 +13,14 @@ import {
   createMemoryErrorReporter,
   createMemoryObjectStore,
   createMemoryQueue,
+  createMemoryTranscriber,
   createMemoryVectorStore,
   createTestJwks,
   createTestKeyPair,
   createVirtualTime,
   type MemoryErrorReporter,
   type MemoryQueue,
+  type MemoryTranscriber,
   type MintTokenOptions,
   mintTestToken,
   type VirtualTime,
@@ -60,6 +62,8 @@ export type TestDeps = Container & {
   queue: MemoryQueue<PlaybookDefinition>
   embedder: MemoryEmbedder
   ocr: MemoryOcrReader
+  /** The kit's transcriber stand-in: script its results, fail its calls, list the copies it still holds. */
+  transcriber: MemoryTranscriber
   /** The database double behind `scope`: it runs the db library's statements in memory. */
   database: MemoryPlaybookDatabase
   /** The kit's memory error reporter: what the consumer and the error handler would send to Sentry. */
@@ -151,6 +155,29 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     embedder,
     parser: createMemoryParser(),
     ocr: createMemoryOcrReader(),
+    transcriber: createMemoryTranscriber({
+      environment: env.ENVIRONMENT,
+      // Ready at the first read, so a job test needs no virtual time; a test scripts pending reads when it wants them.
+      outcome: (request) => ({
+        pendingReads: 0,
+        result: {
+          status: 'done',
+          durationMs: 20_000,
+          turns: [0, 1, 2, 3].map((index) => ({
+            speaker:
+              request.speakers === 'split_channels'
+                ? `ch${index % 2}`
+                : index % 2 === 0
+                  ? 'A'
+                  : 'B',
+            ...(request.speakers === 'split_channels' ? { channel: index % 2 } : {}),
+            startMs: index * 5_000,
+            endMs: index * 5_000 + 4_000,
+            text: `Turn ${index + 1} of the scripted conversation.`,
+          })),
+        },
+      }),
+    }),
     // Replaced just below: the workers and the consumer read the rest of these fields by name.
     workers: undefined as never,
     consumer: undefined as never,

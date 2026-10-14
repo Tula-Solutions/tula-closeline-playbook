@@ -22,6 +22,7 @@ import {
   systemClock,
   systemSleep,
   type TokenVerifier,
+  type Transcriber,
   type VectorStore,
 } from 'tula-closeline-kit'
 import { type Consumer, createSqsQueue } from 'tula-closeline-kit/queue'
@@ -29,6 +30,7 @@ import { createS3ObjectStore } from 'tula-closeline-kit/storage'
 import {
   createMemoryObjectStore,
   createMemoryQueue,
+  createMemoryTranscriber,
   createMemoryVectorStore,
 } from 'tula-closeline-kit/testing'
 import { createMemoryEmbedder } from '~/adapters/memory/embedder'
@@ -121,6 +123,12 @@ export type Container = {
   parser: DocumentParser
   /** Reads pages with no text layer. A fake until a real adapter exists (ADR 0010). */
   ocr: OcrReader
+  /**
+   * Turns a Recording into speaker turns (ADR 0010, 0018). The kit's stand-in until the AssemblyAI
+   * adapter exists: no real audio leaves the service, and the workers are refused outside `local`
+   * while this is a fake ({@link PIPELINE_FAKE_PORTS}).
+   */
+  transcriber: Transcriber
   /** The queue consumer; built here, started by `server.ts` and stopped on shutdown. */
   consumer: Consumer
   /** Probes run by `/readyz`: the database. */
@@ -247,6 +255,8 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
   const parser = createDocumentParserFor(env)
   // No real reader yet: a scanned page reads as empty, so such a document ends `no_text`.
   const ocr = createEmptyOcrReader()
+  // No real adapter yet (blocked on the vendor account and ADR 0018's preconditions): the stand-in.
+  const transcriber = createMemoryTranscriber({ environment: env.ENVIRONMENT })
   const random = Math.random
   const reportError: Container['reportError'] = (error, context) => {
     logger.error('unhandled error', { ...context, error: describeError(error) })
@@ -260,6 +270,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     embedder,
     parser,
     ocr,
+    transcriber,
     logger,
     clock: systemClock,
     env,
@@ -302,6 +313,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     embedder,
     parser,
     ocr,
+    transcriber,
     consumer,
     readinessChecks: [
       {

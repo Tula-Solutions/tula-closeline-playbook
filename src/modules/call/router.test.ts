@@ -87,14 +87,8 @@ describe('Call upload', () => {
     expect(await errorCode(other)).toBe('request.idempotency_key_reused')
   })
 
-  test('a Recording is call.unsupported_type and a bad Rep is call.rep_invalid', async () => {
+  test('a bad Rep is call.rep_invalid', async () => {
     const h = await createCallHarness()
-    const recording = await h.uploadCall(new Uint8Array([1, 2, 3]), {
-      name: 'call.mp3',
-      type: 'audio/mpeg',
-    })
-    expect(recording.status).toBe(415)
-    expect(await errorCode(recording)).toBe('call.unsupported_type')
     const noRep = await h.uploadCall(transcriptText(), { rep: null })
     expect(noRep.status).toBe(422)
     expect(await errorCode(noRep)).toBe('call.rep_invalid')
@@ -129,12 +123,13 @@ describe('Call upload', () => {
     expect(await errorCode(response)).toBe('call.too_large')
   })
 
-  test('a body far over the limit is request.too_large', async () => {
+  test('a Transcript far over 5 MB is call.too_large too: it is cut off at its own limit, not held', async () => {
     const h = await createCallHarness()
     const huge = new Uint8Array(5 * 1024 * 1024 + 200_000).fill(97)
     const response = await h.uploadCall(huge)
     expect(response.status).toBe(413)
-    expect(await errorCode(response)).toBe('request.too_large')
+    expect(await errorCode(response)).toBe('call.too_large')
+    expect(await h.objectKeys()).toHaveLength(0)
   })
 
   test('no token is refused', async () => {

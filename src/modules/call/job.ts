@@ -4,11 +4,13 @@ import {
   CALL_JOB_COMPLETE,
   CALL_JOB_FAIL,
   CALL_JOB_HEARTBEAT,
+  CALL_JOB_MAX_ATTEMPTS,
   CALL_JOB_RECORD,
   CALL_JOB_RETRY,
   type ClaimedCallJob,
   DEAL_GET,
 } from 'tula-closeline-db'
+import { TranscriberError } from 'tula-closeline-kit'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
 import { ensureIndexSettings } from '~/modules/ingestion/job'
 import {
@@ -24,8 +26,11 @@ import {
   ShuttingDown,
   within,
 } from '~/modules/ingestion/runtime'
+import { CallFailure } from './failure'
+import { repLabelOf } from './keys'
 import { writeMomentVectors } from './moment-vectors'
 import { buildMoments } from './moments'
+import { runTranscribe } from './transcribe'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
 /** The most epochs below the current one a Call's cleanup looks at, as for documents. */
@@ -45,14 +50,6 @@ export type CallJobOutcome =
   | 'released'
   /** The database or the vector store could not be told how it ended; the lease lapses and the job is claimed again. */
   | 'uncertain'
-
-/** A Transcript that cannot be processed by trying again: the Call ends `failed` with this reason. */
-class CallFailure extends Error {
-  constructor(readonly reason: CallFailureReason) {
-    super(`the Call failed: ${reason}`)
-    this.name = 'CallFailure'
-  }
-}
 
 /** A vector write that timed out: it may still land, so the claim is left to lapse rather than renewed. */
 class UncertainWrite extends Error {
@@ -237,19 +234,42 @@ async function writeMoments(
   }
 }
 
-/** Parses, records the speakers, builds and writes the Moments, and completes the Call. */
-async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void> {
+/**
+ * Parses, records the speakers, builds and writes the Moments, and completes the Call. Returns how
+ * long to give the job back for when a transcription is still pending (the job is released, not held).
+ */
+async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<number | undefined> {
   const { deps } = c
+  if (claim.job_kind === 'transcribe') {
+    const waiting = await runTranscribe(
+      {
+        deps,
+        organizationId: c.organizationId,
+        jobId: c.jobId,
+        callId: c.callId,
+        token: c.token,
+        signal: c.signal,
+        beat: () => beat(c),
+      },
+      claim
+    )
+    return waiting?.pollAfterMs
+  }
+  // A Transcript is read from its upload; a Recording from the Transcript the transcribe job kept.
+  const recording = claim.call_kind === 'recording'
+  const keptKey = recording ? claim.transcript_key : claim.object_key
   if (
     (claim.job_kind !== 'process' && claim.job_kind !== 'rebuild') ||
-    claim.call_kind !== 'transcript' ||
-    claim.object_key === null
+    (claim.call_kind !== 'transcript' && !recording) ||
+    keptKey === null
   ) {
-    // Recordings are later work; a job of another kind is not run by this code.
     throw new CallFailure('processing_failed')
   }
-  const bytes = await readTranscript(c, claim.object_key)
-  const parsed = parseTranscript(bytes, (claim.media_type ?? 'text/plain') as TranscriptMediaType)
+  const bytes = await readTranscript(c, keptKey)
+  const parsed = parseTranscript(
+    bytes,
+    recording ? 'application/json' : ((claim.media_type ?? 'text/plain') as TranscriptMediaType)
+  )
   if (!parsed.ok) {
     throw new CallFailure(parsed.reason)
   }
@@ -271,14 +291,12 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
     throw new ClaimLost()
   }
   // After the speakers are recorded, so a Call that fails here keeps the labels the Rep can be changed to.
-  if (
-    claim.rep_by !== 'speaker' ||
-    claim.rep_label === null ||
-    !speakers.includes(claim.rep_label)
-  ) {
-    throw new CallFailure('rep_label_not_found')
+  const repLabel = repLabelOf(claim)
+  if (repLabel === null || !speakers.includes(repLabel)) {
+    // A channel that did not speak in the kept Transcript means the file is not per-side.
+    throw new CallFailure(claim.rep_by === 'channel' ? 'not_per_side' : 'rep_label_not_found')
   }
-  const moments = buildMoments(turns, claim.rep_label)
+  const moments = buildMoments(turns, repLabel)
   const tag = await readDealOutcome(c)
   if (moments.length > 0) {
     await ensureIndexSettings(deps, c.organizationId)
@@ -299,6 +317,7 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
     c.lost.abort(new ClaimLost())
     throw new ClaimLost()
   }
+  return undefined
 }
 
 /**
@@ -331,8 +350,16 @@ export async function runCallJob(
   const heartbeat = startHeartbeat(context)
   let outcome: CallJobOutcome
   try {
-    await runSteps(context, claim)
-    outcome = 'completed'
+    const pollAfterMs = await runSteps(context, claim)
+    if (pollAfterMs === undefined) {
+      outcome = 'completed'
+    } else {
+      // The vendor is still working: give the job back for a while instead of holding a worker.
+      const released = await inTransaction(deps, organizationId, (run) =>
+        run(CALL_JOB_RETRY, [organizationId, claim.id, context.token, pollAfterMs])
+      )
+      outcome = released.rows.length > 0 ? 'retried' : 'lost'
+    }
   } catch (error) {
     outcome = await settle(context, claim, error, shutdown)
   } finally {
@@ -353,6 +380,15 @@ export async function runCallJob(
 function failureReasonOf(error: unknown): CallFailureReason | undefined {
   if (error instanceof CallFailure) {
     return error.reason
+  }
+  if (
+    error instanceof TranscriberError &&
+    (error.code === 'transcriber.invalid_request' ||
+      error.code === 'transcriber.conflict' ||
+      error.code === 'transcriber.rejected')
+  ) {
+    // A request the vendor refuses for good: another attempt would be refused the same way.
+    return 'transcription_failed'
   }
   if (error instanceof PermanentFailure) {
     return 'processing_failed'
@@ -392,7 +428,10 @@ async function settle(
     }
     const reason = failureReasonOf(error)
     const attempts = claim.attempts ?? 1
-    if (reason !== undefined || attempts >= deps.env.INGESTION_MAX_ATTEMPTS) {
+    // A transcribe job's looks at the vendor count as claims, so it gives up only at the table's cap.
+    const maxAttempts =
+      claim.job_kind === 'transcribe' ? CALL_JOB_MAX_ATTEMPTS : deps.env.INGESTION_MAX_ATTEMPTS
+    if (reason !== undefined || attempts >= maxAttempts) {
       const final: CallFailureReason = reason ?? 'processing_failed'
       if (reason === undefined) {
         reportWorkerError(deps, error, { worker: 'calls', organizationId: c.organizationId })

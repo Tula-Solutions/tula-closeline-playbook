@@ -22,6 +22,24 @@ export function transcriptText(seed = 'one', turns = 3): string {
   return `${lines.join('\n')}\n`
 }
 
+/**
+ * Bytes that start like a WAV file, `size` long, different for each `seed` so two Recordings have
+ * different content hashes. Not audible audio: the stand-in transcriber never decodes it.
+ */
+export function wavBytes(seed = 'one', size = 4096): Uint8Array {
+  const bytes = new Uint8Array(size)
+  bytes.set(new TextEncoder().encode('RIFF'), 0)
+  bytes.set(new TextEncoder().encode('WAVE'), 8)
+  const fill = new TextEncoder().encode(seed)
+  for (let i = 12; i < size; i++) {
+    bytes[i] = (fill[i % fill.length] ?? 0) ^ (i & 0xff)
+  }
+  return bytes
+}
+
+/** The `rep` form value naming a channel. */
+export const channelRep = (channel: 'left' | 'right') => JSON.stringify({ by: 'channel', channel })
+
 /** A harness for the Call routes and job over the database double. */
 export type CallHarness = DocumentHarness & {
   /** A request to a Call route as `identity` (an Owner by default). */
@@ -42,6 +60,18 @@ export type CallHarness = DocumentHarness & {
       key?: string
       headers?: Record<string, string>
       extra?: Record<string, string>
+    }
+  ): Promise<Response>
+  /** Uploads a Recording (WAV bytes for `seed`) as `identity`; `rep` is a channel's JSON or null for none. */
+  uploadRecording(
+    seed?: string,
+    options?: {
+      rep?: string | null
+      dealId?: string | null
+      as?: TestIdentity | null
+      key?: string
+      name?: string
+      bytes?: Uint8Array
     }
   ): Promise<Response>
   /** Confirms rights for the harness Organization at the current wording version. */
@@ -87,10 +117,7 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
   const uploadCall: CallHarness['uploadCall'] = async (text, options = {}) => {
     const auth = options.as === null ? {} : await h.bearer(options.as ?? h.people.owner)
     const form = new FormData()
-    form.append(
-      'file',
-      new File([text], options.name ?? 'call.txt', { type: options.type ?? 'text/plain' })
-    )
+    // The text fields first: a Recording streams, so the route needs them before the file.
     if (options.dealId !== null) {
       form.append('dealId', options.dealId ?? 'DEAL-1')
     }
@@ -100,6 +127,10 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
     for (const [name, value] of Object.entries(options.extra ?? {})) {
       form.append(name, value)
     }
+    form.append(
+      'file',
+      new File([text], options.name ?? 'call.txt', { type: options.type ?? 'text/plain' })
+    )
     return h.app.request(CALLS, {
       method: 'POST',
       body: form,
@@ -110,6 +141,15 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
       },
     })
   }
+  const uploadRecording: CallHarness['uploadRecording'] = (seed = 'one', options = {}) =>
+    uploadCall(options.bytes ?? wavBytes(seed), {
+      name: options.name ?? 'call.wav',
+      type: 'audio/wav',
+      rep: options.rep ?? null,
+      ...(options.dealId === undefined ? {} : { dealId: options.dealId }),
+      ...(options.as === undefined ? {} : { as: options.as }),
+      ...(options.key === undefined ? {} : { key: options.key }),
+    })
   const runCalls = async () => {
     let total = 0
     for (let pass = 0; pass < 50; pass++) {
@@ -178,5 +218,16 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
       h.deps.database.deals(h.organizationId).find((d) => d.id === dealRecordId)?.outcome_seq ?? -1
     )
   }
-  return { ...h, send, uploadCall, confirmRights, runCalls, readCall, listAll, moments, setOutcome }
+  return {
+    ...h,
+    send,
+    uploadCall,
+    uploadRecording,
+    confirmRights,
+    runCalls,
+    readCall,
+    listAll,
+    moments,
+    setOutcome,
+  }
 }

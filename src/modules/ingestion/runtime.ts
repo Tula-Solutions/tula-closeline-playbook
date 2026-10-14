@@ -16,6 +16,7 @@ export type PipelineDeps = Pick<
   | 'embedder'
   | 'parser'
   | 'ocr'
+  | 'transcriber'
   | 'logger'
   | 'clock'
   | 'env'
