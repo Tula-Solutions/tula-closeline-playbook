@@ -10,6 +10,7 @@ import {
 } from 'tula-closeline-db'
 import { MAX_UPSERT_BATCH } from 'tula-closeline-kit'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
+import { ensureIndexSettings } from '~/modules/ingestion/job'
 import {
   inTransaction,
   type PipelineDeps,
@@ -56,6 +57,9 @@ function objectKeyOf(callId: string, mediaType: string): string | undefined {
 }
 
 type CallResult = 'tagged' | 'skipped'
+
+/** The count of stuck Calls last logged per Organization, so a repeating stall is logged once. */
+const stuckSeen = new Map<string, number>()
 
 /**
  * Patches the `outcome` and `outcome_seq` of existing Moment vectors in batches of
@@ -154,6 +158,10 @@ async function retagCall(
         callId,
         missing,
       })
+      // As the parse job does before any vector write: a model or dimension that differs from the
+      // recorded one is refused (and reported, ids only), so no vector of another model is written
+      // beside the old ones. The Call then stays pending.
+      await ensureIndexSettings(deps, organizationId)
       await writeMomentVectors(
         {
           deps,
@@ -335,7 +343,13 @@ export async function retagOutcomes(
       }
     }
   }
-  if (scanned > 0) {
+  // A pass that did work is logged; a pass that only found the same stuck Deals again is logged
+  // when its count of stuck Calls changes, not every poll (the log is per process, for noise only).
+  if (result.calls > 0 || result.deals > 0) {
+    stuckSeen.delete(organizationId)
+    deps.logger.info('an Outcome re-tag pass ended', { organizationId, ...result })
+  } else if (scanned > 0 && stuckSeen.get(organizationId) !== result.skipped) {
+    stuckSeen.set(organizationId, result.skipped)
     deps.logger.info('an Outcome re-tag pass ended', { organizationId, ...result })
   }
   return result

@@ -107,11 +107,17 @@ paths:
   `tagged_outcome_seq`. If `setAttributes` reports missing ids for a Call (store data loss), the re-tag
   self-heals that one Call: it warns (Call id and count only), writes its Moments again like the parse job
   (same ids, current `rep_seq`, this pass's tag; the only embed in the re-tag path), then continues with
-  the same re-read and record. A failed rebuild leaves the Call pending for the next pass. If the Call was
+  the same re-read and record. The heal calls `ensureIndexSettings` first, like the parse job: a model or
+  dimension that differs from the recorded one is refused, nothing is embedded or written, and the Call stays
+  pending (reported, ids only). A failed rebuild leaves the Call pending for the next pass. If the Call was
   deleted, restored or Rep-changed meanwhile, the vectors this pass wrote are removed, and anything
   written later is stopped at query time by `momentMayBeReturned`. Two re-taggers on one Deal are not
   serialised during the rebuild (the Deal lock is taken only in the closing transaction): the ids are
   deterministic and the writes idempotent, and each re-reads the Deal before recording.
+- `setAttributes` is not retried inside the re-tag: the kit adapter owns the per-call retry, and this job
+  relies on the next pass. A pass is bounded by the Calls of the Deals it takes (`RETAG_DEALS_PER_PASS`,
+  `RETAG_SCAN_LIMIT`; a Deal holds at most the Call quota). The end-of-pass line is logged when work was done, or
+  when the count of stuck Calls changes, not on every poll of the same stuck Deal.
 - Lock order: the Deal row (`DEAL_RETAG_LOCK`), then Call rows. The lock and `DEAL_RETAG_DONE` run in one short
   transaction, with no external call inside. `DEAL_RETAG_DONE` refuses while a ready Call is stale, which is
   how a Call that finished mid-re-tag, or an Outcome that moved, brings another round.

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { callSchema } from 'tula-closeline-contract'
+import { createMemoryEmbedder } from '~/adapters/memory/embedder'
 import { personIn } from '~/modules/document/test-support'
 import { logged } from '~/modules/ingestion/test-support'
 import { momentVectorId } from './keys'
@@ -494,5 +495,86 @@ describe('the re-tag repairs a Call whose Moment vectors are missing', () => {
     await h.deps.time.advance(10 * 60_000)
     await cleanupPendingCalls(h.deps, h.organizationId, never)
     expect((await h.moments(call.id)).total).toBe(0)
+  })
+})
+
+describe('the repair respects the recorded index settings', () => {
+  test('an embedder whose model differs from the recorded one writes and embeds nothing, and the Call stays pending', async () => {
+    const h = await createCallHarness()
+    const call = await readyCall(h, 'model')
+    const row = h.deps.database.calls(h.organizationId).find((c) => c.id === call.id)
+    await h.deps.vectors.delete(h.organizationId, [
+      momentVectorId(call.id, Number(row?.epoch), Number(row?.rep_seq), 0),
+    ])
+    await h.setOutcome(dealOf(h).id, 'won')
+    h.deps.embedder = createMemoryEmbedder({
+      dimensions: h.deps.vectors.dimensions,
+      model: 'a-newer-model',
+    })
+    let embeds = 0
+    let upserts = 0
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    h.deps.embedder.embed = async (...args) => {
+      embeds++
+      return embed(...args)
+    }
+    const upsert = h.deps.vectors.upsert.bind(h.deps.vectors)
+    h.deps.vectors.upsert = async (...args) => {
+      upserts++
+      return upsert(...args)
+    }
+
+    await pass(h)
+
+    expect({ embeds, upserts }).toEqual({ embeds: 0, upserts: 0 })
+    expect((await h.moments(call.id)).total).toBe(1)
+    expect(dealOf(h).retag_through ?? 0).toBeLessThan(dealOf(h).outcome_seq)
+    expect(h.deps.reported.length).toBeGreaterThan(0)
+  })
+})
+
+describe('two re-taggers on one Deal at different sequences', () => {
+  test('whichever patch lands last, the Call is recorded only at the newest sequence and the vectors end on it', async () => {
+    const h = await createCallHarness()
+    const call = await readyCall(h, 'race')
+    const id = dealOf(h).id
+    await h.setOutcome(id, 'won')
+    const patch = h.deps.vectors.setAttributes.bind(h.deps.vectors)
+    let nested = false
+    h.deps.vectors.setAttributes = async (...args) => {
+      if (!nested) {
+        nested = true
+        // The slower, older re-tagger (sequence 1) is still before its patch when the Deal turns
+        // lost and a second re-tagger finishes the whole Call at sequence 2.
+        await h.setOutcome(id, 'lost')
+        await retagOutcomes(h.deps, h.organizationId, never)
+        expect(await h.moments(call.id)).toMatchObject({ outcomes: ['lost'] })
+        expect(dealOf(h).retag_through).toBe(2)
+      }
+      return patch(...args)
+    }
+
+    await pass(h)
+
+    expect(await h.moments(call.id)).toMatchObject({ total: 2, outcomes: ['lost'] })
+    expect(dealOf(h).outcome_seq).toBe(2)
+    expect(dealOf(h).retag_through).toBe(2)
+    expect(h.deps.database.calls(h.organizationId)[0]?.tagged_outcome_seq).toBe(2)
+  })
+})
+
+describe('a stuck Deal is not logged on every pass', () => {
+  test('the same unreadable Call is logged when it first stalls, not again on the passes after', async () => {
+    const h = await createCallHarness()
+    const bad = await readyCall(h, 'stuck', 'DEAL-STUCK')
+    const key = h.deps.database.calls(h.organizationId).find((c) => c.id === bad.id)?.object_key
+    await h.deps.objects.delete(h.organizationId, String(key))
+    await h.setOutcome(dealOf(h).id, 'won')
+
+    await pass(h)
+    await pass(h)
+    await pass(h)
+
+    expect(logged(h.deps, 'an Outcome re-tag pass ended')).toHaveLength(1)
   })
 })
