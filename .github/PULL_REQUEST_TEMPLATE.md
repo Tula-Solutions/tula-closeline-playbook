@@ -14,6 +14,7 @@
 - [ ] Anything outside the process goes through a port with a memory adapter
 - [ ] Tenant tables carry `organization_id`, are covered by row-level security, and have a cross-Organization test
 - [ ] Shared libraries are pinned to a tag; a library change ships its rebuilt `dist/`
+- [ ] Changes `openapi.json`? The portal's vendored copy needs refreshing (hub issue 44)
 
 ## ⚡ Performance and scale
 
