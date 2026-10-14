@@ -1621,6 +1621,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             pgTimestampUs,
             cursorMicroseconds,
             postgresError,
+            usageKnown: (organization) => state.usage.has(String(organization)),
           })
           if (called !== undefined) {
             if (text === CALL_INSERT && called.rows[0]?.result === 'created') {
@@ -1715,6 +1716,13 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         for (const c of committed.calls) {
           if (c.state === 'deleted' && c.purge_attempts >= CALL_PURGE_MAX_ATTEMPTS) {
             organizations.add(c.organization_id)
+          }
+        }
+        break
+      case 'outcome_retag':
+        for (const d of committed.deals) {
+          if ((d.retag_through ?? 0) < d.outcome_seq) {
+            organizations.add(d.organization_id)
           }
         }
         break

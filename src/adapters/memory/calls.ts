@@ -22,7 +22,16 @@ import {
   CALL_PURGE_COMPLETE,
   CALL_PURGE_MAX_ATTEMPTS,
   CALL_REQUEUE,
+  CALL_RESTORE,
   CALL_RESTORE_FOR_UPLOAD,
+  CALL_RETAGGED,
+  CALL_SET_REP,
+  CALL_SOFT_DELETE,
+  CALL_USAGE,
+  DEAL_LIST_PENDING_RETAG,
+  DEAL_RETAG_BATCH,
+  DEAL_RETAG_DONE,
+  DEAL_RETAG_LOCK,
   PLAYBOOK_MIN_LEASE_MS,
 } from 'tula-closeline-db'
 import type { Result } from '~/adapters/postgres/processed-store'
@@ -114,6 +123,8 @@ export type CallStatementContext = {
   pgTimestampUs(us: number): string
   cursorMicroseconds(text: unknown): number
   postgresError(code: string, message?: string): Error
+  /** Whether the Organization has an `organization_usage` row (a Call was ever inserted for it). */
+  usageKnown(organization: unknown): boolean
 }
 
 const MAX_BATCH = 100
@@ -156,6 +167,8 @@ export function runCallStatement(
     ctx.deals.find(
       (d) => d.organization_id === call.organization_id && d.id === call.deal_record_id
     )
+  const dealsOfOrg = (organization: unknown) =>
+    ctx.deals.filter((d) => own(organization) && d.organization_id === organization)
   const jobsOf = (organization: unknown) =>
     ctx.callJobs.filter((j) => own(organization) && j.organization_id === organization)
   const stamp = (ms: number | null) => (ms === null ? null : ctx.pgTimestamp(ms))
@@ -670,10 +683,7 @@ export function runCallStatement(
       c.tagged_outcome_seq = Math.max(c.tagged_outcome_seq, Math.min(outcomeSeq, deal.outcome_seq))
       touch(c)
       if (c.tagged_outcome_seq < deal.outcome_seq) {
-        deal.retag_through = Math.min(
-          deal.retag_through ?? c.tagged_outcome_seq,
-          c.tagged_outcome_seq
-        )
+        deal.retag_through = Math.min(deal.retag_through ?? 0, c.tagged_outcome_seq)
       }
       return rows([{ id: c.id }])
     }
@@ -892,6 +902,253 @@ export function runCallStatement(
           }
         })
       )
+    }
+    case CALL_USAGE: {
+      const [organization] = params as [string]
+      const list = mine(organization)
+      if (list.length === 0 && !ctx.usageKnown(organization)) {
+        return none
+      }
+      return rows([
+        {
+          call_count: list.length,
+          recording_byte_count: list
+            .filter((c) => c.kind === 'recording')
+            .reduce((sum, c) => sum + c.size_bytes, 0),
+        },
+      ])
+    }
+    case DEAL_LIST_PENDING_RETAG: {
+      const [organization, after, size] = params as [string, string, number]
+      const limit = Math.min(Math.max(Number(size) || 1, 1), 500)
+      return rows(
+        dealsOfOrg(organization)
+          .filter((d) => (d.retag_through ?? 0) < d.outcome_seq && d.id > after)
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .slice(0, limit)
+          .map((d) => ({
+            id: d.id,
+            outcome: d.outcome,
+            outcome_seq: d.outcome_seq,
+            retag_through: d.retag_through ?? 0,
+          }))
+      )
+    }
+    case DEAL_RETAG_BATCH: {
+      const [organization, dealRecordId, after, size] = params as [string, string, string, number]
+      const limit = Math.min(Math.max(Number(size) || 1, 1), 500)
+      const deal = dealsOfOrg(organization).find((d) => d.id === dealRecordId)
+      if (deal === undefined) {
+        return none
+      }
+      return rows(
+        mine(organization)
+          .filter(
+            (c) =>
+              c.deal_record_id === dealRecordId &&
+              c.state === 'ready' &&
+              c.tagged_outcome_seq < deal.outcome_seq &&
+              c.id > after
+          )
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .slice(0, limit)
+          .map((c) => ({ id: c.id, outcome: deal.outcome, outcome_seq: deal.outcome_seq }))
+      )
+    }
+    case CALL_RETAGGED: {
+      const [organization, ids, seq] = params as [string, string, number]
+      // As for CALL_JOB_RECORD: a JavaScript array is bound as a list and Postgres cannot cast it.
+      if (typeof ids !== 'string') {
+        throw ctx.postgresError('42846', 'cannot cast type record to text[]')
+      }
+      const wanted = parseTextArrayLiteral(ids)
+      if (wanted === undefined) {
+        throw ctx.postgresError('22P02', 'malformed array literal')
+      }
+      const updated: { id: string }[] = []
+      for (const id of wanted.slice(0, 500)) {
+        const c = findCall(organization, id)
+        const d = c === undefined ? undefined : dealOf(c)
+        if (
+          c !== undefined &&
+          d !== undefined &&
+          c.state === 'ready' &&
+          c.tagged_outcome_seq < seq &&
+          seq <= d.outcome_seq
+        ) {
+          c.tagged_outcome_seq = seq
+          touch(c)
+          updated.push({ id: c.id })
+        }
+      }
+      return rows(updated)
+    }
+    case DEAL_RETAG_LOCK: {
+      const [organization, id] = params as [string, string]
+      const d = dealsOfOrg(organization).find((x) => x.id === id)
+      return d === undefined
+        ? none
+        : rows([
+            {
+              id: d.id,
+              outcome: d.outcome,
+              outcome_seq: d.outcome_seq,
+              retag_through: d.retag_through ?? 0,
+            },
+          ])
+    }
+    case DEAL_RETAG_DONE: {
+      const [organization, id, seq] = params as [string, string, number]
+      const d = dealsOfOrg(organization).find((x) => x.id === id)
+      if (
+        d === undefined ||
+        (d.retag_through ?? 0) >= seq ||
+        seq > d.outcome_seq ||
+        mine(organization).some(
+          (c) => c.deal_record_id === id && c.state === 'ready' && c.tagged_outcome_seq < seq
+        )
+      ) {
+        return none
+      }
+      d.retag_through = seq
+      return rows([{ id: d.id, retag_through: seq, outcome_seq: d.outcome_seq }])
+    }
+    case CALL_SET_REP: {
+      const [organization, id, by, label, channel, jobId] = params as [
+        string,
+        string,
+        string | null,
+        string | null,
+        string | null,
+        string,
+      ]
+      const c = findCall(organization, id)
+      if (c === undefined) {
+        return none
+      }
+      const same =
+        c.rep_by === by &&
+        c.rep_label === (by === 'speaker' ? label : null) &&
+        c.rep_channel === (by === 'channel' ? channel : null)
+      let result: 'invalid' | 'unchanged' | 'not_changeable' | 'changed'
+      if (by === null || (by !== 'speaker' && by !== 'channel')) {
+        result = 'invalid'
+      } else if (c.state !== 'deleted' && same && c.state !== 'failed') {
+        result = 'unchanged'
+      } else if (
+        !(
+          c.state === 'ready' ||
+          c.state === 'awaiting_rep' ||
+          (c.state === 'failed' &&
+            (c.failure_reason === 'rep_label_not_found' || c.failure_reason === 'not_per_side'))
+        )
+      ) {
+        result = 'not_changeable'
+      } else if (
+        !(
+          (by === 'speaker' && label !== null && c.speaker_labels.includes(label)) ||
+          (by === 'channel' &&
+            c.kind === 'recording' &&
+            (channel === 'left' || channel === 'right'))
+        )
+      ) {
+        result = 'invalid'
+      } else {
+        result = 'changed'
+      }
+      if (result !== 'changed') {
+        return rows([{ result, id: c.id, state: c.state, rep_seq: c.rep_seq }])
+      }
+      // The job keeps its lease when it was running: it may still have a request in flight.
+      cancelJobs(organization, c.id, true)
+      c.rep_by = by as 'speaker' | 'channel'
+      c.rep_label = by === 'speaker' ? label : null
+      c.rep_channel = by === 'channel' ? channel : null
+      c.rep_seq += 1
+      c.state = 'processing'
+      c.failure_reason = null
+      touch(c)
+      queueJob(c, jobId, 'rebuild')
+      return rows([{ result: 'changed', id: c.id, state: 'processing', rep_seq: c.rep_seq }])
+    }
+    case CALL_SOFT_DELETE: {
+      const [organization, id, user, retentionMs] = params as [string, string, string, number]
+      const c = findCall(organization, id)
+      if (c === undefined) {
+        return none
+      }
+      if (c.state === 'deleted') {
+        return rows([
+          {
+            id: c.id,
+            state: c.state,
+            deletion_seq: c.deletion_seq,
+            purge_due_at: stamp(c.purge_due_at),
+            changed: false,
+          },
+        ])
+      }
+      cancelJobs(organization, c.id, true)
+      c.state = 'deleted'
+      c.epoch += 1
+      c.deletion_seq += 1
+      c.deleted_at = now()
+      c.deleted_by = user
+      c.purge_due_at = now() + Math.max(Number(retentionMs) || 0, 3_600_000)
+      c.failure_reason = null
+      touch(c)
+      return rows([
+        {
+          id: c.id,
+          state: c.state,
+          deletion_seq: c.deletion_seq,
+          purge_due_at: stamp(c.purge_due_at),
+          changed: true,
+        },
+      ])
+    }
+    case CALL_RESTORE: {
+      const [organization, id, jobId] = params as [string, string, string]
+      const c = findCall(organization, id)
+      if (c === undefined) {
+        return none
+      }
+      if (c.state !== 'deleted') {
+        return rows([
+          {
+            id: c.id,
+            state: c.state,
+            epoch: c.epoch,
+            deletion_seq: c.deletion_seq,
+            changed: false,
+          },
+        ])
+      }
+      if (
+        c.purge_started_at !== null ||
+        c.restore_barred_at !== null ||
+        (c.purge_due_at ?? Number.NEGATIVE_INFINITY) <= now()
+      ) {
+        return none
+      }
+      cancelJobs(organization, c.id, false)
+      c.state =
+        c.kind === 'recording' && c.transcript_key === null
+          ? 'uploaded'
+          : c.rep_by === null
+            ? 'awaiting_rep'
+            : 'processing'
+      c.epoch += 1
+      c.deleted_at = null
+      c.deleted_by = null
+      c.purge_due_at = null
+      touch(c)
+      if (c.state !== 'awaiting_rep') {
+        queueJob(c, jobId, c.state === 'uploaded' ? 'transcribe' : 'process')
+      }
+      return rows([
+        { id: c.id, state: c.state, epoch: c.epoch, deletion_seq: c.deletion_seq, changed: true },
+      ])
     }
     default:
       return undefined
