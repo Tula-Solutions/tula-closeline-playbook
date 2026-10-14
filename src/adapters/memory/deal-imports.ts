@@ -67,7 +67,7 @@ export type MemoryApplyDeal = {
   name: string | null
   outcome: 'won' | 'lost' | 'open'
   outcome_seq: number
-  closed_at: number | null
+  closed_at: string | null
   amount: string | null
   currency: string | null
   appeared_in_import: boolean
@@ -568,7 +568,7 @@ function applyBatch(
       }
     }
     if (bad === null && dealId !== null && r.outcome !== null) {
-      const closed = r.closed_at === null ? null : Date.parse(r.closed_at)
+      const closed = r.closed_at
       if (deal === undefined) {
         const created: MemoryApplyDeal = {
           id: `deal_${crypto.randomUUID().replaceAll('-', '')}`,

@@ -15,6 +15,7 @@ import {
   type ListCallsQuery,
   type ListCallsResponse,
   MAX_RECORDING_BYTES,
+  MAX_TRANSCRIPT_BYTES,
   MEDIA_TYPE_BY_CALL_EXTENSION,
   PLAYBOOK_WRITE_ROLES,
   parseRepField,
@@ -22,6 +23,7 @@ import {
   repChoiceSuits,
   SALES_HISTORY_READ_ROLES,
   type SetCallRepRequest,
+  speakerExcerpt,
   uploadCallFieldsSchema,
 } from 'tula-closeline-contract'
 import {
@@ -65,9 +67,9 @@ import {
   mappingBadCursor,
   transaction,
 } from '~/modules/service-kit'
-import { callObjectKey } from './keys'
+import { callObjectKey, recordingTranscriptKey } from './keys'
 import { callCursorOf, toCall } from './schema'
-import type { TranscriptMediaType } from './transcript'
+import { parseTranscript, type TranscriptMediaType } from './transcript'
 
 /** What the Call service needs from the container. */
 export type CallDeps = Pick<Container, 'scope' | 'objects' | 'logger' | 'env' | 'queue'>
@@ -398,7 +400,73 @@ export async function get(deps: CallDeps, context: CallContext, callId: string):
   if (row === undefined) {
     throw failure('call.not_found')
   }
-  return toCall(row)
+  const call = toCall(row)
+  if (call.kind !== 'recording' || call.speakerLabels.length === 0) {
+    return call
+  }
+  const speakers = await speakersOf(deps, organizationId, call.id)
+  return speakers === undefined ? call : { ...call, speakers }
+}
+
+/**
+ * The excerpts of a Recording's speakers, from its kept Transcript, so a person can pick the Rep.
+ * It is tenant text: only the Call read asks for it (Owner and Admin, checked above), and nothing
+ * here logs it. The read is bounded by the object store timeout and the Transcript's own size cap;
+ * a Transcript that is missing, cannot be read in time or is not valid leaves `speakers` out and
+ * logs ids only, so a Call read never becomes a 500 over it.
+ */
+async function speakersOf(
+  deps: CallDeps,
+  organizationId: string,
+  callId: string
+): Promise<{ label: string; excerpt: string }[] | undefined> {
+  try {
+    const stored = await withTimeout(deps.env.INGESTION_IO_TIMEOUT_MS, () =>
+      deps.objects.get(organizationId, recordingTranscriptKey(callId))
+    )
+    if (stored === undefined || stored.body.byteLength > MAX_TRANSCRIPT_BYTES) {
+      return undefined
+    }
+    const parsed = parseTranscript(stored.body, 'application/json')
+    if (!parsed.ok) {
+      return undefined
+    }
+    const speakers: { label: string; excerpt: string }[] = []
+    for (const label of parsed.transcript.speakers) {
+      const excerpt = speakerExcerpt(
+        parsed.transcript.turns.filter((t) => t.speaker === label).map((t) => t.text)
+      )
+      if (excerpt !== '') {
+        speakers.push({ label, excerpt })
+      }
+    }
+    return speakers.length === 0 ? undefined : speakers
+  } catch (error) {
+    deps.logger.warn(
+      'the speakers of a Recording could not be read; the Call is returned without them',
+      {
+        organizationId,
+        callId,
+        error: error instanceof Error ? error.name : 'unknown',
+      }
+    )
+    return undefined
+  }
+}
+
+/** Runs `fn` and rejects after `ms` if it has not settled; the late result is dropped. */
+async function withTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('timed out')), ms)
+  })
+  const work = fn()
+  work.catch(() => undefined)
+  try {
+    return await Promise.race([work, deadline])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /** The position a Call-list cursor names, or `request.invalid` for a cursor that is not one. */

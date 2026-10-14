@@ -131,6 +131,31 @@ describe('Deals against Postgres', () => {
     })
   })
 
+  test('a closing date reads back as the same date with the process in America/Chicago', async () => {
+    const { h, send } = await harness()
+    const [id] = await seedDeals(h.organizationId, ['ACME-TZ'])
+    const zone = process.env.TZ
+    process.env.TZ = 'America/Chicago'
+    try {
+      const set = await send('PUT', `${DEALS}/${id}/outcome`, {
+        outcome: 'won',
+        closedAt: '2026-01-31',
+      })
+      const read = await send('GET', `${DEALS}/${id}`)
+      const listed = listDealsResponseSchema.parse(await (await send('GET', DEALS)).json())
+
+      expect(dealSchema.parse(await set.json()).closedAt).toBe('2026-01-31')
+      expect(dealSchema.parse(await read.json()).closedAt).toBe('2026-01-31')
+      expect(listed.items.find((d) => d.id === (id as never))?.closedAt).toBe('2026-01-31')
+    } finally {
+      if (zone === undefined) {
+        delete process.env.TZ
+      } else {
+        process.env.TZ = zone
+      }
+    }
+  })
+
   test('a second Organization can neither see nor change the Deals of the first', async () => {
     const { h, send } = await harness()
     const [id] = await seedDeals(h.organizationId, ['PRIVATE-1'])
