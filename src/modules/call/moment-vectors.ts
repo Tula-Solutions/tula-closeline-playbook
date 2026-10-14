@@ -22,6 +22,25 @@ export type MomentWriteContext = {
 /** The version of a Moment vector's attributes: 2 carries the snippets a search returns. Search filters on it. */
 export const MOMENT_VECTOR_VERSION = 2
 
+/** The vector store's limit on an attribute string, in UTF-16 units (kit's `MAX_ATTRIBUTE_STRING`). */
+const MAX_ATTRIBUTE_UNITS = 512
+
+/** A snippet cut to at most {@link MAX_ATTRIBUTE_UNITS} UTF-16 units at a code point boundary, then re-trimmed: an emoji is two units but one code point, so the contract's cap alone can overflow the store's. */
+export function attributeSnippet(text: string): string {
+  const snippet = momentSnippet(text)
+  if (snippet.length <= MAX_ATTRIBUTE_UNITS) {
+    return snippet
+  }
+  let end = 0
+  for (const point of snippet) {
+    if (end + point.length > MAX_ATTRIBUTE_UNITS) {
+      break
+    }
+    end += point.length
+  }
+  return snippet.slice(0, end).trimEnd()
+}
+
 /** The text of the Prospect's turn the Moment ends on (the last context turn). */
 function prospectOf(moment: Moment): string {
   return moment.context.at(-1)?.text ?? ''
@@ -77,8 +96,8 @@ export async function writeMomentVectors(
             outcome: tag.outcome,
             outcome_seq: tag.outcomeSeq,
             // What a search shows, so a hit needs no Transcript read. Tenant text: never logged.
-            prospect: momentSnippet(prospectOf(moment)),
-            rep_next: momentSnippet(moment.repFollowing.join(' ')),
+            prospect: attributeSnippet(prospectOf(moment)),
+            rep_next: attributeSnippet(moment.repFollowing.join(' ')),
             // The attribute layout: search ignores vectors written before the snippets existed.
             v: MOMENT_VECTOR_VERSION,
           },

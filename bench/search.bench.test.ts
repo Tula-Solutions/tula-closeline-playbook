@@ -9,9 +9,9 @@ import { measure, summary } from './measure'
 // embedder, vector store and database here are the in-memory doubles, so this measures the route
 // and service layer (parse, orchestration, eligibility, response validation) with a full 100-Call
 // candidate window, not the network (embedding ~400 ms, vector ~150 ms, Postgres ~30 ms are
-// measured against the real adapters in the phase load test). Typical: 0.9 ms a search locally. Budget:
-// 20 ms per search, averaged over a batch, on the best batch.
-const BUDGET_MS = 20
+// measured against the real adapters in the phase load test). Typical: 0.9 ms a search locally. Budget: 5 ms
+// per search (about 5x), the best of 5 batches of 100 searches after a 50-search warm-up.
+const BUDGET_MS = 5
 const CALLS = 100
 const TURN = 'We are worried about the price of onboarding for the whole team'
 

@@ -5,6 +5,7 @@ import {
   momentSnippet,
   searchMomentsResponseSchema,
 } from 'tula-closeline-contract'
+import { VECTOR_ERROR_CODES, VectorError } from 'tula-closeline-kit'
 import { CALLS, type CallHarness, createCallHarness } from '~/modules/call/test-support'
 import { errorCode, personIn } from '~/modules/document/test-support'
 import { newOrganizationId } from '~/testing'
@@ -98,6 +99,38 @@ describe('what a search returns', () => {
     )
     expect(JSON.stringify(body)).not.toContain('WON-1')
   })
+
+  test.each([
+    ['Prospect turn', conversation('😀'.repeat(600))],
+    ['Rep-next turn', conversation(PROSPECT_LINE, '😀'.repeat(600))],
+  ])(
+    'a Moment whose %s is 600 emoji reaches ready, fits the vector store and is found',
+    async (_label, text) => {
+      const h = await createCallHarness()
+      const call = await wonCall(h, 'EMOJI-1', text)
+
+      expect((await h.readCall(call.id)).state).toBe('ready')
+      const hits = await h.deps.vectors.search(h.organizationId, {
+        vector: new Array<number>(h.deps.embedder.dimensions).fill(0.1),
+        topK: 100,
+      })
+      expect(hits.length).toBeGreaterThan(0)
+      for (const hit of hits) {
+        for (const key of ['prospect', 'rep_next'] as const) {
+          const value = String(hit.attributes[key])
+          expect(value.length).toBeLessThanOrEqual(512)
+          // No lone surrogate is left by the cut.
+          expect(
+            /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)
+          ).toBe(false)
+        }
+      }
+      const body = searchMomentsResponseSchema.parse(
+        await (await search(h, ask('worried about the price of onboarding'))).json()
+      )
+      expect(body.items.map((item) => item.callId)).toContain(call.id)
+    }
+  )
 
   test('embeds the query once, as a query, with the contract text', async () => {
     const h = await createCallHarness()
@@ -304,6 +337,7 @@ describe('when the model or the store cannot answer', () => {
 
   test('a vector store that fails is 503 with Retry-After', async () => {
     const h = await createCallHarness()
+    h.deps.random = () => 0
     h.deps.vectors.search = async () => {
       throw new Error('the store is down')
     }
@@ -401,6 +435,85 @@ describe('when the model or the store cannot answer', () => {
     expect(statements?.[0]).toBe(
       `set local statement_timeout = '${h.deps.env.SEARCH_STEP_TIMEOUT_MS}ms'`
     )
+  })
+
+  test('a vector store that is unavailable once is retried once and the search succeeds', async () => {
+    const h = await createCallHarness()
+    const call = await wonCall(h, 'WON-1', conversation(PROSPECT_LINE))
+    h.deps.random = () => 0
+    const base = h.deps.vectors.search.bind(h.deps.vectors)
+    let attempts = 0
+    h.deps.vectors.search = async (organizationId, query) => {
+      attempts++
+      if (attempts === 1) {
+        throw new VectorError(VECTOR_ERROR_CODES.unavailable, 'down')
+      }
+      return base(organizationId, query)
+    }
+
+    const response = await search(h, ask('worried about the price of onboarding'))
+
+    expect(response.status).toBe(200)
+    expect(attempts).toBe(2)
+    expect(
+      searchMomentsResponseSchema.parse(await response.json()).items.map((i) => i.callId)
+    ).toEqual([call.id])
+  })
+
+  test('a vector store that stays unavailable is tried twice, then 503 with Retry-After', async () => {
+    const h = await createCallHarness()
+    h.deps.random = () => 0
+    let attempts = 0
+    h.deps.vectors.search = async () => {
+      attempts++
+      throw new VectorError(VECTOR_ERROR_CODES.unavailable, 'down')
+    }
+
+    const response = await search(h, ask('price'))
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).not.toBeNull()
+    expect(attempts).toBe(2)
+  })
+
+  test('a vector store that rejects the request is not retried and is a 500', async () => {
+    const h = await createCallHarness()
+    let attempts = 0
+    h.deps.vectors.search = async () => {
+      attempts++
+      throw new VectorError(VECTOR_ERROR_CODES.invalidRequest, 'bad')
+    }
+
+    const response = await search(h, ask('price'))
+
+    expect(response.status).toBe(500)
+    expect(attempts).toBe(1)
+  })
+
+  test('an embedder that rejects its input is a 500, not a 503, and is not retried here', async () => {
+    const h = await createCallHarness()
+    let attempts = 0
+    h.deps.embedder.embed = async () => {
+      attempts++
+      throw new RangeError('embed takes at most 96 texts per call')
+    }
+
+    const response = await search(h, ask('price'))
+
+    expect(response.status).toBe(500)
+    expect(attempts).toBe(1)
+  })
+
+  test('a transport failure that surfaces as a TypeError is a 503, not a 500', async () => {
+    const h = await createCallHarness()
+    h.deps.embedder.embed = async () => {
+      throw new TypeError('fetch failed')
+    }
+
+    const response = await search(h, ask('price'))
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).not.toBeNull()
   })
 
   test('a model that answers a vector of the wrong length is 503, not a crash', async () => {

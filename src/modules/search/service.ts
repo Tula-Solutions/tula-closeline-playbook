@@ -8,6 +8,7 @@ import {
   searchMomentsResponseSchema,
 } from 'tula-closeline-contract'
 import { CALL_SEARCH_STATE, MAX_SEARCH_STATE_IDS } from 'tula-closeline-db'
+import { VECTOR_ERROR_CODES, VectorError } from 'tula-closeline-kit'
 import { postgresErrorOf } from '~/adapters/postgres/retry'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
 import type { Container } from '~/container'
@@ -26,7 +27,7 @@ import {
 /** What a search needs from the container. */
 export type SearchDeps = Pick<
   Container,
-  'scope' | 'vectors' | 'embedder' | 'logger' | 'env' | 'sleep'
+  'scope' | 'vectors' | 'embedder' | 'logger' | 'env' | 'sleep' | 'random'
 >
 
 /** The SQLSTATE of a statement Postgres cancelled at its `statement_timeout`. */
@@ -77,32 +78,79 @@ function candidateOf(hit: {
   }
 }
 
-/** Runs one outside call with the search's deadline; a deadline is a 504, any other failure a 503 with Retry-After. The text is never in the log. */
+/** The most a retry waits before its second attempt, in milliseconds (a random part of it). */
+const RETRY_JITTER_MS = 100
+
+/** What a step does with a failure: the kind of step and how its failures are classed. */
+type Step = 'embedder' | 'vector store' | 'database'
+
+/**
+ * Whether a failure of the step cannot be cured by a repeat and is ours to fix, so it is a 500 and
+ * is reported rather than a 503: a store refusing the request, an embedder given input it rejects
+ * (the port's documented `RangeError`; a transport `TypeError` such as `fetch failed` stays a 503) and a database
+ * error that is not a lost connection.
+ */
+function isPermanentFailure(step: Step, error: unknown): boolean {
+  if (step === 'database') {
+    return !isTransientFailure(error)
+  }
+  if (error instanceof VectorError) {
+    return (
+      error.code !== VECTOR_ERROR_CODES.unavailable && error.code !== VECTOR_ERROR_CODES.badResponse
+    )
+  }
+  return error instanceof RangeError
+}
+
+/**
+ * Runs one outside call with the search's deadline. A deadline is a 504; a failure a repeat cannot
+ * cure is rethrown (a 500); any other is a 503 with Retry-After. The vector store gets one jittered
+ * retry inside the same deadline: kit's store does not retry itself. The embedder gets none here
+ * because its port requires the adapter to retry inside the call (`src/ports/embedder.ts`), and a
+ * database read is not repeated (its transaction helper already retries serialization failures).
+ * The text is never in the log.
+ */
 async function outside<T>(
   deps: SearchDeps,
-  label: string,
+  step: Step,
   organizationId: string,
   fn: (signal: AbortSignal) => Promise<T>
 ): Promise<T> {
+  const attempt = async (signal: AbortSignal): Promise<T> => {
+    try {
+      return await fn(signal)
+    } catch (error) {
+      if (step !== 'vector store' || isPermanentFailure(step, error) || signal.aborted) {
+        throw error
+      }
+      const delay = Math.floor(deps.random() * RETRY_JITTER_MS)
+      if (delay > 0) {
+        await deps.sleep(delay, signal)
+      }
+      return await fn(signal)
+    }
+  }
   try {
     return await within(
       deps,
-      label,
+      step,
       deps.env.SEARCH_STEP_TIMEOUT_MS,
       new AbortController().signal,
-      fn
+      attempt
     )
   } catch (error) {
     if (error instanceof CallTimeout || postgresErrorOf(error)?.code === QUERY_CANCELED) {
       throw failure('server.timeout')
     }
-    if (label === 'database' && !isTransientFailure(error)) {
-      // A database error that a repeat cannot cure is a bug: let it be a 500 and be reported.
-      throw error
+    if (isPermanentFailure(step, error)) {
+      // A store's own 4xx must not reach the caller as that status: our request to it was wrong, so it is a 500.
+      throw error instanceof VectorError
+        ? new Error(`the ${step} refused a search request (${error.code})`, { cause: error })
+        : error
     }
     deps.logger.warn('a search could not be answered by the model or the store', {
       organizationId,
-      step: label,
+      step,
       error: error instanceof Error ? error.name : 'unknown',
     })
     throw new RetryAfterError(ERRORS['server.unavailable'], SEARCH_RETRY_AFTER_SECONDS)
