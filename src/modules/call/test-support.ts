@@ -1,4 +1,5 @@
 import { type Call, callSchema, listCallsResponseSchema } from 'tula-closeline-contract'
+import { CALL_GET } from 'tula-closeline-db'
 import { createDocumentHarness, type DocumentHarness } from '~/modules/document/test-support'
 import type { TestDepsOverrides, TestIdentity } from '~/testing'
 import { type MomentTag, momentMayBeReturned } from './eligibility'
@@ -135,7 +136,12 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
       topK: 100,
       filter: { call_id: callId },
     })
-    const row = h.deps.database.calls(h.organizationId).find((c) => c.id === callId)
+    // Through the scoped statement, not the database double's rows: the same code reads Postgres.
+    const read = (
+      await h.deps.scope(h.organizationId, (run) => run(CALL_GET, [h.organizationId, callId]))
+    ).rows[0]
+    const row =
+      read === undefined ? undefined : { epoch: Number(read.epoch), repSeq: Number(read.rep_seq) }
     const inSearch = row === undefined ? false : (await readCall(callId)).inSearch
     const returnable = hits.filter(
       (hit) =>
@@ -147,7 +153,7 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
             epoch: Number(hit.attributes.epoch),
             repSeq: Number(hit.attributes.rep_seq),
           },
-          { inSearch, epoch: row.epoch, repSeq: row.rep_seq }
+          { inSearch, epoch: row.epoch, repSeq: row.repSeq }
         )
     ).length
     return {

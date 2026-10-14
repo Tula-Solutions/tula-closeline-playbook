@@ -228,7 +228,7 @@ describe('the Outcome re-tag, Rep change, delete and restore against Postgres', 
 
     // The re-tag patches the tags of the existing vectors: it never embeds.
     expect(embeds).toBe(0)
-    expect(await h.moments(call.id)).toMatchObject({ total: 2, returnable: 2, outcomes: ['won'] })
+    expect(await h.moments(call.id)).toMatchObject({ total: 3, returnable: 3, outcomes: ['won'] })
     const progress = await dealProgress(h.organizationId)
     expect(progress?.retag_through).toBe(progress?.outcome_seq)
     expect((await h.readCall(call.id)).inSearch).toBe(true)
@@ -248,14 +248,14 @@ describe('the Outcome re-tag, Rep change, delete and restore against Postgres', 
 
     await h.setOutcome(id, 'won')
     await h.deps.workers.ingestion.runPass()
-    expect((await h.moments(call.id)).returnable).toBe(2)
+    expect((await h.moments(call.id)).returnable).toBe(3)
     await h.setOutcome(id, 'lost')
     expect((await h.moments(call.id)).returnable).toBe(0)
     await h.setOutcome(id, 'won')
     expect((await h.moments(call.id)).returnable).toBe(0)
     await h.deps.workers.ingestion.runPass()
 
-    expect(await h.moments(call.id)).toMatchObject({ returnable: 2, outcomes: ['won'] })
+    expect(await h.moments(call.id)).toMatchObject({ returnable: 3, outcomes: ['won'] })
   })
 
   test('a Rep change rebuilds the Moments, keeps only the new rep_seq and fixes a Call that failed on its label', async () => {
@@ -323,7 +323,7 @@ describe('the Outcome re-tag, Rep change, delete and restore against Postgres', 
     await h.runCalls()
 
     expect((await h.readCall(call.id)).state).toBe('ready')
-    expect((await h.moments(call.id)).total).toBe(2)
+    expect((await h.moments(call.id)).total).toBe(3)
     const stranger = personIn(`org_${'9'.repeat(32)}`, 'owner')
     expect((await h.send('DELETE', `${CALLS}/${call.id}`, { as: stranger })).status).toBe(404)
   })
@@ -334,7 +334,9 @@ describe('the Outcome re-tag, Rep change, delete and restore against Postgres', 
     await h.runCalls()
     expect((await h.send('DELETE', `${CALLS}/${call.id}`)).status).toBe(200)
     await withOrganization(owner.db, h.organizationId, (tx) =>
-      tx.execute(sql`update playbook.calls set purge_due_at = now() - interval '1 minute'`)
+      tx.execute(
+        sql`update playbook.calls set deleted_at = now() - interval '2 minutes', purge_due_at = now() - interval '1 minute'`
+      )
     )
 
     const response = await h.send('POST', `${CALLS}/${call.id}/restore`)
