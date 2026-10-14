@@ -67,17 +67,32 @@ const VENDOR_FAILURE: Readonly<Record<TranscriptionFailure, CallFailureReason>> 
   timed_out: 'transcription_timed_out',
 }
 
-/** The newest copy the vendor holds for this Call that has not failed: a failed send is never read again, a new counted send replaces it. */
+/** One send's copy at the vendor. */
 type VendorCopy = { reference: string; seq: number; vendorId: string }
 
+/** Whether the Call's latest send was made by this job: at or after the job was inserted. */
+function sentByThisJob(claim: ClaimedCallJob): boolean {
+  if (claim.sent_to_vendor_at === null || claim.job_created_at === null) {
+    return false
+  }
+  return new Date(claim.sent_to_vendor_at).getTime() >= new Date(claim.job_created_at).getTime()
+}
+
 /**
- * Finds the copy of the newest send of this Call that has not failed, by listing the vendor's jobs for the Call's
+ * Finds the copy of the newest send of this Call, by listing the vendor's jobs for the Call's
  * reference prefix (a background job may; the prefix ends with the separator). A retry or a later
- * poll then reads that copy instead of paying for a second transcription.
+ * poll then reads that copy instead of paying for a second transcription. A failed newest copy is
+ * returned (to be read as the failure it is) only when this job made that send; a failed copy
+ * left by an earlier job (the Call was requeued or uploaded again) is skipped, so a new send
+ * replaces it, and one bad file is not re-sent by the job that already saw it fail.
  */
-async function findNewestCopy(c: TranscribeContext): Promise<VendorCopy | undefined> {
+async function findNewestCopy(
+  c: TranscribeContext,
+  claim: ClaimedCallJob
+): Promise<VendorCopy | undefined> {
   const { deps } = c
-  let best: VendorCopy | undefined
+  let newest: (VendorCopy & { failed: boolean }) | undefined
+  let newestLive: VendorCopy | undefined
   let cursor: string | undefined
   for (let page = 0; page < MAX_LIST_PAGES; page++) {
     const listed = await within(
@@ -93,8 +108,15 @@ async function findNewestCopy(c: TranscribeContext): Promise<VendorCopy | undefi
     )
     for (const item of listed.items) {
       const seq = sendOfReference(c.callId, item.clientReference)
-      if (seq !== undefined && item.status !== 'failed' && (best === undefined || seq > best.seq)) {
-        best = { reference: item.clientReference, seq, vendorId: item.vendorId }
+      if (seq === undefined) {
+        continue
+      }
+      const copy = { reference: item.clientReference, seq, vendorId: item.vendorId }
+      if (newest === undefined || seq > newest.seq) {
+        newest = { ...copy, failed: item.status === 'failed' }
+      }
+      if (item.status !== 'failed' && (newestLive === undefined || seq > newestLive.seq)) {
+        newestLive = copy
       }
     }
     cursor = listed.nextCursor
@@ -102,7 +124,7 @@ async function findNewestCopy(c: TranscribeContext): Promise<VendorCopy | undefi
       break
     }
   }
-  return best
+  return newest?.failed === true && sentByThisJob(claim) ? newest : newestLive
 }
 
 /**
@@ -190,11 +212,11 @@ async function sendAndRead(
 ): Promise<Step> {
   const { deps } = c
   const timeout = deps.env.INGESTION_IO_TIMEOUT_MS
-  if (claim.object_key === null) {
+  if (claim.object_key === null || claim.content_hash === null) {
     throw new CallFailure('processing_failed')
   }
   await c.beat()
-  let copy = !fresh && claim.sent_to_vendor_at !== null ? await findNewestCopy(c) : undefined
+  let copy = !fresh && claim.sent_to_vendor_at !== null ? await findNewestCopy(c, claim) : undefined
   let hint: string | undefined
   let startedMs: number
   if (copy !== undefined) {
@@ -219,6 +241,9 @@ async function sendAndRead(
     const seq = Number(row.vendor_send_seq)
     const reference = clientReferenceOf(c.callId, seq)
     const objectKey = claim.object_key
+    // The audio's name for the vendor: its key and the sha256 stored with the Call, so a resend of
+    // changed audio (even of the same size) is a conflict, not a silent second transcription.
+    const audioKey = `${objectKey}:${Buffer.from(claim.content_hash ?? []).toString('hex')}`
     startedMs = deps.clock.now().getTime()
     // Signed as late as possible: the URL lives for the shorter of this and the credentials' life.
     const url = await within(deps, 'object store', timeout, c.signal, () =>
@@ -228,7 +253,7 @@ async function sendAndRead(
       deps.transcriber.submit(c.organizationId, {
         clientReference: reference,
         audio: { url },
-        audioKey: `${objectKey}:${claim.size_bytes ?? 0}`,
+        audioKey,
         speakers: mode,
         ...(mode === 'diarize' ? { maxSpeakers: MAX_SPEAKERS } : {}),
       })

@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { type Call, callSchema } from 'tula-closeline-contract'
 import {
   CALL_JOB_FAIL,
@@ -8,7 +9,7 @@ import {
   CALL_VENDOR_ID_RECORD,
 } from 'tula-closeline-db'
 import { logged } from '~/modules/ingestion/test-support'
-import { CALLS, type CallHarness, channelRep, createCallHarness } from './test-support'
+import { CALLS, type CallHarness, channelRep, createCallHarness, wavBytes } from './test-support'
 
 const SECRET_TEXT = 'the launch codes are swordfish-7731'
 
@@ -392,13 +393,79 @@ describe('transcribing a Recording', () => {
       failureReason: 'transcription_failed',
     })
 
-    // The same file again under the same Deal requeues the failed Call.
+    // Later, the same file again under the same Deal requeues the failed Call.
+    await h.deps.time.advance(5_000)
     const again = await h.uploadRecording('requeue-failed', { dealId: 'D-1' })
     expect(again.status).toBe(200)
     await h.runCalls()
 
     expect(vendorSendsOf(h).map((send) => send.seq)).toEqual([1, 2])
     expect((await h.readCall(call.id)).state).toBe('awaiting_rep')
+  })
+
+  test('while polling, a vendor that fails the current send ends the Call transcription_failed after exactly one send', async () => {
+    const h = await createCallHarness()
+    const call = await uploadRecording(h, 'fails-while-polling', { dealId: 'D-1' })
+    h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
+      pendingReads: 1,
+      result: { status: 'failed', reason: 'audio_invalid' },
+    })
+
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('transcribing')
+    await h.deps.time.advance(h.deps.env.TRANSCRIBE_POLL_INTERVAL_MS + 1000)
+    await h.runCalls()
+    await h.deps.time.advance(120_000)
+    await h.runCalls()
+
+    expect(await h.readCall(call.id)).toMatchObject({ state: 'failed' })
+    expect(vendorSendsOf(h)).toHaveLength(1)
+    expect(h.deps.transcriber.copies(h.organizationId)).toHaveLength(1)
+  })
+
+  test('a requeue after the vendor failed the send makes exactly one new send', async () => {
+    const h = await createCallHarness()
+    const call = await uploadRecording(h, 'requeue-once', { dealId: 'D-1' })
+    h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
+      pendingReads: 1,
+      result: { status: 'failed', reason: 'audio_unreachable' },
+    })
+    await h.runCalls()
+    await h.deps.time.advance(h.deps.env.TRANSCRIBE_POLL_INTERVAL_MS + 1000)
+    await h.runCalls()
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'transcription_failed',
+    })
+    expect(vendorSendsOf(h)).toHaveLength(1)
+
+    await h.deps.time.advance(5_000)
+    expect((await h.uploadRecording('requeue-once', { dealId: 'D-1' })).status).toBe(200)
+    await h.runCalls()
+    await h.deps.time.advance(120_000)
+    await h.runCalls()
+
+    expect(vendorSendsOf(h).map((send) => send.seq)).toEqual([1, 2])
+    expect((await h.readCall(call.id)).state).toBe('awaiting_rep')
+  })
+
+  test('a send is keyed by the audio content hash: changed audio of the same size is a conflict', async () => {
+    const h = await createCallHarness()
+    const submit = spyOn(h.deps.transcriber, 'submit')
+    const call = await uploadRecording(h, 'keyed')
+    await h.runCalls()
+    const sent = submit.mock.calls[0]?.[1]
+    const sha = createHash('sha256').update(wavBytes('keyed')).digest('hex')
+    expect(sent?.audioKey).toBe(`calls/${call.id}/original.wav:${sha}`)
+
+    // The same reference again with other bytes of the same size does not pass for the same audio.
+    const other = createHash('sha256').update(wavBytes('changed')).digest('hex')
+    await expect(
+      h.deps.transcriber.submit(h.organizationId, {
+        ...(sent as NonNullable<typeof sent>),
+        audioKey: `calls/${call.id}/original.wav:${other}`,
+      })
+    ).rejects.toMatchObject({ code: 'transcriber.conflict' })
   })
 
   test('a crash after a failed fallback send stays bounded by the 20 sends', async () => {

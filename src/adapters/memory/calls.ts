@@ -106,6 +106,8 @@ export type MemoryCallJobRow = {
   next_attempt_at: number
   claim_token: string | null
   failure_reason: string | null
+  /** When the job was inserted, in milliseconds (`call_jobs.created_at`). */
+  created_at: number
 }
 
 /** One row of `playbook.call_vendor_sends`: a counted send of a Recording to the vendor and, once recorded, the vendor's id of it. */
@@ -261,6 +263,7 @@ export function runCallStatement(
       next_attempt_at: now(),
       claim_token: null,
       failure_reason: null,
+      created_at: now(),
     }
     ctx.callJobs.push(job)
     return job
@@ -688,6 +691,8 @@ export function runCallStatement(
           rep_channel: c.rep_channel,
           speaker_labels: [...c.speaker_labels],
           sent_to_vendor_at: stamp(c.sent_to_vendor_at),
+          job_created_at: stamp(j.created_at),
+          content_hash: Buffer.from(c.content_hash, 'hex'),
         })
       }
       if (out.length === 0 && (cancelled > 0 || claimed > 0)) {
@@ -710,6 +715,8 @@ export function runCallStatement(
             rep_channel: null,
             speaker_labels: null,
             sent_to_vendor_at: null,
+            job_created_at: null,
+            content_hash: null,
             cancelled,
             lost: 0,
           },
