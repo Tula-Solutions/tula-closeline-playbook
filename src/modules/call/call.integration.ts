@@ -217,9 +217,17 @@ describe('the Outcome re-tag, Rep change, delete and restore against Postgres', 
     // No consumer exists in this test: the Outcome-changed message is never handled.
     h.published.length = 0
     expect((await h.moments(call.id)).returnable).toBe(0)
+    let embeds = 0
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    h.deps.embedder.embed = async (...args) => {
+      embeds++
+      return embed(...args)
+    }
 
     await h.deps.workers.ingestion.runPass()
 
+    // The re-tag patches the tags of the existing vectors: it never embeds.
+    expect(embeds).toBe(0)
     expect(await h.moments(call.id)).toMatchObject({ total: 2, returnable: 2, outcomes: ['won'] })
     const progress = await dealProgress(h.organizationId)
     expect(progress?.retag_through).toBe(progress?.outcome_seq)

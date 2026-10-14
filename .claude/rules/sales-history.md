@@ -97,11 +97,16 @@ paths:
   (`DEAL_RETAG_BATCH`), `RETAG_ROUNDS` rounds per Deal. Deals that cannot finish are paged past (`after` cursor,
   `RETAG_SCAN_LIMIT` examined per pass) so they never starve the Deals behind them; one re-tag per Organization
   runs at a time per instance.
-- Vector attributes cannot be updated in place, so a re-tag re-embeds the Moments from the kept original
-  Transcript (embed-budget follow-up) and upserts the same ids. Convergence is write, then verify: after the
-  write the Deal is re-read; if `outcome_seq` moved, the Call is rewritten at the newer sequence (up to 4
-  attempts); only then `CALL_RETAGGED` records `tagged_outcome_seq`. A Call that is deleted, or changed epoch
-  or `rep_seq` meanwhile, has what this build wrote removed.
+- The re-tag patches tags, it never embeds: `VectorStore.setAttributes` (kit v0.9.0) merges `outcome` and
+  `outcome_seq` into the existing Moment vectors, in batches of `MAX_UPSERT_BATCH`, under the vector store
+  timeout, and never creates a vector; it returns the ids it did not find. The ids are rebuilt from the kept
+  Transcript with `buildMoments` (no embedder call). The real vector adapter (hub issue 48) must implement
+  `setAttributes` as patch-by-id (turbopuffer patches attributes without resending the vector).
+- Convergence is patch, then verify: after the patch the Deal is re-read; if `outcome_seq` moved, the Call is
+  patched again at the newer sequence (up to 4 attempts); only then `CALL_RETAGGED` records
+  `tagged_outcome_seq`. If any Moment vector is missing the Call is NOT recorded: it stays pending, a warning
+  names the Call id and the count, and the Deal cannot complete. The db has no statement to requeue a `ready`
+  Call's rebuild (`CALL_REQUEUE` is for failed Calls), so the repair is a Rep change or a restore.
 - Lock order: the Deal row (`DEAL_RETAG_LOCK`), then Call rows. The lock and `DEAL_RETAG_DONE` run in one short
   transaction, with no external call inside. `DEAL_RETAG_DONE` refuses while a ready Call is stale, which is
   how a Call that finished mid-re-tag, or an Outcome that moved, brings another round.

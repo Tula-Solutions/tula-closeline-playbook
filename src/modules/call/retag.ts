@@ -8,6 +8,7 @@ import {
   DEAL_RETAG_DONE,
   DEAL_RETAG_LOCK,
 } from 'tula-closeline-db'
+import { MAX_UPSERT_BATCH } from 'tula-closeline-kit'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
 import {
   inTransaction,
@@ -15,8 +16,7 @@ import {
   reportWorkerError,
   within,
 } from '~/modules/ingestion/runtime'
-import { callObjectKey } from './keys'
-import { writeMomentVectors } from './moment-vectors'
+import { callObjectKey, momentVectorId } from './keys'
 import { buildMoments } from './moments'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
@@ -57,15 +57,46 @@ function objectKeyOf(callId: string, mediaType: string): string | undefined {
 type CallResult = 'tagged' | 'skipped'
 
 /**
- * Re-tags one ready Call to the Deal's Outcome: rebuilds its Moments from the kept Transcript,
- * embeds them and writes the vectors again under the same ids with the new tag, then records it
- * with `CALL_RETAGGED`. Vector attributes cannot be updated in place, so this is a re-embed.
+ * Patches the `outcome` and `outcome_seq` of existing Moment vectors in batches of
+ * {@link MAX_UPSERT_BATCH}, each under the vector store timeout. Returns how many ids the store did
+ * not find (it never creates one). Idempotent: the same patch twice leaves the same data.
+ */
+async function patchTags(
+  deps: PipelineDeps,
+  organizationId: string,
+  ids: readonly string[],
+  tag: { outcome: string; outcomeSeq: number },
+  signal: AbortSignal
+): Promise<number> {
+  let missing = 0
+  for (let start = 0; start < ids.length; start += MAX_UPSERT_BATCH) {
+    signal.throwIfAborted()
+    const batch = ids.slice(start, start + MAX_UPSERT_BATCH)
+    const notFound = await within(
+      deps,
+      'vector store',
+      deps.env.INGESTION_IO_TIMEOUT_MS,
+      signal,
+      () =>
+        deps.vectors.setAttributes(organizationId, batch, {
+          outcome: tag.outcome,
+          outcome_seq: tag.outcomeSeq,
+        })
+    )
+    missing += notFound.length
+  }
+  return missing
+}
+
+/**
+ * Re-tags one ready Call to the Deal's Outcome: rebuilds its Moments from the kept Transcript only
+ * to name their vector ids, patches the tag of those vectors (`setAttributes`, no embedder call,
+ * the vectors untouched), then records it with `CALL_RETAGGED`. Recorded only when every vector was
+ * found; a missing one leaves the Call pending.
  *
- * Convergence: after the write the Deal is read again; if its sequence moved past the one written,
- * the write is repeated at the newer sequence before anything is recorded, so a slower instance's
- * older write cannot be the last word (it re-checks after writing). After the record the Call is
- * read again: if it was deleted, restored or had its Rep changed meanwhile, the vectors this build
- * wrote are removed (the cleanup of that change may already have run). Idempotent and resumable:
+ * Convergence: after the patch the Deal is read again; if its sequence moved past the one written,
+ * the patch is repeated at the newer sequence before anything is recorded, so a slower instance's
+ * older write cannot be the last word (it re-checks after writing). Idempotent and resumable:
  * the database lists only Calls whose tag is behind.
  */
 async function retagCall(
@@ -107,20 +138,21 @@ async function retagCall(
     if (!parsed.ok) {
       return 'skipped'
     }
-    const moments = buildMoments(parsed.transcript.turns, String(call.rep_label))
-    await writeMomentVectors(
-      {
-        deps,
+    // Only the ids are needed, so no embedder call: the Moments are rebuilt to name their vectors.
+    const ids = buildMoments(parsed.transcript.turns, String(call.rep_label)).map((moment) =>
+      momentVectorId(callId, epoch, repSeq, moment.index)
+    )
+    const missing = await patchTags(deps, organizationId, ids, tag, signal)
+    if (missing > 0) {
+      // A vector the patch did not find is never created empty: the Call stays pending (its tag is
+      // not recorded), and the id count is logged without ids of Moments or any content.
+      deps.logger.warn('a Call has Moment vectors missing; its tag stays pending', {
         organizationId,
         callId,
-        epoch,
-        repSeq,
-        signal,
-        beforeWrite: async () => signal.throwIfAborted(),
-      },
-      moments,
-      tag
-    )
+        missing,
+      })
+      return 'skipped'
+    }
     const deal = await inTransaction(
       deps,
       organizationId,
@@ -147,14 +179,8 @@ async function retagCall(
       Number(after.epoch) !== epoch ||
       Number(after.rep_seq) !== repSeq
     ) {
-      // The Call moved on while its vectors were written: remove what this build wrote.
-      await within(deps, 'vector store', timeout, signal, () =>
-        deps.vectors.deleteByFilter(organizationId, {
-          call_id: callId,
-          epoch,
-          rep_seq: repSeq,
-        })
-      )
+      // The Call moved on (deleted, restored or a new Rep): the vectors patched belong to a build
+      // its own cleanup removes, and nothing was written that needs removing here.
       return 'skipped'
     }
     return 'tagged'

@@ -58,6 +58,6 @@ of recent turns, embedded by role and never by speaker name) and writes the Mome
 the Deal's Outcome. List and read: `GET /v1/playbook/calls` and `/{id}`. No search route exists yet.
 Recordings are not accepted yet. Changing the Rep (`PUT /v1/playbook/calls/{id}/rep`) rebuilds the Moments;
 `DELETE /v1/playbook/calls/{id}` and `POST .../restore` delete and restore a Call within 30 days. The
-Outcome re-tag job re-tags the Moments when a Deal's Outcome changes, found by discovery rather than by a
-message. The Call job shares `INGESTION_CONCURRENCY`, takes one job per
+Outcome re-tag job patches the Moment vectors' tags when a Deal's Outcome changes (no re-embedding), found by
+discovery rather than by a message; the vector adapter must support patch-by-id (`setAttributes`). The Call job shares `INGESTION_CONCURRENCY`, takes one job per
 Organization per pass and is gated by `WORKERS_ENABLED`; remove-all erases Calls before Deals.

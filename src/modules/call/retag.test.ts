@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import { callSchema } from 'tula-closeline-contract'
 import { personIn } from '~/modules/document/test-support'
 import { logged } from '~/modules/ingestion/test-support'
+import { momentVectorId } from './keys'
+import { cleanupPendingCalls } from './purge'
 import { RETAG_DEALS_PER_PASS, retagOutcomes } from './retag'
 import { type CallHarness, createCallHarness, transcriptText } from './test-support'
 
@@ -170,14 +172,15 @@ describe('the re-tag converges when things move under it', () => {
     const call = await readyCall(h, 'mid')
     const id = dealOf(h).id
     await h.setOutcome(id, 'won')
-    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    const patch = h.deps.vectors.setAttributes.bind(h.deps.vectors)
     let moved = false
-    h.deps.embedder.embed = async (...args) => {
+    h.deps.vectors.setAttributes = async (...args) => {
+      const missing = await patch(...args)
       if (!moved) {
         moved = true
         await h.setOutcome(id, 'lost')
       }
-      return embed(...args)
+      return missing
     }
 
     await pass(h)
@@ -222,18 +225,24 @@ describe('the re-tag converges when things move under it', () => {
     expect((await h.moments(first.id)).returnable).toBe(2)
   })
 
-  test('a Call deleted while it is re-tagged leaves no vectors behind', async () => {
+  test('a Call deleted while it is re-tagged is not recorded as current and is never returnable', async () => {
     const h = await createCallHarness()
     const call = await readyCall(h, 'del')
     await h.setOutcome(dealOf(h).id, 'won')
-    const upsert = h.deps.vectors.upsert.bind(h.deps.vectors)
-    h.deps.vectors.upsert = async (...args) => {
-      await upsert(...args)
+    const patch = h.deps.vectors.setAttributes.bind(h.deps.vectors)
+    h.deps.vectors.setAttributes = async (...args) => {
+      const missing = await patch(...args)
       expect((await h.send('DELETE', `/v1/playbook/calls/${call.id}`)).status).toBe(200)
+      return missing
     }
 
     await pass(h)
 
+    expect((await h.moments(call.id)).returnable).toBe(0)
+    expect((await h.readCall(call.id)).state).toBe('deleted')
+    // The cleanup of the deletion, not the re-tag, removes the vectors.
+    await h.deps.time.advance(10 * 60_000)
+    await cleanupPendingCalls(h.deps, h.organizationId, never)
     expect((await h.moments(call.id)).total).toBe(0)
   })
 
@@ -303,5 +312,94 @@ describe('the re-tag converges when things move under it', () => {
     expect(h.deps.database.deals(other)[0]).toMatchObject({ outcome_seq: 2 })
     expect(h.deps.database.deals(other)[0]?.retag_through ?? 0).toBe(0)
     void personIn
+  })
+})
+
+describe('the re-tag patches tags and never embeds', () => {
+  const snapshot = async (h: CallHarness, callId: string, organizationId = h.organizationId) =>
+    (
+      await h.deps.vectors.search(organizationId, {
+        vector: new Array<number>(h.deps.vectors.dimensions).fill(0.1),
+        topK: 100,
+        filter: { call_id: callId },
+      })
+    )
+      .map((hit) => ({ id: hit.id, score: hit.score }))
+      .sort((a, b) => a.id.localeCompare(b.id))
+
+  test('an Outcome flip on a Deal with several Calls costs only setAttributes calls and leaves the vectors unchanged', async () => {
+    const h = await createCallHarness()
+    const calls = [await readyCall(h, 'x'), await readyCall(h, 'y'), await readyCall(h, 'z')]
+    const before = await Promise.all(calls.map((c) => snapshot(h, c.id)))
+    const embeds: number[] = []
+    const writes: string[] = []
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    h.deps.embedder.embed = async (...args) => {
+      embeds.push(1)
+      return embed(...args)
+    }
+    const upsert = h.deps.vectors.upsert.bind(h.deps.vectors)
+    h.deps.vectors.upsert = async (...args) => {
+      writes.push('upsert')
+      return upsert(...args)
+    }
+    const patch = h.deps.vectors.setAttributes.bind(h.deps.vectors)
+    h.deps.vectors.setAttributes = async (...args) => {
+      writes.push('setAttributes')
+      return patch(...args)
+    }
+    await h.setOutcome(dealOf(h).id, 'won')
+
+    await pass(h)
+
+    expect(embeds).toEqual([])
+    expect(writes).toEqual(['setAttributes', 'setAttributes', 'setAttributes'])
+    expect(await Promise.all(calls.map((c) => snapshot(h, c.id)))).toEqual(before)
+    for (const call of calls) {
+      expect(await h.moments(call.id)).toMatchObject({ returnable: 2, outcomes: ['won'] })
+    }
+  })
+
+  test('a missing vector leaves the Call not current, creates nothing and is logged by ids only', async () => {
+    const h = await createCallHarness()
+    const call = await readyCall(h, 'gap')
+    const row = h.deps.database.calls(h.organizationId).find((c) => c.id === call.id)
+    await h.deps.vectors.delete(h.organizationId, [
+      momentVectorId(call.id, Number(row?.epoch), Number(row?.rep_seq), 0),
+    ])
+    await h.setOutcome(dealOf(h).id, 'won')
+
+    await pass(h)
+
+    expect((await h.moments(call.id)).total).toBe(1)
+    expect(row?.tagged_outcome_seq).toBeLessThan(dealOf(h).outcome_seq)
+    expect(dealOf(h).retag_through ?? 0).toBeLessThan(dealOf(h).outcome_seq)
+    expect((await h.readCall(call.id)).inSearch).toBe(false)
+    const line = logged(h.deps, 'a Call has Moment vectors missing; its tag stays pending')[0]
+    expect(line).toMatchObject({ callId: call.id, missing: 1 })
+  })
+
+  test('another Organization with the same Call ids loses nothing and gains nothing', async () => {
+    const h = await createCallHarness()
+    const call = await readyCall(h, 'mine')
+    const other = `org_${'8'.repeat(32)}`
+    const row = h.deps.database.calls(h.organizationId).find((c) => c.id === call.id)
+    await h.deps.vectors.upsert(other, [
+      {
+        id: momentVectorId(call.id, Number(row?.epoch), Number(row?.rep_seq), 0),
+        vector: new Array<number>(h.deps.vectors.dimensions).fill(0.2),
+        attributes: { call_id: call.id, outcome: 'open', outcome_seq: 0 },
+      },
+    ])
+    await h.setOutcome(dealOf(h).id, 'won')
+
+    await pass(h)
+
+    const hits = await h.deps.vectors.search(other, {
+      vector: new Array<number>(h.deps.vectors.dimensions).fill(0.2),
+      topK: 10,
+      filter: { call_id: call.id },
+    })
+    expect(hits.map((hit) => hit.attributes?.outcome)).toEqual(['open'])
   })
 })
