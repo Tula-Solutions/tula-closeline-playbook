@@ -1,0 +1,253 @@
+import { describe, expect, test } from 'bun:test'
+import { type Call, callSchema } from 'tula-closeline-contract'
+import {
+  CALL_JOB_CLAIM,
+  CALL_JOB_COMPLETE,
+  claimedCallJobs,
+  DEAL_SET_OUTCOME,
+} from 'tula-closeline-db'
+import { personIn } from '~/modules/document/test-support'
+import { ShuttingDown } from '~/modules/ingestion/runtime'
+import { logged } from '~/modules/ingestion/test-support'
+import { runCallJob } from './job'
+import { CALLS, type CallHarness, createCallHarness, transcriptText } from './test-support'
+
+const SECRET_LABEL = 'Zebediah Quillfeather'
+const SECRET_LINE = 'the launch codes are swordfish-7731'
+
+async function upload(h: CallHarness, text: string, options: { dealId?: string } = {}) {
+  const response = await h.uploadCall(text, options)
+  expect(response.status).toBe(201)
+  return callSchema.parse(await response.json())
+}
+
+/** The vectors of one Call, as the store returns them. */
+async function vectorsOf(h: CallHarness, callId: string, org: string = h.organizationId) {
+  return h.deps.vectors.search(org, {
+    vector: new Array<number>(h.deps.vectors.dimensions).fill(0.1),
+    topK: 100,
+    filter: { call_id: callId },
+  })
+}
+
+describe('processing a Transcript', () => {
+  test('makes the Call ready with its speakers and one tagged vector per Prospect turn', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText('x', 3))
+
+    expect(await h.runCalls()).toBe(1)
+
+    const ready = await h.readCall(call.id)
+    expect(ready).toMatchObject({
+      state: 'ready',
+      speakerLabels: ['Alex', 'Sam'],
+      failureReason: null,
+    })
+    expect(ready.inSearch).toBe(false)
+    const hits = await vectorsOf(h, call.id)
+    expect(hits).toHaveLength(3)
+    for (const hit of hits) {
+      expect(hit.attributes).toMatchObject({
+        call_id: call.id,
+        epoch: 0,
+        rep_seq: 0,
+        outcome: 'open',
+        outcome_seq: 0,
+      })
+    }
+    expect(new Set(hits.map((hit) => hit.id)).size).toBe(3)
+    // The embedded text is by role, never a speaker label.
+    const embedded = h.deps.embedder.calls.flatMap((c) => c.texts).join('\n')
+    expect(embedded).toContain('Prospect')
+    expect(embedded).not.toContain('Sam:')
+    expect(h.deps.embedder.calls.every((c) => c.purpose === 'document')).toBe(true)
+  })
+
+  test('a Deal that is already won is tagged won, and the Call is in search', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText('won'), { dealId: 'DEAL-W' })
+    await h.deps.database.scope(h.organizationId, (run) =>
+      run(DEAL_SET_OUTCOME, [
+        h.organizationId,
+        h.deps.database.deals(h.organizationId)[0]?.id,
+        'won',
+      ])
+    )
+
+    await h.runCalls()
+
+    const hits = await vectorsOf(h, call.id)
+    expect(hits[0]?.attributes).toMatchObject({ outcome: 'won' })
+    expect((await h.readCall(call.id)).inSearch).toBe(true)
+  })
+
+  const failures: [label: string, text: string, rep: string, reason: string][] = [
+    ['one speaker', 'Alex: hello\nAlex: again\n', 'Alex', 'too_few_speakers'],
+    ['a Rep label not in the file', transcriptText(), 'Nobody', 'rep_label_not_found'],
+    ['no turns at all', '   \n\n', 'Alex', 'no_turns'],
+  ]
+  test.each(failures)('%s fails the Call with %p', async (_label, text, rep, reason) => {
+    const h = await createCallHarness()
+    const response = await h.uploadCall(text, {
+      rep: JSON.stringify({ by: 'speaker', label: rep }),
+    })
+    // An empty-looking file is refused at the edge; the others reach the job.
+    if (response.status !== 201) {
+      expect(response.status).toBe(400)
+      return
+    }
+    const call = callSchema.parse(await response.json())
+
+    await h.runCalls()
+
+    const failed = await h.readCall(call.id)
+    expect(failed).toMatchObject({ state: 'failed', failureReason: reason })
+    expect(await vectorsOf(h, call.id)).toHaveLength(0)
+  })
+
+  test('more than 20 speakers fails too_many_speakers and keeps no labels', async () => {
+    const h = await createCallHarness()
+    const lines = Array.from({ length: 21 }, (_, i) => `Speaker${i}: hello number ${i}`)
+    const call = await upload(h, `${lines.join('\n')}\n`, {})
+    await h.runCalls()
+    const failed = await h.readCall(call.id)
+    expect(failed).toMatchObject({ state: 'failed', failureReason: 'too_many_speakers' })
+    expect(failed.speakerLabels).toEqual([])
+  })
+
+  test('a transient embedder failure retries, then succeeds, and the retry does not duplicate vectors', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText('retry', 2))
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    let failures = 1
+    h.deps.embedder.embed = async (...args) => {
+      if (failures-- > 0) {
+        throw new Error('model unavailable')
+      }
+      return embed(...args)
+    }
+
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('processing')
+    await h.deps.time.advance(20 * 60 * 1000)
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    expect(await vectorsOf(h, call.id)).toHaveLength(2)
+  })
+
+  test('the last allowed attempt ends the Call processing_failed', async () => {
+    const h = await createCallHarness({ env: { INGESTION_MAX_ATTEMPTS: '1' } })
+    const call = await upload(h, transcriptText())
+    h.deps.embedder.embed = async () => {
+      throw new Error('model unavailable')
+    }
+    await h.runCalls()
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'processing_failed',
+    })
+  })
+
+  test('a crash after the vectors were written resumes by overwriting, never duplicating', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText('crash', 3))
+    // The first run writes its vectors, then the completion fails once.
+    h.deps.database.failNext(CALL_JOB_COMPLETE, new Error('connection reset'))
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('processing')
+    expect(await vectorsOf(h, call.id)).toHaveLength(3)
+
+    await h.deps.time.advance(20 * 60 * 1000)
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    expect(await vectorsOf(h, call.id)).toHaveLength(3)
+  })
+
+  test('a lease that passed to another claim writes nothing more and fails nothing', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText())
+    const base = h.deps.objects.get.bind(h.deps.objects)
+    h.deps.objects.get = async (...args) => {
+      const stored = await base(...args)
+      const job = h.deps.database.callJobs(h.organizationId)[0]
+      if (job !== undefined) {
+        job.claim_token = crypto.randomUUID()
+      }
+      return stored
+    }
+
+    await h.runCalls()
+
+    expect(await vectorsOf(h, call.id)).toHaveLength(0)
+    expect((await h.readCall(call.id)).state).toBe('processing')
+  })
+
+  test('shutdown gives the job back, due at once', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText())
+    const claimed = await h.deps.database.scope(h.organizationId, (run) =>
+      run(CALL_JOB_CLAIM, [h.organizationId, 1, 60_000, null])
+    )
+    const { jobs } = claimedCallJobs(claimed.rows as never)
+    const job = jobs[0]
+    expect(job).toBeDefined()
+
+    const outcome = await runCallJob(
+      h.deps,
+      h.organizationId,
+      job as NonNullable<typeof job>,
+      AbortSignal.abort(new ShuttingDown())
+    )
+
+    expect(outcome).toBe('released')
+    expect(h.deps.database.callJobs(h.organizationId)[0]).toMatchObject({ state: 'queued' })
+    expect(call.id).toBeDefined()
+  })
+
+  test('a second Organization cannot see the vectors and its own Call is untouched', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText())
+    await h.runCalls()
+    const other = `org_${'8'.repeat(32)}`
+    expect(await vectorsOf(h, call.id, other)).toHaveLength(0)
+    const stranger = personIn(other, 'owner')
+    expect((await h.send('GET', `${CALLS}/${call.id}`, { as: stranger })).status).toBe(404)
+  })
+
+  test('each pass claims one job per Organization', async () => {
+    const h = await createCallHarness()
+    await upload(h, transcriptText('a'), { dealId: 'D-1' })
+    await upload(h, transcriptText('b'), { dealId: 'D-2' })
+    await upload(h, transcriptText('c'), { dealId: 'D-3' })
+    expect(await h.deps.workers.ingestion.runPass()).toBe(1)
+    expect(await h.deps.workers.ingestion.runPass()).toBe(1)
+    expect(await h.runCalls()).toBe(1)
+    const states = (await h.listAll()).map((c: Call) => c.state)
+    expect(states.every((state) => state === 'ready')).toBe(true)
+  })
+
+  test('logs hold no Transcript text, speaker label or deal id', async () => {
+    const h = await createCallHarness()
+    const text = `${SECRET_LABEL}: ${SECRET_LINE}\nSam: tell me more about it\n`
+    const response = await h.uploadCall(text, {
+      dealId: 'ACME-SECRET-DEAL-9',
+      rep: JSON.stringify({ by: 'speaker', label: SECRET_LABEL }),
+    })
+    expect(response.status).toBe(201)
+    h.deps.database.failNext(CALL_JOB_COMPLETE, new Error(`broke on ${SECRET_LINE}`))
+    await h.runCalls()
+    await h.deps.time.advance(20 * 60 * 1000)
+    await h.runCalls()
+
+    const everything = [
+      ...h.deps.logLines,
+      ...h.deps.reported.map((r) => JSON.stringify(r.context)),
+    ].join('\n')
+    for (const secret of [SECRET_LABEL, 'swordfish', 'ACME-SECRET-DEAL-9', 'call.txt']) {
+      expect(everything).not.toContain(secret)
+    }
+    expect(logged(h.deps, 'a Call job ended').length).toBeGreaterThan(0)
+  })
+})

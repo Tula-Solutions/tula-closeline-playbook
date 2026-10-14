@@ -3,11 +3,6 @@ export function callObjectKey(callId: string, extension: string): string {
   return `calls/${callId}/original${extension}`
 }
 
-/** The object key of the Moments of one build: the text behind each vector, by Moment number. */
-export function momentsKey(callId: string, epoch: number, repSeq: number): string {
-  return `calls/${callId}/moments-${epoch}-${repSeq}.json`
-}
-
 /** The prefix under which every object of one Call lives. */
 export function callPrefix(callId: string): string {
   return `calls/${callId}/`

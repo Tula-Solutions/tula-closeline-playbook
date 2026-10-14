@@ -1,5 +1,9 @@
 import {
+  CALL_JOB_CLAIM,
+  CALL_JOB_GIVE_UP_SPENT,
+  type CallJobClaimRow,
   type ClaimedIngestionJob,
+  claimedCallJobs,
   claimedJobs,
   DEAL_IMPORT_CLAIM,
   DEAL_IMPORT_GIVE_UP_SPENT,
@@ -8,6 +12,7 @@ import {
   type IngestionJobClaimRow,
 } from 'tula-closeline-db'
 import { isLockTimeout } from '~/adapters/postgres/retry'
+import { runCallJob } from '~/modules/call/job'
 import { claimedImports, runImport } from '~/modules/deal-import/job'
 import { runJob } from '~/modules/ingestion/job'
 import {
@@ -209,6 +214,68 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     return claimed.length
   }
 
+  /**
+   * Claims one of the Organization's due Call jobs when the one pool has a free slot, and starts it
+   * (one per Organization per pass, so slots spread across Organizations; a Transcript job embeds
+   * and writes many vectors). Returns the number started. Jobs that used every attempt are failed
+   * and logged.
+   */
+  async function claimAndRunCalls(
+    organizationId: string,
+    mine: Set<Promise<void>>
+  ): Promise<number> {
+    let ran = 0
+    for (let round = 0; round < MAX_EMPTY_ROUNDS && !shutdown.signal.aborted; round++) {
+      await freeSlot()
+      if (shutdown.signal.aborted) {
+        break
+      }
+      let rows: readonly CallJobClaimRow[]
+      try {
+        rows = (
+          await inTransaction(deps, organizationId, async (run) => {
+            await run(CLAIM_LOCK_TIMEOUT_SQL, [])
+            return run(CALL_JOB_CLAIM, [organizationId, 1, env.INGESTION_LEASE_MS, null])
+          })
+        ).rows as unknown as CallJobClaimRow[]
+      } catch (error) {
+        if (isLockTimeout(error)) {
+          deps.logger.debug('a Call job claim waited too long for a lock', { organizationId })
+          break
+        }
+        throw error
+      }
+      const { jobs, cancelled, lost } = claimedCallJobs(rows)
+      if (jobs.length > 0) {
+        for (const job of jobs) {
+          launchTask(
+            'calls',
+            organizationId,
+            () => runCallJob(deps, organizationId, job, shutdown.signal),
+            mine
+          )
+        }
+        ran += jobs.length
+        break
+      }
+      if (cancelled === 0 && lost === 0) {
+        break
+      }
+    }
+    if (!shutdown.signal.aborted) {
+      const spent = await inTransaction(deps, organizationId, (run) =>
+        run(CALL_JOB_GIVE_UP_SPENT, [organizationId, GIVE_UP_BATCH])
+      )
+      if (spent.rows.length > 0) {
+        deps.logger.error('Call jobs reached the database attempt bound', {
+          organizationId,
+          jobs: spent.rows.length,
+        })
+      }
+    }
+    return ran
+  }
+
   /** One pass that waits for the jobs it started (tests and one-shot runs); the loop does not. */
   async function runPass(): Promise<number> {
     const mine = new Set<Promise<void>>()
@@ -240,6 +307,10 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
         if (!done.has(organizationId)) {
           ran += await claimAndRun(organizationId, mine)
         }
+      })
+      // Call jobs share the pool; one claim per Organization per pass keeps one Organization from taking every slot.
+      await forEachOrganization(deps, 'call_jobs', shutdown.signal, async (organizationId) => {
+        ran += await claimAndRunCalls(organizationId, mine)
       })
     }
     // Imports use no embedder, OCR or vector store, so their gate is their own.

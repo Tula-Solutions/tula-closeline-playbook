@@ -368,26 +368,28 @@ async function chunkStep(c: JobContext): Promise<void> {
  * model or dimension that differs from the recorded one is refused by the database; the job then
  * fails, loudly, and nothing is re-indexed.
  */
-async function ensureIndexSettings(c: JobContext): Promise<void> {
-  const { deps } = c
+export async function ensureIndexSettings(
+  deps: PipelineDeps,
+  organizationId: string
+): Promise<void> {
   const { embedder } = deps
   if (deps.vectors.dimensions !== embedder.dimensions) {
     reportWorkerError(
       deps,
       new Error('the embedder and the vector store disagree on the dimension count'),
-      { worker: 'ingestion', organizationId: c.organizationId }
+      { worker: 'ingestion', organizationId: organizationId }
     )
     throw new PermanentFailure('processing_failed')
   }
   for (let attempt = 0; attempt < SETTINGS_ATTEMPTS; attempt++) {
-    const outcome = await inTransaction(deps, c.organizationId, async (run) => {
+    const outcome = await inTransaction(deps, organizationId, async (run) => {
       const upsert = (
-        await run(INDEX_SETTINGS_UPSERT, [c.organizationId, embedder.model, embedder.dimensions])
+        await run(INDEX_SETTINGS_UPSERT, [organizationId, embedder.model, embedder.dimensions])
       ).rows[0]
       if (upsert === undefined) {
         return 'refused' as const
       }
-      const mark = (await run(INDEX_VECTORS_MARK, [c.organizationId])).rows[0]
+      const mark = (await run(INDEX_VECTORS_MARK, [organizationId])).rows[0]
       if (mark === undefined) {
         return 'again' as const
       }
@@ -404,7 +406,7 @@ async function ensureIndexSettings(c: JobContext): Promise<void> {
       reportWorkerError(
         deps,
         new Error("the embedder does not match the Organization's recorded index settings"),
-        { worker: 'ingestion', organizationId: c.organizationId }
+        { worker: 'ingestion', organizationId: organizationId }
       )
       throw new PermanentFailure('processing_failed')
     }
@@ -447,7 +449,7 @@ async function embedStep(c: JobContext): Promise<void> {
   if (c.progress.chunkCount !== null && c.progress.chunkCount !== chunks.length) {
     throw new PermanentFailure('processing_failed')
   }
-  await ensureIndexSettings(c)
+  await ensureIndexSettings(deps, c.organizationId)
   for (let start = c.progress.chunksDone; start < chunks.length; start += MAX_EMBED_TEXTS) {
     c.signal.throwIfAborted()
     const batch = chunks.slice(start, start + MAX_EMBED_TEXTS)
