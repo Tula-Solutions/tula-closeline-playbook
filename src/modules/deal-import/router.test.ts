@@ -320,6 +320,54 @@ describe('the cap on queued imports', () => {
     expect(h.deps.database.statements.length).toBeGreaterThan(attempts)
   })
 
+  test('the pre-check answers busy before any byte is written to the object store', async () => {
+    const h = await createImportHarness()
+    for (let i = 0; i < MAX_QUEUED_DEAL_IMPORTS; i++) {
+      await h.uploadCsv(csv([`D${i},open,,,,`]))
+    }
+    const base = h.deps.objects.put.bind(h.deps.objects)
+    let puts = 0
+    let deletes = 0
+    h.deps.objects.put = async (...args) => {
+      puts++
+      return base(...args)
+    }
+    const baseDelete = h.deps.objects.delete.bind(h.deps.objects)
+    h.deps.objects.delete = async (...args) => {
+      deletes++
+      return baseDelete(...args)
+    }
+
+    const refused = await h.uploadCsv(csv(['SIXTH,open,,,,']))
+
+    expect(refused.status).toBe(429)
+    expect(await errorCode(refused)).toBe('deal_import.busy')
+    expect(puts).toBe(0)
+    expect(deletes).toBe(0)
+  })
+
+  test('a race the pre-check misses is still refused by the insert, and the file it wrote is removed', async () => {
+    const h = await createImportHarness()
+    for (let i = 0; i < MAX_QUEUED_DEAL_IMPORTS; i++) {
+      await h.uploadCsv(csv([`D${i},open,,,,`]))
+    }
+    const objects = await h.objectKeys()
+    // The pre-check sees no imports, as if the others were queued between it and the insert.
+    const scope = h.deps.scope
+    h.deps.scope = (organizationId, work) =>
+      scope(organizationId, (run) =>
+        work(async (text, params) =>
+          text === DEAL_IMPORT_LIST ? { rows: [], rowCount: 0 } : run(text, params)
+        )
+      )
+
+    const refused = await h.uploadCsv(csv(['SIXTH,open,,,,']))
+
+    expect(refused.status).toBe(429)
+    expect(await h.objectKeys()).toEqual(objects)
+    expect(h.deps.database.imports(h.organizationId)).toHaveLength(MAX_QUEUED_DEAL_IMPORTS)
+  })
+
   test('the refused key is not consumed, a finished import frees a place, and another Organization has its own five', async () => {
     const h = await createImportHarness()
     for (let i = 0; i < MAX_QUEUED_DEAL_IMPORTS; i++) {

@@ -193,6 +193,28 @@ describe('an interrupted erasure is finished by the next request', () => {
     await expectNothingLeft(h)
   })
 
+  test('a connection the driver lost on its own side (no SQLSTATE) answers 503, and the repeat reaches 200', async () => {
+    const h = await seeded()
+    h.deps.database.failNext(
+      DEAL_IMPORT_PURGE_BATCH,
+      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    )
+
+    const first = await removeAll(h, h.organizationId)
+
+    expect(first.status).toBe(503)
+    expect(first.headers.get('retry-after')).not.toBeNull()
+    expect((await untilDone(h)).at(-1)).toBe(200)
+    await expectNothingLeft(h)
+  })
+
+  test('a protocol violation (08P01) stays an error', async () => {
+    const h = await seeded()
+    h.deps.database.failNext(DEAL_IMPORT_PURGE_BATCH, postgresError('08P01'))
+
+    expect((await removeAll(h, h.organizationId)).status).toBe(500)
+  })
+
   test('an object store that is unavailable answers 503, and the repeat reaches 200', async () => {
     const h = await seeded()
     const original = h.deps.objects.delete.bind(h.deps.objects)
