@@ -14,6 +14,7 @@ import {
   type ListDealImportsResponse,
   MAX_DEAL_IMPORT_BYTES,
   MAX_DEAL_IMPORT_ROWS,
+  MAX_QUEUED_DEAL_IMPORTS,
   normaliseMediaType,
   SALES_HISTORY_READ_ROLES,
 } from 'tula-closeline-contract'
@@ -112,6 +113,9 @@ export function assertHeader(bytes: Uint8Array): void {
   }
 }
 
+/** How many of the newest imports the pre-check reads: the db clamps a page to 100, and an unfinished import is nearly always among the newest. */
+const QUEUE_PRECHECK_PAGE = 100
+
 /** What the upload transaction decided. */
 type UploadOutcome =
   | { kind: 'replay'; status: number; response: unknown }
@@ -132,7 +136,9 @@ export type ImportUploadInput = {
  * Stores one CSV and queues its import. Owner and Admin only. The order, and why:
  *
  * 1. Check size, type and the header on the bytes. Nothing is stored yet.
- * 2. One transaction: claim the idempotency key, then insert the import row (it takes no lock that
+ * 2. One transaction: claim the idempotency key, refuse with `deal_import.busy` from a cheap read of the
+ *    newest imports before any file is written (the insert's own atomic check stays the real guard),
+ *    then insert the import row (it takes no lock that
  *    another import waits for). When the insert is the next step and the file is not stored, the
  *    transaction rolls back with `ObjectRequired`.
  * 3. An upload-attempt record is committed, so the orphan sweep can find an object whose outcome is
@@ -181,6 +187,15 @@ export async function upload(
       return reservation
     }
     if (!stored) {
+      // Refuse before the file is written. A cheap read of the newest imports, so a full queue costs
+      // no 10 MB write; it can miss a race, which the insert's own atomic check below settles.
+      const newest = (
+        await run(DEAL_IMPORT_LIST, [organizationId, 'infinity', '', QUEUE_PRECHECK_PAGE])
+      ).rows
+      const unfinished = newest.filter((r) => r.state === 'uploaded' || r.state === 'processing')
+      if (unfinished.length >= MAX_QUEUED_DEAL_IMPORTS) {
+        throw failure('deal_import.busy')
+      }
       throw new ObjectRequired()
     }
     const inserted = await run(DEAL_IMPORT_INSERT, [
@@ -191,6 +206,10 @@ export async function upload(
       input.bytes.byteLength,
     ])
     const row = inserted.rows[0]
+    if (row?.result === 'busy') {
+      // Rolls back the key with the rest; the catch below removes the file this attempt wrote.
+      throw failure('deal_import.busy')
+    }
     if (row === undefined) {
       throw new Error('A Deal import the upload just wrote could not be read back')
     }

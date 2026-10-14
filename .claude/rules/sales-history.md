@@ -51,8 +51,11 @@ paths:
   erases more with `DEAL_IMPORT_ERASE_BATCH` one at a time and finishes each at once, at most 5
   imports per request, before it erases Deals. Any failure leaves the import listed, so the repeat
   finishes it; never add a step that loses the id (db README, v0.16.0 section).
-- A blank record in the middle of the file is reported as a rejected `wrong_column_count` row, since
-  the report must be contiguous; trailing blank records are dropped.
+- A blank record in the middle of the file is reported as a rejected `blank_row` row (no deal id),
+  since the report must be contiguous; the contract's `parseCsv` drops trailing blank records.
+- A transient failure in remove-all (`isTransientFailure`: a database connection or serialization
+  error, an object store `storage.unavailable`) answers 503 `server.unavailable` with `Retry-After`;
+  any other failure stays a 500. It never answers 200 while data remains.
 - A CSV whose delete failed after its import ended stays until the orphan sweep next visits the
   Organization. That sweep is scheduled by upload attempts, so it can wait for a later upload; remove-all
   also deletes it.

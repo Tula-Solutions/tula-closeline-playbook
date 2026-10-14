@@ -466,6 +466,12 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       amount: d.amount,
       currency: d.currency,
       appeared_in_import: d.appeared_in_import,
+      call_count: state.calls.filter(
+        (c) =>
+          c.organization_id === d.organization_id &&
+          c.deal_record_id === d.id &&
+          c.state !== 'deleted'
+      ).length,
       created_at: pgTimestampUs(d.created_at_us),
       updated_at: pgTimestamp(d.updated_at),
     })

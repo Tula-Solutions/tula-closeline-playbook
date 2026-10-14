@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { dealImportSchema } from 'tula-closeline-contract'
 import { DEAL_IMPORT_OBJECT_REMOVED, DEAL_IMPORT_PURGE_BATCH } from 'tula-closeline-db'
+import { StorageError } from 'tula-closeline-kit'
 import { postgresError } from '~/adapters/memory/playbook-database'
 import { INTERNAL_SECRET, newKey } from '~/modules/document/test-support'
 import { newOrganizationId } from '~/testing'
@@ -161,7 +162,7 @@ describe('an interrupted erasure is finished by the next request', () => {
 
   test('a failure recording that the file was removed', async () => {
     const h = await seeded()
-    h.deps.database.failNext(DEAL_IMPORT_OBJECT_REMOVED, postgresError('08006'))
+    h.deps.database.failNext(DEAL_IMPORT_OBJECT_REMOVED, new Error('the schema is wrong'))
 
     const first = await removeAll(h, h.organizationId)
     expect(first.status).toBe(500)
@@ -169,6 +170,83 @@ describe('an interrupted erasure is finished by the next request', () => {
 
     expect(statuses.at(-1)).toBe(200)
     await expectNothingLeft(h)
+  })
+
+  test.each([
+    ['a dropped database connection', '08006'],
+    ['a server shutdown', '57P01'],
+    ['a serialization failure that outlasted its retries', '40001'],
+  ])('%s answers 503 with Retry-After, and the repeat reaches 200', async (_label, code) => {
+    const h = await seeded()
+    h.deps.database.failNext(DEAL_IMPORT_OBJECT_REMOVED, postgresError(code))
+    h.deps.database.failNext(DEAL_IMPORT_PURGE_BATCH, postgresError(code))
+
+    const first = await removeAll(h, h.organizationId)
+
+    expect(first.status).toBe(503)
+    expect(first.headers.get('retry-after')).not.toBeNull()
+    expect(((await first.json()) as { error: { code: string } }).error.code).toBe(
+      'server.unavailable'
+    )
+    const statuses = await untilDone(h)
+    expect(statuses.at(-1)).toBe(200)
+    await expectNothingLeft(h)
+  })
+
+  test('a connection the driver lost on its own side (no SQLSTATE) answers 503, and the repeat reaches 200', async () => {
+    const h = await seeded()
+    h.deps.database.failNext(
+      DEAL_IMPORT_PURGE_BATCH,
+      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+    )
+
+    const first = await removeAll(h, h.organizationId)
+
+    expect(first.status).toBe(503)
+    expect(first.headers.get('retry-after')).not.toBeNull()
+    expect((await untilDone(h)).at(-1)).toBe(200)
+    await expectNothingLeft(h)
+  })
+
+  test('a protocol violation (08P01) stays an error', async () => {
+    const h = await seeded()
+    h.deps.database.failNext(DEAL_IMPORT_PURGE_BATCH, postgresError('08P01'))
+
+    expect((await removeAll(h, h.organizationId)).status).toBe(500)
+  })
+
+  test('an object store that is unavailable answers 503, and the repeat reaches 200', async () => {
+    const h = await seeded()
+    const original = h.deps.objects.delete.bind(h.deps.objects)
+    let failures = 1
+    h.deps.objects.delete = async (...args) => {
+      if (failures-- > 0) {
+        throw new StorageError('storage.unavailable', 'the store did not answer')
+      }
+      return original(...args)
+    }
+
+    const first = await removeAll(h, h.organizationId)
+
+    expect(first.status).toBe(503)
+    expect(first.headers.get('retry-after')).not.toBeNull()
+    const statuses = await untilDone(h)
+    expect(statuses.at(-1)).toBe(200)
+    await expectNothingLeft(h)
+  })
+
+  test('a store that refuses for good stays an error, never 200 while data remains', async () => {
+    const h = await seeded()
+    h.deps.objects.delete = async () => {
+      throw new StorageError('storage.rejected', 'access denied')
+    }
+
+    const first = await removeAll(h, h.organizationId)
+    const second = await removeAll(h, h.organizationId)
+
+    expect(first.status).toBe(500)
+    expect(second.status).toBe(500)
+    expect(h.deps.database.imports(h.organizationId).length).toBeGreaterThan(0)
   })
 
   test('a failure deleting the file right after the import was erased', async () => {

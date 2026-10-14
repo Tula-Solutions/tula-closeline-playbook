@@ -6,6 +6,7 @@ import {
   type Role,
   type UserId,
 } from 'tula-closeline-contract'
+import { StorageError } from 'tula-closeline-kit'
 import type { Run } from '~/adapters/postgres/processed-store'
 import { isLockTimeout, postgresErrorOf, retryTransaction } from '~/adapters/postgres/retry'
 import type { Container } from '~/container'
@@ -95,4 +96,59 @@ export async function mappingBadCursor<T>(work: () => Promise<T>): Promise<T> {
     }
     throw error
   }
+}
+
+/** SQLSTATEs that a later attempt can cure: serialization, deadlock, a lost or restarting server, too many connections, and these connection exceptions (not 08P01, a protocol violation a retry will not fix). */
+const TRANSIENT_SQLSTATES = new Set([
+  '08000',
+  '08001',
+  '08003',
+  '08006',
+  '40001',
+  '40P01',
+  '57P01',
+  '57P02',
+  '57P03',
+  '53300',
+])
+
+/** Node socket error codes the driver passes on, with no SQLSTATE, when its own connection is lost or cannot be made. */
+const TRANSIENT_SOCKET_CODES = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+])
+
+/** The messages node-postgres and its pool give, with no code at all, to a connection lost or not obtained in time (pg `lib/client.js`, pg-pool `index.js`). The db library's pool exposes no error class, so the text is all there is. */
+const TRANSIENT_DRIVER_MESSAGES = [
+  'Connection terminated unexpectedly',
+  'Connection terminated due to connection timeout',
+  'timeout exceeded when trying to connect',
+  'Client has encountered a connection error and is not queryable',
+]
+
+/** How deep a `cause` chain is followed. */
+const MAX_CAUSE_DEPTH = 8
+
+/** Whether a failure is one a repeat of the request can cure: a lost database connection (a listed SQLSTATE, a socket error code or a driver pool message, anywhere in the cause chain), an exhausted retry of a serialization failure, or an object store that did not answer. */
+export function isTransientFailure(error: unknown): boolean {
+  if (error instanceof StorageError) {
+    return error.code === 'storage.unavailable'
+  }
+  let current: unknown = error
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current instanceof Error; depth++) {
+    const code: unknown = (current as { code?: unknown }).code
+    if (typeof code === 'string') {
+      if (TRANSIENT_SQLSTATES.has(code) || TRANSIENT_SOCKET_CODES.has(code)) {
+        return true
+      }
+    } else if (TRANSIENT_DRIVER_MESSAGES.includes(current.message)) {
+      return true
+    }
+    current = current.cause
+  }
+  return false
 }

@@ -160,7 +160,7 @@ function yieldToEventLoop(): Promise<void> {
   return new Promise<void>((resolve) => setImmediate(resolve))
 }
 
-/** The CSV, parsed: the records after the header with trailing blank records dropped, and whether the header has `name`. */
+/** The CSV, parsed: the records after the header (the contract's reader has dropped trailing blank records), and whether the header has `name`. */
 export type ParsedFile = { records: string[][]; hasName: boolean }
 
 /**
@@ -189,11 +189,8 @@ export function parseImportFile(body: Uint8Array): ParsedFile {
   if (checked === undefined || !checked.ok) {
     throw new ImportFailure('unreadable')
   }
-  // A blank line is a record the report cannot hold (it must be contiguous), so blank records at
-  // the end are not rows at all; one in the middle is reported as a row with the wrong column count.
-  while (records.length > 0 && isBlankCsvRecord(records[records.length - 1] ?? [''])) {
-    records.pop()
-  }
+  // `parseCsv` has already dropped a trailing run of blank records; an interior one stays a record
+  // and `judge` reports it as `blank_row`, so the report has no gap in its row numbers.
   return { records, hasName: checked.hasName }
 }
 
@@ -238,7 +235,7 @@ function dealIdOfRejected(cells: readonly string[], reason: string): string | nu
 /** Judges one record with the contract's row check; the result carries the deal id and the parsed cells, never the raw record. */
 export function judge(rowNumber: number, cells: readonly string[], hasName: boolean): SentRow {
   if (isBlankCsvRecord(cells)) {
-    return blank(rowNumber, 'wrong_column_count', null)
+    return blank(rowNumber, 'blank_row', null)
   }
   const checked = checkDealImportRow(cells, hasName)
   if (!checked.ok) {

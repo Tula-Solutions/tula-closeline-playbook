@@ -14,6 +14,7 @@ import {
   DEAL_IMPORT_OBJECT_REMOVED,
   DEAL_IMPORT_PURGE_BATCH,
   DEAL_IMPORT_RETRY,
+  DEAL_IMPORT_ROW_REASONS,
   DEAL_IMPORT_ROWS_LIST,
   DEAL_IMPORT_ROWS_LIST_BY_RESULT,
   ORGANIZATION_REMOVAL_STATUS,
@@ -94,6 +95,58 @@ const apply = (
       changed: result.rows.filter((r) => r.kind === 'outcome_changed'),
     }
   })
+
+describe('the report refuses what the database constraints refuse', () => {
+  test('an unknown reason is refused and nothing is written', async () => {
+    const { db } = setup()
+    const token = await claimed(db)
+
+    const attempt = apply(db, token, [{ row_number: 2, deal_id: null, reason: 'no_such_reason' }])
+
+    await expect(attempt).rejects.toMatchObject({
+      code: '23514',
+      message: expect.stringContaining('deal_import_rows_reason_known'),
+    })
+    expect(db.importRows(ORG, imp(1))).toEqual([])
+  })
+
+  // Follows the installed db library: refused under v0.18.0, accepted once its list has blank_row.
+  test('blank_row, with no deal id, is accepted exactly when the db library lists it', async () => {
+    const { db } = setup()
+    const token = await claimed(db)
+    const listed = (DEAL_IMPORT_ROW_REASONS as readonly string[]).includes('blank_row')
+
+    const attempt = apply(db, token, [{ row_number: 2, deal_id: null, reason: 'blank_row' }])
+
+    if (listed) {
+      await attempt
+      expect(db.importRows(ORG, imp(1))).toHaveLength(1)
+    } else {
+      await expect(attempt).rejects.toMatchObject({ code: '23514' })
+    }
+  })
+
+  test('a null deal id is refused for a reason that is not an unusable-id one', async () => {
+    const { db } = setup()
+    const token = await claimed(db)
+
+    const attempt = apply(db, token, [{ row_number: 2, deal_id: null, reason: 'invalid_name' }])
+
+    await expect(attempt).rejects.toMatchObject({
+      code: '23514',
+      message: expect.stringContaining('deal_import_rows_deal_id_missing_only_when_unusable'),
+    })
+  })
+
+  test.each(['invalid_deal_id', 'wrong_column_count'])('%s may have no deal id', async (reason) => {
+    const { db } = setup()
+    const token = await claimed(db)
+
+    await apply(db, token, [{ row_number: 2, deal_id: null, reason }])
+
+    expect(db.importRows(ORG, imp(1))).toHaveLength(1)
+  })
+})
 
 describe('the apply statement requires the Organization upload lock', () => {
   test('without QUOTA_LOCK in the same transaction it raises the lock error and writes nothing', async () => {

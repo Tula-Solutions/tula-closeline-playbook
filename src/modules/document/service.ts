@@ -52,6 +52,7 @@ import {
   assertRole,
   type CallContext,
   failure,
+  isTransientFailure,
   raisedBeforeCommit,
   transaction,
 } from '~/modules/service-kit'
@@ -677,6 +678,33 @@ export async function restore(
 export type RemoveAllResult = { organizationId: OrganizationId; status: 'removed' }
 
 /**
+ * Remove-all, with a transient failure (a database connection or serialization error, an object
+ * store that did not answer) turned into 503 `server.unavailable` with `Retry-After`. Every step
+ * is safe to repeat, so the repeat finishes the erase; a failure that will not go away propagates
+ * as an error, and 200 is only ever answered once nothing remains.
+ */
+export async function removeAll(
+  deps: DocumentDeps,
+  organizationId: OrganizationId,
+  requestId: RequestId,
+  idempotencyKey: string,
+  options: { publishBudgetMs?: number } = {}
+): Promise<RemoveAllResult> {
+  try {
+    return await removeAllOnce(deps, organizationId, requestId, idempotencyKey, options)
+  } catch (error) {
+    if (isTransientFailure(error) && !(error instanceof RetryAfterError)) {
+      deps.logger.warn('remove-all hit a transient failure and asks to be repeated', {
+        organizationId,
+        requestId,
+      })
+      throw new RetryAfterError(ERRORS['server.unavailable'], REMOVAL_RETRY_AFTER_SECONDS)
+    }
+    throw error
+  }
+}
+
+/**
  * The internal remove-all call (ADR 0016, offboarding and erasure). It does bounded work, never
  * work that grows with the Organization: up to {@link ERASE_BATCHES_PER_REQUEST} batches of
  * {@link ERASE_BATCH_SIZE} documents are barred from restore and made due for purge, the vector
@@ -688,7 +716,7 @@ export type RemoveAllResult = { organizationId: OrganizationId; status: 'removed
  * repeats the call until it answers 200; each repeat erases more and re-reads the end state. The
  * idempotency key is stored only with the final answer, so a repeat after 503 is a new attempt.
  */
-export async function removeAll(
+async function removeAllOnce(
   deps: DocumentDeps,
   organizationId: OrganizationId,
   requestId: RequestId,
