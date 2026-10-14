@@ -23,8 +23,18 @@ import {
   CALL_PURGE_COMPLETE,
   CALL_PURGE_MAX_ATTEMPTS,
   CALL_REQUEUE,
+  CALL_RESTORE,
   CALL_RESTORE_FOR_UPLOAD,
+  CALL_RETAGGED,
+  CALL_SET_REP,
+  CALL_SOFT_DELETE,
+  CALL_USAGE,
   DEAL_ERASE_BATCH,
+  DEAL_LIST_PENDING_RETAG,
+  DEAL_RETAG_BATCH,
+  DEAL_RETAG_DONE,
+  DEAL_RETAG_LOCK,
+  DEAL_SET_OUTCOME,
   ORGANIZATION_REMOVAL_STATUS,
   ORGANIZATION_REMOVE_REST,
   QUOTA_LOCK,
@@ -394,7 +404,8 @@ describe('the job statements', () => {
     await db.scope(ORG, (run) =>
       run(CALL_JOB_RECORD, [ORG, id, token, null, null, labels(['Rep', 'Prospect']), 60_000])
     )
-    Object.assign(db.deals(ORG)[0] ?? {}, { outcome: 'won', outcome_seq: 3 })
+    // retag_through 3: the Deal was fully re-tagged at its sequence, so a Call finishing at 2 lowers it.
+    Object.assign(db.deals(ORG)[0] ?? {}, { outcome: 'won', outcome_seq: 3, retag_through: 3 })
 
     const done = await db.scope(ORG, (run) => run(CALL_JOB_COMPLETE, [ORG, id, token, 2]))
 
@@ -565,5 +576,181 @@ describe('a text-array parameter', () => {
     const awkward = ['A "q"', 'b\\c', 'x,y', '']
     await run(CALL_JOB_RECORD, [ORG, id, token, null, null, toTextArrayLiteral(awkward), 60_000])
     expect(db.calls(ORG)[0]?.speaker_labels).toEqual(awkward)
+  })
+})
+
+/** A ready Call with the speakers Rep and Prospect, ready for the Rep, delete and re-tag statements. */
+async function readyCall(db: Db) {
+  await insert(db)
+  patchCall(db, {
+    state: 'ready',
+    speaker_labels: ['Rep', 'Prospect'],
+    rep_by: 'speaker',
+    rep_label: 'Rep',
+  })
+  Object.assign(db.callJobs(ORG)[0] ?? {}, { state: 'succeeded' })
+}
+
+const run = (db: Db, statement: string, params: unknown[], organization = ORG) =>
+  db.scope(organization, (r) => r(statement, params))
+
+describe('CALL_SET_REP', () => {
+  test('changed: bumps rep_seq, cancels the live job keeping a running lease, queues a rebuild', async () => {
+    const { db } = setup()
+    await readyCall(db)
+
+    const answer = (
+      await run(db, CALL_SET_REP, [ORG, call(1), 'speaker', 'Prospect', null, job(9)])
+    ).rows[0]
+
+    expect(answer).toEqual({ result: 'changed', id: call(1), state: 'processing', rep_seq: 1 })
+    expect(db.calls(ORG)[0]).toMatchObject({ rep_label: 'Prospect', state: 'processing' })
+    expect(db.callJobs(ORG).find((j) => j.id === job(9))).toMatchObject({
+      kind: 'rebuild',
+      rep_seq: 1,
+      state: 'queued',
+    })
+  })
+
+  test('unchanged, invalid and not_changeable are answered without a write', async () => {
+    const { db } = setup()
+    await readyCall(db)
+    const set = async (by: string | null, label: string | null, channel: string | null = null) =>
+      (await run(db, CALL_SET_REP, [ORG, call(1), by, label, channel, job(9)])).rows[0]?.result
+
+    expect(await set('speaker', 'Rep')).toBe('unchanged')
+    expect(await set('speaker', 'Nobody')).toBe('invalid')
+    expect(await set('channel', null, 'left')).toBe('invalid')
+    expect(await set(null, null)).toBe('invalid')
+    patchCall(db, { state: 'processing' })
+    expect(await set('speaker', 'Prospect')).toBe('not_changeable')
+    patchCall(db, { state: 'failed', failure_reason: 'too_few_speakers' })
+    expect(await set('speaker', 'Prospect')).toBe('not_changeable')
+    expect(db.callJobs(ORG)).toHaveLength(1)
+    expect(db.calls(ORG)[0]?.rep_seq).toBe(0)
+  })
+
+  test('a Call failed with rep_label_not_found can be fixed from the labels it holds', async () => {
+    const { db } = setup()
+    await insert(db)
+    patchCall(db, {
+      state: 'failed',
+      failure_reason: 'rep_label_not_found',
+      speaker_labels: ['Rep', 'Prospect'],
+    })
+
+    const answer = (
+      await run(db, CALL_SET_REP, [ORG, call(1), 'speaker', 'Prospect', null, job(9)])
+    ).rows[0]
+
+    expect(answer?.result).toBe('changed')
+    expect(db.calls(ORG)[0]).toMatchObject({ state: 'processing', failure_reason: null })
+  })
+
+  test('another Organization finds no Call', async () => {
+    const { db } = setup()
+    await readyCall(db)
+
+    expect(
+      (await run(db, CALL_SET_REP, [OTHER, call(1), 'speaker', 'Rep', null, job(9)], OTHER)).rows
+    ).toEqual([])
+  })
+})
+
+describe('CALL_SOFT_DELETE and CALL_RESTORE', () => {
+  test('delete bumps epoch and deletion_seq once and cancels the job; a repeat changes nothing; the quota still counts it', async () => {
+    const { db } = setup()
+    await insert(db)
+
+    const first = (await run(db, CALL_SOFT_DELETE, [ORG, call(1), USER, 1000])).rows[0]
+    const again = (await run(db, CALL_SOFT_DELETE, [ORG, call(1), USER, 1000])).rows[0]
+
+    expect(first).toMatchObject({ state: 'deleted', deletion_seq: 1, changed: true })
+    expect(again).toMatchObject({ deletion_seq: 1, changed: false })
+    expect(db.calls(ORG)[0]).toMatchObject({ epoch: 1 })
+    // The retention is raised to one hour.
+    expect(db.calls(ORG)[0]?.purge_due_at).toBeGreaterThanOrEqual(3_600_000)
+    expect(db.callJobs(ORG)[0]?.state).toBe('cancelled')
+    expect((await run(db, CALL_USAGE, [ORG])).rows[0]).toMatchObject({ call_count: 1 })
+  })
+
+  test('restore brings it back processing with a process job at the new epoch, and a repeat changes nothing', async () => {
+    const { db } = setup()
+    await readyCall(db)
+    await run(db, CALL_SOFT_DELETE, [ORG, call(1), USER, 3_600_000])
+
+    const restored = (await run(db, CALL_RESTORE, [ORG, call(1), job(5)])).rows[0]
+    const again = (await run(db, CALL_RESTORE, [ORG, call(1), job(6)])).rows[0]
+
+    expect(restored).toMatchObject({ state: 'processing', epoch: 2, changed: true })
+    expect(again).toMatchObject({ changed: false })
+    expect(db.callJobs(ORG).filter((j) => j.state === 'queued')).toMatchObject([
+      { id: job(5), kind: 'process', epoch: 2 },
+    ])
+  })
+
+  test('restore gives no row once the purge time passed, the purge started or erasure barred it', async () => {
+    const { db, clock } = setup()
+    await readyCall(db)
+    await run(db, CALL_SOFT_DELETE, [ORG, call(1), USER, 3_600_000])
+    clock.advance('2h')
+    expect((await run(db, CALL_RESTORE, [ORG, call(1), job(5)])).rows).toEqual([])
+    patchCall(db, { purge_due_at: clock.now().getTime() + 1_000_000, purge_started_at: 1 })
+    expect((await run(db, CALL_RESTORE, [ORG, call(1), job(5)])).rows).toEqual([])
+    patchCall(db, { purge_started_at: null, restore_barred_at: 1 })
+    expect((await run(db, CALL_RESTORE, [ORG, call(1), job(5)])).rows).toEqual([])
+  })
+})
+
+describe('the re-tag statements', () => {
+  const setOutcome = (db: Db, outcome: string) =>
+    run(db, DEAL_SET_OUTCOME, [ORG, db.deals(ORG)[0]?.id, outcome, null, false])
+
+  test('a Deal is pending while retag_through lags; the batch lists its stale ready Calls; CALL_RETAGGED takes a text-array literal only', async () => {
+    const { db } = setup()
+    await readyCall(db)
+    await setOutcome(db, 'won')
+    const dealId = String(db.deals(ORG)[0]?.id)
+
+    expect((await run(db, DEAL_LIST_PENDING_RETAG, [ORG, '', 10])).rows).toMatchObject([
+      { id: dealId, outcome: 'won', outcome_seq: 1, retag_through: 0 },
+    ])
+    expect((await run(db, DEAL_RETAG_BATCH, [ORG, dealId, '', 10])).rows).toMatchObject([
+      { id: call(1), outcome: 'won', outcome_seq: 1 },
+    ])
+    await expect(run(db, CALL_RETAGGED, [ORG, [call(1)], 1])).rejects.toMatchObject({
+      code: '42846',
+    })
+    expect((await run(db, CALL_RETAGGED, [ORG, toTextArrayLiteral([call(1)]), 1])).rows).toEqual([
+      { id: call(1) },
+    ])
+    expect((await run(db, DEAL_RETAG_BATCH, [ORG, dealId, '', 10])).rows).toEqual([])
+    // Not above the Deal's sequence, and not a second time.
+    expect((await run(db, CALL_RETAGGED, [ORG, toTextArrayLiteral([call(1)]), 5])).rows).toEqual([])
+  })
+
+  test("DONE refuses while a ready Call is stale or the sequence is not the Deal's, and accepts once tagged", async () => {
+    const { db } = setup()
+    await readyCall(db)
+    await setOutcome(db, 'won')
+    const dealId = String(db.deals(ORG)[0]?.id)
+
+    expect((await run(db, DEAL_RETAG_DONE, [ORG, dealId, 1])).rows).toEqual([])
+    await run(db, CALL_RETAGGED, [ORG, toTextArrayLiteral([call(1)]), 1])
+    expect((await run(db, DEAL_RETAG_DONE, [ORG, dealId, 2])).rows).toEqual([])
+    expect((await run(db, DEAL_RETAG_DONE, [ORG, dealId, 1])).rows).toMatchObject([
+      { retag_through: 1, outcome_seq: 1 },
+    ])
+    expect((await run(db, DEAL_RETAG_LOCK, [ORG, dealId])).rows[0]).toMatchObject({
+      retag_through: 1,
+    })
+    expect((await run(db, DEAL_LIST_PENDING_RETAG, [ORG, '', 10])).rows).toEqual([])
+  })
+
+  test('another Organization sees no pending Deal', async () => {
+    const { db } = setup()
+    await readyCall(db)
+    await setOutcome(db, 'won')
+    expect((await run(db, DEAL_LIST_PENDING_RETAG, [OTHER, '', 10], OTHER)).rows).toEqual([])
   })
 })

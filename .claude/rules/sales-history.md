@@ -78,11 +78,59 @@ paths:
 - Every Moment vector carries `outcome` and `outcome_seq`, whatever the Deal's Outcome. Whether a Moment
   may be returned is decided at query time by `momentMayBeReturned` (`eligibility.ts`): the vector's tag
   says won AND Postgres says `inSearch`. The vector filter alone is never enough. No search route exists
-  yet; nothing reads these vectors. The re-tag job (part two) rewrites the tags.
+  yet; nothing reads these vectors. The vector also carries `epoch` and `rep_seq`, and `momentMayBeReturned`
+  requires them to equal the Call's (`CALL_GET` returns both), so a search ticket must read them with `inSearch`.
+  The re-tag job rewrites the tags (below).
 - Never log or return Transcript text, speaker labels, file names or the customer's deal id. Transcript
   text is untrusted data. A parse failure carries only a contract reason.
 - Erase and purge order: `CALL_ERASE_BATCH` (remove the objects it names), `CALL_PURGE_CLAIM`, vector
   cleanup (`call_id` filter), objects under `calls/<id>/`, `CALL_PURGE_COMPLETE`, then `DEAL_ERASE_BATCH`
   (a Deal a Call names cannot be deleted; remove-all skips Deals while `no_calls` is false). Hints:
   `call_purge`, `call_cleanup`, `call_purge_spent`.
-- Part two owns: the Outcome re-tag job, Rep change and rebuild, delete and restore routes, Recordings.
+
+### Outcome re-tag, Rep change, delete and restore (part two)
+
+- Re-tag (`retag.ts`) is found by discovery (`outcome_retag`: a Deal with `retag_through < outcome_seq`),
+  never by a message. `playbook.deal_outcome_changed` and `playbook.call_rep_changed` only nudge. One task per
+  Organization per pass, not counted in the pass's `ran`, so a Deal that cannot finish never keeps the loop
+  awake. Per pass: at most `RETAG_DEALS_PER_PASS` Deals, batches of `RETAG_CALLS_PER_BATCH` Calls
+  (`DEAL_RETAG_BATCH`), `RETAG_ROUNDS` rounds per Deal. Deals that cannot finish are paged past (`after` cursor,
+  `RETAG_SCAN_LIMIT` examined per pass) so they never starve the Deals behind them; one re-tag per Organization
+  runs at a time per instance.
+- The re-tag patches tags, it never embeds: `VectorStore.setAttributes` (kit v0.9.0) merges `outcome` and
+  `outcome_seq` into the existing Moment vectors, in batches of `MAX_UPSERT_BATCH`, under the vector store
+  timeout, and never creates a vector; it returns the ids it did not find. The ids are rebuilt from the kept
+  Transcript with `buildMoments` (no embedder call). The real vector adapter (hub issue 48) must implement
+  `setAttributes` as patch-by-id (turbopuffer patches attributes without resending the vector).
+- Convergence is patch, then verify: after the patch the Deal is re-read; if `outcome_seq` moved, the Call is
+  patched again at the newer sequence (up to 4 attempts); only then `CALL_RETAGGED` records
+  `tagged_outcome_seq`. If `setAttributes` reports missing ids for a Call (store data loss), the re-tag
+  self-heals that one Call: it warns (Call id and count only), writes its Moments again like the parse job
+  (same ids, current `rep_seq`, this pass's tag; the only embed in the re-tag path), then continues with
+  the same re-read and record. The heal calls `ensureIndexSettings` first, like the parse job: a model or
+  dimension that differs from the recorded one is refused, nothing is embedded or written, and the Call stays
+  pending (reported, ids only). A failed rebuild leaves the Call pending for the next pass. If the Call was
+  deleted, restored or Rep-changed meanwhile, the vectors this pass wrote are removed, and anything
+  written later is stopped at query time by `momentMayBeReturned`. Two re-taggers on one Deal are not
+  serialised during the rebuild (the Deal lock is taken only in the closing transaction): the ids are
+  deterministic and the writes idempotent, and each re-reads the Deal before recording.
+- `setAttributes` is not retried inside the re-tag: the kit adapter owns the per-call retry, and this job
+  relies on the next pass. A pass is bounded by the Calls of the Deals it takes (`RETAG_DEALS_PER_PASS`,
+  `RETAG_SCAN_LIMIT`; a Deal holds at most the Call quota). The end-of-pass line is logged when work was done, or
+  when the count of stuck Calls changes, not on every poll of the same stuck Deal.
+- Lock order: the Deal row (`DEAL_RETAG_LOCK`), then Call rows. The lock and `DEAL_RETAG_DONE` run in one short
+  transaction, with no external call inside. `DEAL_RETAG_DONE` refuses while a ready Call is stale, which is
+  how a Call that finished mid-re-tag, or an Outcome that moved, brings another round.
+- A Call that cannot be read (object gone, unparseable) is skipped and reported by id (`reportWorkerError`),
+  and does not hold the Deals behind it.
+- Rep change (`PUT /calls/{id}/rep`, Owner/Admin): `CALL_SET_REP` answers `changed`, `unchanged`, `invalid`
+  (`call.rep_invalid`) or `not_changeable` (`call.rep_not_changeable`, 409: only `ready`, `awaiting_rep` or a
+  Call `failed` with `rep_label_not_found` or `not_per_side` may change). `changed` bumps `rep_seq`, sets
+  `processing` and queues a `rebuild` job, which is the process path again. After writing, the job deletes the
+  vectors of earlier `rep_seq` of the epoch, one filter each (equality only). A late write from a cancelled
+  job is stopped at query time by `momentMayBeReturned`. `playbook.call_rep_changed` only on `changed`.
+- Delete (`DELETE /calls/{id}`) and restore (`POST /calls/{id}/restore`, Owner/Admin): delete is idempotent
+  by end state and publishes `playbook.call_deleted` only when it changed the Call; the handler or the
+  `call_cleanup` sweep removes the vectors after the job lease passes. Restore queues a `process` job at the
+  raised epoch, so a cleanup still running removes only the older epochs. A deleted Call past its purge time,
+  or one whose purge began, is `call.not_restorable` (410). Delete keeps the quota count; the purge returns it.

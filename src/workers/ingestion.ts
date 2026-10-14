@@ -13,6 +13,7 @@ import {
 } from 'tula-closeline-db'
 import { isLockTimeout } from '~/adapters/postgres/retry'
 import { runCallJob } from '~/modules/call/job'
+import { retagOutcomes } from '~/modules/call/retag'
 import { claimedImports, runImport } from '~/modules/deal-import/job'
 import { runJob } from '~/modules/ingestion/job'
 import {
@@ -42,8 +43,9 @@ export interface Ingestion {
    * Organizations: each Organization is claimed for as many jobs as there are free slots and the
    * pass moves on without waiting for them, so a long job idles no slot and delays no other
    * Organization's claim. The pass returns when its jobs have ended, with the number run.
+   * `withoutRetag` leaves the Outcome re-tag out (tests that hold it back to see the state between).
    */
-  runPass(): Promise<number>
+  runPass(options?: { withoutRetag?: boolean }): Promise<number>
   /** Asks the loop to look at an Organization at once. Only a hint: losing it loses nothing. */
   nudge(organizationId: string): void
   /** Starts the loop in the background; calling it twice does nothing. */
@@ -276,17 +278,50 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     return ran
   }
 
+  /** Organizations whose re-tag is running on this instance. */
+  const retagging = new Set<string>()
+
+  /**
+   * Starts the Organization's Outcome re-tag when the one pool has a free slot (one task per
+   * Organization per pass). It is found by discovery, never by a message, and is not counted in the
+   * number of jobs a pass ran: a Deal that cannot finish must not keep the loop from sleeping.
+   */
+  async function claimAndRunRetag(organizationId: string, mine: Set<Promise<void>>): Promise<void> {
+    // One re-tag per Organization per instance at a time: a second would repeat the embedding work.
+    // Only an optimisation; the re-tag is idempotent and correct without it.
+    if (retagging.has(organizationId)) {
+      return
+    }
+    await freeSlot()
+    if (shutdown.signal.aborted || retagging.has(organizationId)) {
+      return
+    }
+    retagging.add(organizationId)
+    launchTask(
+      'retag',
+      organizationId,
+      async () => {
+        try {
+          await retagOutcomes(deps, organizationId, shutdown.signal)
+        } finally {
+          retagging.delete(organizationId)
+        }
+      },
+      mine
+    )
+  }
+
   /** One pass that waits for the jobs it started (tests and one-shot runs); the loop does not. */
-  async function runPass(): Promise<number> {
+  async function runPass(options: { withoutRetag?: boolean } = {}): Promise<number> {
     const mine = new Set<Promise<void>>()
     try {
-      return await passOver(mine)
+      return await passOver(mine, options.withoutRetag !== true)
     } finally {
       await Promise.all(mine)
     }
   }
 
-  async function passOver(mine: Set<Promise<void>>): Promise<number> {
+  async function passOver(mine: Set<Promise<void>>, retag: boolean): Promise<number> {
     let ran = 0
     if (env.WORKERS_ENABLED) {
       const first = [...nudged]
@@ -299,6 +334,10 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
         done.add(organizationId)
         try {
           ran += await claimAndRun(organizationId, mine)
+          ran += await claimAndRunCalls(organizationId, mine)
+          if (retag) {
+            await claimAndRunRetag(organizationId, mine)
+          }
         } catch (error) {
           reportWorkerError(deps, error, { worker: 'ingestion', organizationId })
         }
@@ -310,7 +349,14 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
       })
       // Call jobs share the pool; one claim per Organization per pass keeps one Organization from taking every slot.
       await forEachOrganization(deps, 'call_jobs', shutdown.signal, async (organizationId) => {
-        ran += await claimAndRunCalls(organizationId, mine)
+        if (!done.has(organizationId)) {
+          ran += await claimAndRunCalls(organizationId, mine)
+        }
+      })
+      await forEachOrganization(deps, 'outcome_retag', shutdown.signal, async (organizationId) => {
+        if (retag && !done.has(organizationId)) {
+          await claimAndRunRetag(organizationId, mine)
+        }
       })
     }
     // Imports use no embedder, OCR or vector store, so their gate is their own.
@@ -329,7 +375,7 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
         // Jobs are not awaited: they run in the pool while the loop looks for more work, so one
         // long job never idles the other slots. With the pool full the loop waits for a slot.
         await freeSlot()
-        ran = await passOver(new Set())
+        ran = await passOver(new Set(), true)
       } catch (error) {
         reportWorkerError(deps, error, { worker: 'ingestion' })
       }

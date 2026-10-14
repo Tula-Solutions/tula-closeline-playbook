@@ -1,5 +1,6 @@
 import type { Handlers } from 'tula-closeline-kit/queue'
 import type { PlaybookEnvelope } from '~/messages'
+import { cleanupCallDeletion } from '~/modules/call/purge'
 import { cleanupDeletion } from './cleanup'
 import type { PipelineDeps } from './runtime'
 
@@ -7,7 +8,7 @@ import type { PipelineDeps } from './runtime'
 export type Nudge = (organizationId: string) => void
 
 /**
- * The two queue handlers (ADR 0016).
+ * The queue handlers (ADR 0016, 0018).
  *
  * `playbook.document_uploaded` is a nudge: the job row is the source of truth, found by the loop
  * without any message, so the handler only asks the loop to look at this Organization now and
@@ -25,10 +26,39 @@ export function ingestionHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<Pl
         nudge(context.organizationId)
       }
     },
-    // Acknowledged and dropped for now. Nothing recovers an Outcome change yet: the re-tag job
-    // (Calls part two, via the db's lagging-tag discovery) will. Until then a Call whose Deal
-    // changed after its tag was read stays out of search (`inSearch` is false), which is safe.
-    'playbook.deal_outcome_changed': async () => undefined,
+    // A nudge only: the re-tag job finds its work by discovery (`outcome_retag`), so a lost
+    // message, or a change made before this handler existed, is recovered all the same.
+    'playbook.deal_outcome_changed': async (_message, context) => {
+      if (context.organizationId !== undefined) {
+        nudge(context.organizationId)
+      }
+    },
+    // A nudge too: the rebuild job is found by the `call_jobs` hint.
+    'playbook.call_rep_changed': async (_message, context) => {
+      if (context.organizationId !== undefined) {
+        nudge(context.organizationId)
+      }
+    },
+    'playbook.call_deleted': async (message, context) => {
+      const organizationId = context.organizationId
+      if (organizationId === undefined) {
+        return
+      }
+      const result = await cleanupCallDeletion(
+        deps,
+        organizationId,
+        message.payload.callId,
+        message.payload.deletionSeq,
+        context.signal
+      )
+      if (result === 'waiting') {
+        // As for documents: acknowledge, and the `call_cleanup` sweep finishes it after the lease.
+        deps.logger.info('a Call vector cleanup waits for a job lease; the sweep will finish it', {
+          organizationId,
+          callId: message.payload.callId,
+        })
+      }
+    },
     'playbook.document_deleted': async (message, context) => {
       const organizationId = context.organizationId
       if (organizationId === undefined) {

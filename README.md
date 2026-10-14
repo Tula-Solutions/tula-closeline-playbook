@@ -56,5 +56,8 @@ and the Rep's speaker label to `POST /v1/playbook/calls`, once the Organization 
 rights wording. A background job parses it into turns, builds one Moment per Prospect turn (a window
 of recent turns, embedded by role and never by speaker name) and writes the Moments' vectors tagged with
 the Deal's Outcome. List and read: `GET /v1/playbook/calls` and `/{id}`. No search route exists yet.
-Recordings are not accepted yet. The Call job shares `INGESTION_CONCURRENCY`, takes one job per
+Recordings are not accepted yet. Changing the Rep (`PUT /v1/playbook/calls/{id}/rep`) rebuilds the Moments;
+`DELETE /v1/playbook/calls/{id}` and `POST .../restore` delete and restore a Call within 30 days. The
+Outcome re-tag job patches the Moment vectors' tags when a Deal's Outcome changes (no re-embedding), found by
+discovery rather than by a message; the vector adapter must support patch-by-id (`setAttributes`). The Call job shares `INGESTION_CONCURRENCY`, takes one job per
 Organization per pass and is gated by `WORKERS_ENABLED`; remove-all erases Calls before Deals.

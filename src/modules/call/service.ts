@@ -7,6 +7,7 @@ import {
   checkCallFile,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_RECORDING_BYTES_TOTAL,
+  DOCUMENT_RETENTION_DAYS,
   decodeCursor,
   encodeCursor,
   formatId,
@@ -18,6 +19,7 @@ import {
   type RepChoice,
   repChoiceSuits,
   SALES_HISTORY_READ_ROLES,
+  type SetCallRepRequest,
   uploadCallFieldsSchema,
 } from 'tula-closeline-contract'
 import {
@@ -28,12 +30,16 @@ import {
   CALL_LIST_BY_DEAL_STATE,
   CALL_LIST_BY_STATE,
   CALL_REQUEUE,
+  CALL_RESTORE,
   CALL_RESTORE_FOR_UPLOAD,
+  CALL_SET_REP,
+  CALL_SOFT_DELETE,
   QUOTA_LOCK,
 } from 'tula-closeline-db'
 import { AppError } from 'tula-closeline-kit'
 import type { Run } from '~/adapters/postgres/processed-store'
 import type { Container } from '~/container'
+import { registry } from '~/messages'
 import { settleObject } from '~/modules/deal-import/service'
 import {
   completeKey,
@@ -61,7 +67,7 @@ import { callCursorOf, toCall } from './schema'
 import type { TranscriptMediaType } from './transcript'
 
 /** What the Call service needs from the container. */
-export type CallDeps = Pick<Container, 'scope' | 'objects' | 'logger' | 'env'>
+export type CallDeps = Pick<Container, 'scope' | 'objects' | 'logger' | 'env' | 'queue'>
 
 /** The route name a Call upload's idempotency key is stored under. */
 export const CALL_UPLOAD_IDEMPOTENCY_ROUTE = 'calls.upload'
@@ -421,4 +427,175 @@ export async function list(
     nextCursor:
       rows.length === query.limit && last !== undefined ? encodeCursor(callCursorOf(last)) : null,
   }
+}
+
+/** How long a deleted Call is kept before it is purged, as for documents. */
+const RETENTION_MS = DOCUMENT_RETENTION_DAYS * 24 * 60 * 60 * 1000
+
+/** Publishes a Call message after its commit; a failure is logged with ids only, because the sweeps and discovery recover the work. */
+async function publishAfterCommit(
+  deps: Pick<CallDeps, 'queue' | 'logger'>,
+  context: Pick<CallContext, 'organizationId' | 'requestId'>,
+  message:
+    | { type: 'playbook.call_deleted'; payload: { callId: string; deletionSeq: number } }
+    | { type: 'playbook.call_rep_changed'; payload: { callId: string; repSeq: number } }
+): Promise<void> {
+  try {
+    await deps.queue.publish(
+      registry.create({
+        ...message,
+        organizationId: context.organizationId,
+        traceId: context.requestId,
+      } as Parameters<typeof registry.create>[0])
+    )
+  } catch (error) {
+    deps.logger.error('a committed Call change could not be published; the sweep will pick it up', {
+      type: message.type,
+      organizationId: context.organizationId,
+      callId: message.payload.callId,
+      error: error instanceof Error ? error.name : 'unknown',
+    })
+  }
+}
+
+/**
+ * Soft-deletes a Call: hidden from search at once (it is no longer `ready`), its job cancelled, its
+ * vectors removed by the cleanup after the job's lease passes, and purged after the retention
+ * period. Owner and Admin only. Idempotent by end state; the cleanup message is published only by
+ * the call that changed the state, and a message lost in between is recovered by the
+ * `call_cleanup` sweep.
+ */
+export async function remove(deps: CallDeps, context: CallContext, callId: string): Promise<Call> {
+  assertRole(context, PLAYBOOK_WRITE_ROLES)
+  const organizationId = context.organizationId
+  const outcome = await transaction(deps, organizationId, async (run) => {
+    // No row can also mean this call lost a race with another delete: once more.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const row = (
+        await run(CALL_SOFT_DELETE, [organizationId, callId, context.userId, RETENTION_MS])
+      ).rows[0]
+      if (row !== undefined) {
+        const read = (await run(CALL_GET, [organizationId, callId])).rows[0]
+        return read === undefined
+          ? undefined
+          : {
+              call: toCall(read),
+              changed: row.changed === true,
+              deletionSeq: Number(row.deletion_seq),
+            }
+      }
+    }
+    return undefined
+  })
+  if (outcome === undefined) {
+    throw failure('call.not_found')
+  }
+  if (outcome.changed) {
+    await publishAfterCommit(deps, context, {
+      type: 'playbook.call_deleted',
+      payload: { callId, deletionSeq: outcome.deletionSeq },
+    })
+  }
+  return outcome.call
+}
+
+/**
+ * Restores a soft-deleted Call within the retention period: it comes back `processing` and is
+ * processed again from the kept Transcript. A Call that is no longer deleted is answered as it
+ * is; a deleted one past its purge time, or one whose purge has started or that erasure barred, is
+ * `call.not_restorable`; one that is gone is `call.not_found`. A restore before the vector cleanup
+ * finished is safe: the cleanup deletes only up to the epoch it was begun at, and the restore
+ * raised the epoch.
+ */
+export async function restore(deps: CallDeps, context: CallContext, callId: string): Promise<Call> {
+  assertRole(context, PLAYBOOK_WRITE_ROLES)
+  const organizationId = context.organizationId
+  const jobId = formatId('cjob', crypto.randomUUID())
+  const outcome = await transaction(deps, organizationId, async (run) => {
+    await run(CALL_RESTORE, [organizationId, callId, jobId])
+    const read = (await run(CALL_GET, [organizationId, callId])).rows[0]
+    if (read === undefined) {
+      return { kind: 'missing' as const }
+    }
+    if (read.state === 'deleted') {
+      return { kind: 'gone' as const }
+    }
+    return { kind: 'ok' as const, call: toCall(read) }
+  })
+  if (outcome.kind === 'missing') {
+    throw failure('call.not_found')
+  }
+  if (outcome.kind === 'gone') {
+    throw failure('call.not_restorable')
+  }
+  return outcome.call
+}
+
+/** The statement parameters of a Rep choice: the kind, the speaker label and the channel (the other two null). */
+function repParams(rep: SetCallRepRequest['rep']): [string, string | null, string | null] {
+  return rep.by === 'speaker' ? ['speaker', rep.label, null] : ['channel', null, rep.channel]
+}
+
+/**
+ * Picks or changes a Call's Rep. Owner and Admin only. The database decides in one statement
+ * (`changed`, `unchanged`, `invalid`, `not_changeable`): a different Rep leaves the Call
+ * `processing`, bumps `rep_seq` and queues a rebuild that replaces the Moments; the same Rep again
+ * changes nothing and answers the Call as it is. The Rep-changed message is published only by the
+ * change, and only nudges the rebuild, which `call_jobs` discovery finds anyway.
+ */
+export async function setRep(
+  deps: CallDeps,
+  context: CallContext,
+  callId: string,
+  request: SetCallRepRequest
+): Promise<Call> {
+  assertRole(context, PLAYBOOK_WRITE_ROLES)
+  const organizationId = context.organizationId
+  const [by, label, channel] = repParams(request.rep)
+  const outcome = await transaction(deps, organizationId, async (run) => {
+    const row = (
+      await run(CALL_SET_REP, [
+        organizationId,
+        callId,
+        by,
+        label,
+        channel,
+        formatId('cjob', crypto.randomUUID()),
+      ])
+    ).rows[0]
+    if (row === undefined) {
+      return { kind: 'missing' as const }
+    }
+    if (row.result === 'invalid') {
+      return { kind: 'invalid' as const }
+    }
+    if (row.result === 'not_changeable') {
+      return { kind: 'not_changeable' as const }
+    }
+    const read = (await run(CALL_GET, [organizationId, callId])).rows[0]
+    return read === undefined
+      ? { kind: 'missing' as const }
+      : {
+          kind: 'ok' as const,
+          call: toCall(read),
+          changed: row.result === 'changed',
+          repSeq: Number(row.rep_seq),
+        }
+  })
+  if (outcome.kind === 'missing') {
+    throw failure('call.not_found')
+  }
+  if (outcome.kind === 'invalid') {
+    throw failure('call.rep_invalid')
+  }
+  if (outcome.kind === 'not_changeable') {
+    throw failure('call.rep_not_changeable')
+  }
+  if (outcome.changed) {
+    await publishAfterCommit(deps, context, {
+      type: 'playbook.call_rep_changed',
+      payload: { callId, repSeq: outcome.repSeq },
+    })
+  }
+  return outcome.call
 }

@@ -500,7 +500,7 @@ describe('work discovery', () => {
     await h.pass()
 
     expect(new Set(h.deps.database.discoveries.map((d) => d.kind))).toEqual(
-      new Set(['jobs_due', 'call_jobs', 'import_apply'])
+      new Set(['jobs_due', 'call_jobs', 'outcome_retag', 'import_apply'])
     )
     const inside = h.deps.database.transactionStatements.flat()
     expect(inside).not.toContain(ORGANIZATIONS_WITH_WORK)

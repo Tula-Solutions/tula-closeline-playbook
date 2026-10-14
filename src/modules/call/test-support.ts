@@ -1,6 +1,8 @@
 import { type Call, callSchema, listCallsResponseSchema } from 'tula-closeline-contract'
+import { CALL_GET } from 'tula-closeline-db'
 import { createDocumentHarness, type DocumentHarness } from '~/modules/document/test-support'
 import type { TestDepsOverrides, TestIdentity } from '~/testing'
+import { type MomentTag, momentMayBeReturned } from './eligibility'
 
 /** The Call routes, relative to the app. */
 export const CALLS = '/v1/playbook/calls'
@@ -39,8 +41,12 @@ export type CallHarness = DocumentHarness & {
   ): Promise<Response>
   /** Confirms rights for the harness Organization at the current wording version. */
   confirmRights(organizationId?: string): void
-  /** Runs the job loop's passes until no Call job is claimed; returns the jobs run. */
+  /** Runs the job loop's passes (without the Outcome re-tag) until no Call job is claimed; returns the jobs run. */
   runCalls(): Promise<number>
+  /** The Moment vectors of a Call, and which of them `momentMayBeReturned` lets a search return, from real state. */
+  moments(callId: string): Promise<{ total: number; returnable: number; outcomes: string[] }>
+  /** Sets a Deal's Outcome through the route as an Owner; returns the new sequence. */
+  setOutcome(dealRecordId: string, outcome: 'won' | 'lost' | 'open'): Promise<number>
   /** One Call read through the route. */
   readCall(callId: string, as?: TestIdentity): Promise<Call>
   /** Every Call of the Organization, read through the list route. */
@@ -102,7 +108,7 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
   const runCalls = async () => {
     let total = 0
     for (let pass = 0; pass < 50; pass++) {
-      const ran = await h.deps.workers.ingestion.runPass()
+      const ran = await h.deps.workers.ingestion.runPass({ withoutRetag: true })
       total += ran
       if (ran === 0) {
         break
@@ -124,5 +130,48 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
     } while (cursor !== null)
     return calls
   }
-  return { ...h, send, uploadCall, confirmRights, runCalls, readCall, listAll }
+  const moments: CallHarness['moments'] = async (callId) => {
+    const hits = await h.deps.vectors.search(h.organizationId, {
+      vector: new Array<number>(h.deps.vectors.dimensions).fill(0.1),
+      topK: 100,
+      filter: { call_id: callId },
+    })
+    // Through the scoped statement, not the database double's rows: the same code reads Postgres.
+    const read = (
+      await h.deps.scope(h.organizationId, (run) => run(CALL_GET, [h.organizationId, callId]))
+    ).rows[0]
+    const row =
+      read === undefined ? undefined : { epoch: Number(read.epoch), repSeq: Number(read.rep_seq) }
+    const inSearch = row === undefined ? false : (await readCall(callId)).inSearch
+    const returnable = hits.filter(
+      (hit) =>
+        row !== undefined &&
+        momentMayBeReturned(
+          {
+            outcome: String(hit.attributes.outcome) as MomentTag['outcome'],
+            outcomeSeq: Number(hit.attributes.outcome_seq),
+            epoch: Number(hit.attributes.epoch),
+            repSeq: Number(hit.attributes.rep_seq),
+          },
+          { inSearch, epoch: row.epoch, repSeq: row.repSeq }
+        )
+    ).length
+    return {
+      total: hits.length,
+      returnable,
+      outcomes: [...new Set(hits.map((hit) => String(hit.attributes.outcome)))].sort(),
+    }
+  }
+  const setOutcome: CallHarness['setOutcome'] = async (dealRecordId, outcome) => {
+    const response = await send('PUT', `/v1/playbook/deals/${dealRecordId}/outcome`, {
+      body: { outcome },
+    })
+    if (response.status !== 200) {
+      throw new Error(`setting the Outcome answered ${response.status}`)
+    }
+    return (
+      h.deps.database.deals(h.organizationId).find((d) => d.id === dealRecordId)?.outcome_seq ?? -1
+    )
+  }
+  return { ...h, send, uploadCall, confirmRights, runCalls, readCall, listAll, moments, setOutcome }
 }
