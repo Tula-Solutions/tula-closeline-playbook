@@ -149,6 +149,55 @@ describe('the purge sweep', () => {
 })
 
 describe('the orphan object sweep', () => {
+  test('covers Deal import files: an old one no import names goes, a waiting import keeps its file, an ended import loses a leftover one', async () => {
+    const h = createPipelineHarness()
+    const key = (id: string) => `deal-imports/dimp_${id.repeat(32)}/original.csv`
+    const put = (id: string) => h.deps.objects.put(h.organizationId, key(id), new Uint8Array([1]))
+    h.deps.database.seedImport({ id: `dimp_${'1'.repeat(32)}`, organization_id: h.organizationId })
+    h.deps.database.seedImport({
+      id: `dimp_${'2'.repeat(32)}`,
+      organization_id: h.organizationId,
+      state: 'failed',
+      failure_reason: 'unreadable',
+    })
+    h.deps.database.seedImport({
+      id: `dimp_${'3'.repeat(32)}`,
+      organization_id: h.organizationId,
+      state: 'completed',
+      row_count: 0,
+    })
+    for (const id of ['1', '2', '3', '4']) {
+      await put(id)
+    }
+    await h.deps.objects.put(
+      h.organizationId,
+      'deal-imports/not-an-import/original.csv',
+      new Uint8Array([1])
+    )
+    await h.deps.time.advance(25 * 60 * 60 * 1000)
+    await put('5') // young: an upload may be about to name it
+
+    const deleted = await sweepOrphanObjects(h.deps, h.organizationId, never)
+
+    expect(deleted).toBe(3)
+    const keys = (await h.deps.objects.list(h.organizationId)).items.map((i) => i.key).sort()
+    expect(keys).toEqual([key('1'), key('5'), 'deal-imports/not-an-import/original.csv'].sort())
+  })
+
+  test('an import file of another Organization is not looked at', async () => {
+    const h = createPipelineHarness()
+    const other = h.other().organizationId
+    await h.deps.objects.put(
+      other,
+      `deal-imports/dimp_${'8'.repeat(32)}/original.csv`,
+      new Uint8Array([1])
+    )
+    await h.deps.time.advance(25 * 60 * 60 * 1000)
+
+    expect(await sweepOrphanObjects(h.deps, h.organizationId, never)).toBe(0)
+    expect((await h.deps.objects.list(other)).items).toHaveLength(1)
+  })
+
   test('deletes an old object no document names, and nothing else', async () => {
     const h = createPipelineHarness()
     const known = await h.upload('notes.txt', paragraphs(2))

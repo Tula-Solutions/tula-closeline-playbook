@@ -46,6 +46,7 @@ import {
 import type { Container } from '~/container'
 import { RetryAfterError } from '~/http/domain-error'
 import { registry } from '~/messages'
+import { eraseImports } from '~/modules/deal-import/erase'
 import {
   assertRole,
   type CallContext,
@@ -717,6 +718,7 @@ export async function removeAll(
     }
   }
   await publishCleanups(deps, context, cleanups, options.publishBudgetMs ?? PUBLISH_BUDGET_MS)
+  await eraseImports(deps, organizationId)
   for (let batch = 0; batch < ERASE_BATCHES_PER_REQUEST; batch++) {
     const deleted = await transaction(deps, organizationId, async (run) => {
       await run(LOCK_TIMEOUT_SQL, [])

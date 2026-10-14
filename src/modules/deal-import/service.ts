@@ -47,6 +47,7 @@ import {
   mappingBadCursor,
   transaction,
 } from '~/modules/service-kit'
+import { importObjectKey } from './keys'
 import { importCursorOf, toDealImport, toImportRow } from './schema'
 
 /** What the Deal import service needs from the container. */
@@ -63,11 +64,6 @@ const CSV_MEDIA_TYPES: ReadonlySet<string> = new Set([
   'text/plain',
   'application/octet-stream',
 ])
-
-/** The key of an import's CSV in the object store: made from the import id, never the file name. */
-export function importObjectKey(importId: string): string {
-  return `deal-imports/${importId}/original.csv`
-}
 
 /**
  * Refuses a file that is too large or not a CSV by its name and declared type, from what is known

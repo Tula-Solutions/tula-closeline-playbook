@@ -1,5 +1,6 @@
 import {
   CONSUMED_PURGE_AGE_MS,
+  DEAL_IMPORT_GET,
   DOCUMENT_GET,
   DOCUMENT_LIST_SPENT_PURGES,
   IDEMPOTENCY_PURGE,
@@ -8,6 +9,7 @@ import {
 } from 'tula-closeline-db'
 import type { ProcessedStore } from 'tula-closeline-kit'
 import { isLockTimeout } from '~/adapters/postgres/retry'
+import { importIdOfKey } from '~/modules/deal-import/keys'
 import { inTransaction, type PipelineDeps, within } from '~/modules/ingestion/runtime'
 
 /**
@@ -97,13 +99,60 @@ export function documentIdOfKey(key: string): string | undefined {
   return match?.[1]
 }
 
+/** One kind of object the orphan sweep looks after: where it lives, how its key names its owner, and whether the owner still needs it. */
+type OrphanKind = {
+  prefix: string
+  ownerOf: (key: string) => string | undefined
+  /** Whether the owners in `ids` still need their object: a document with a row, an import still waiting for or running its job. */
+  needed: (
+    deps: PipelineDeps,
+    organizationId: string,
+    ids: readonly string[]
+  ) => Promise<Set<string>>
+}
+
+const ORPHAN_KINDS: readonly OrphanKind[] = [
+  {
+    prefix: 'documents/',
+    ownerOf: documentIdOfKey,
+    needed: (deps, organizationId, ids) =>
+      inTransaction(deps, organizationId, async (run) => {
+        const found = new Set<string>()
+        for (const id of ids) {
+          if ((await run(DOCUMENT_GET, [organizationId, id])).rows.length > 0) {
+            found.add(id)
+          }
+        }
+        return found
+      }),
+  },
+  {
+    prefix: 'deal-imports/',
+    ownerOf: importIdOfKey,
+    // A CSV is needed only while its import can still run. An import that ended keeps no file
+    // (the job removes it), so one left behind by a failed removal is swept like an orphan.
+    needed: (deps, organizationId, ids) =>
+      inTransaction(deps, organizationId, async (run) => {
+        const found = new Set<string>()
+        for (const id of ids) {
+          const row = (await run(DEAL_IMPORT_GET, [organizationId, id])).rows[0]
+          if (row?.state === 'uploaded' || row?.state === 'processing') {
+            found.add(id)
+          }
+        }
+        return found
+      }),
+  },
+]
+
 /**
- * Deletes the Organization's objects under `documents/` that no document names and that are older
- * than {@link ORPHAN_OBJECT_MIN_AGE_MS} (an upload whose outcome was unknown leaves one). The listing is paged
- * (`ORPHAN_PAGE_SIZE`, at most `ORPHAN_MAX_PAGES` pages a pass); an object is deleted only when
- * its document id has no row and its last write is old, so an upload in progress, whose object
- * is young, is never touched. An object under another prefix, or with a key of another shape,
- * is left alone. Returns the objects deleted.
+ * Deletes the Organization's objects under `documents/` that no document names and under
+ * `deal-imports/` that no waiting or running import names, when they are older than
+ * {@link ORPHAN_OBJECT_MIN_AGE_MS} (an upload whose outcome was unknown leaves one, and so does an
+ * ended import whose file could not be removed). Each listing is paged (`ORPHAN_PAGE_SIZE`, at most
+ * `ORPHAN_MAX_PAGES` pages a pass); an object is deleted only when its owner no longer needs it and
+ * its last write is old, so an upload in progress, whose object is young, is never touched. An
+ * object under another prefix, or with a key of another shape, is left alone. Returns the objects deleted.
  */
 export async function sweepOrphanObjects(
   deps: PipelineDeps,
@@ -117,7 +166,7 @@ export async function sweepOrphanObjects(
 export type OrphanSweepResult = {
   /** Objects deleted. */
   deleted: number
-  /** Whether every object under `documents/` was examined (the page bound and a cancel can cut it short). */
+  /** Whether every object under both prefixes was examined (the page bound and a cancel can cut it short). */
   complete: boolean
 }
 
@@ -129,47 +178,43 @@ export async function sweepOrphanObjectsOnce(
 ): Promise<OrphanSweepResult> {
   const { env } = deps
   const oldest = deps.clock.now().getTime() - ORPHAN_OBJECT_MIN_AGE_MS
-  let cursor: string | undefined
   let deleted = 0
-  let complete = false
-  for (let page = 0; page < env.ORPHAN_MAX_PAGES && !signal.aborted; page++) {
-    const listed = await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
-      deps.objects.list(organizationId, {
-        prefix: 'documents/',
-        limit: env.ORPHAN_PAGE_SIZE,
-        ...(cursor === undefined ? {} : { cursor }),
-      })
-    )
-    const old = listed.items.filter((item) => item.lastModified.getTime() < oldest)
-    const ids = [...new Set(old.flatMap((item) => documentIdOfKey(item.key) ?? []))]
-    if (ids.length > 0) {
-      const existing = await inTransaction(deps, organizationId, async (run) => {
-        const found = new Set<string>()
-        for (const id of ids) {
-          if ((await run(DOCUMENT_GET, [organizationId, id])).rows.length > 0) {
-            found.add(id)
+  let complete = true
+  for (const kind of ORPHAN_KINDS) {
+    let cursor: string | undefined
+    let kindComplete = false
+    for (let page = 0; page < env.ORPHAN_MAX_PAGES && !signal.aborted; page++) {
+      const listed = await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
+        deps.objects.list(organizationId, {
+          prefix: kind.prefix,
+          limit: env.ORPHAN_PAGE_SIZE,
+          ...(cursor === undefined ? {} : { cursor }),
+        })
+      )
+      const old = listed.items.filter((item) => item.lastModified.getTime() < oldest)
+      const ids = [...new Set(old.flatMap((item) => kind.ownerOf(item.key) ?? []))]
+      if (ids.length > 0) {
+        const needed = await kind.needed(deps, organizationId, ids)
+        for (const item of old) {
+          const id = kind.ownerOf(item.key)
+          if (id !== undefined && !needed.has(id)) {
+            await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
+              deps.objects.delete(organizationId, item.key)
+            )
+            deleted++
           }
         }
-        return found
-      })
-      for (const item of old) {
-        const id = documentIdOfKey(item.key)
-        if (id !== undefined && !existing.has(id)) {
-          await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
-            deps.objects.delete(organizationId, item.key)
-          )
-          deleted++
-        }
+      }
+      cursor = listed.nextCursor
+      if (cursor === undefined) {
+        kindComplete = true
+        break
       }
     }
-    cursor = listed.nextCursor
-    if (cursor === undefined) {
-      complete = true
-      break
-    }
+    complete = complete && kindComplete
   }
   if (deleted > 0) {
-    deps.logger.info('objects with no document were deleted', { organizationId, objects: deleted })
+    deps.logger.info('objects with no owner were deleted', { organizationId, objects: deleted })
   }
   return { deleted, complete: complete && !signal.aborted }
 }
