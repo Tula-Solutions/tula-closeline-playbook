@@ -39,7 +39,11 @@ const TIMING = /-->/
 
 /** Collapses whitespace and strips control characters, then cuts to {@link MAX_TURN_CHARACTERS}. */
 function cleanText(raw: string): string {
-  const text = raw.replace(CONTROL, ' ').replace(/\s+/g, ' ').trim()
+  return cutTurn(raw.replace(CONTROL, ' ').replace(/\s+/g, ' ').trim())
+}
+
+/** Cuts already clean text to {@link MAX_TURN_CHARACTERS}, never inside a surrogate pair. */
+function cutTurn(text: string): string {
   if (text.length <= MAX_TURN_CHARACTERS) {
     return text
   }
@@ -68,6 +72,18 @@ function labelled(line: string): Turn | undefined {
   return { speaker, text: match[2] ?? '' }
 }
 
+/**
+ * Adds a clean fragment to a turn. Work is proportional to the fragment: the turn is already clean,
+ * and once it is at the cap nothing is touched (a file of many short continuation lines must not
+ * redo the whole turn for each).
+ */
+function extend(turn: Turn, fragment: string): void {
+  if (turn.text.length >= MAX_TURN_CHARACTERS) {
+    return
+  }
+  turn.text = cutTurn(`${turn.text} ${fragment}`)
+}
+
 /** Collects turns, merging adjacent turns of one speaker and refusing more than {@link MAX_TURNS_PER_CALL}. */
 class TurnCollector {
   readonly turns: Turn[] = []
@@ -81,7 +97,7 @@ class TurnCollector {
     }
     const last = this.turns.at(-1)
     if (last !== undefined && last.speaker === speaker) {
-      last.text = cleanText(`${last.text} ${text}`)
+      extend(last, text)
       return
     }
     if (this.turns.length >= MAX_TURNS_PER_CALL) {
@@ -96,7 +112,7 @@ class TurnCollector {
     const last = this.turns.at(-1)
     const text = cleanText(raw)
     if (last !== undefined && text !== '') {
-      last.text = cleanText(`${last.text} ${text}`)
+      extend(last, text)
     }
   }
 

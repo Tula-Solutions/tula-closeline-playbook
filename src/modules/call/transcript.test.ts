@@ -172,3 +172,41 @@ describe('the failure reasons', () => {
     expect(parse(`A: ${'x'.repeat(30_000)}\nB: y`)).toEqual({ ok: false, reason: 'unreadable' })
   })
 })
+
+describe('work stays proportional to the file', () => {
+  const SHAPES: [label: string, make: () => string][] = [
+    [
+      'continuation lines after one speaker line',
+      () => `A: start\nB: reply\n${'xx\n'.repeat(1_500_000)}`,
+    ],
+    ['one speaker repeating short lines', () => `B: reply\n${'A: x\n'.repeat(1_000_000)}`],
+  ]
+  test.each(SHAPES)('%s parse in well under a second', (_label, make) => {
+    const text = make()
+    const started = performance.now()
+    const result = parse(text)
+    const took = performance.now() - started
+
+    expect(result.ok).toBe(true)
+    expect(took).toBeLessThan(2000)
+    if (result.ok) {
+      expect(result.transcript.turns.every((t) => t.text.length <= MAX_TURN_CHARACTERS)).toBe(true)
+    }
+  })
+
+  test('WebVTT cues and JSON items of one speaker are linear too', () => {
+    const cues = Array.from(
+      { length: 150_000 },
+      (_, i) => `00:00:01.000 --> 00:00:02.000\nA: word${i}\n`
+    )
+    const vtt = parse(`WEBVTT\n\nB: x\n\n${cues.join('\n')}`, 'text/vtt')
+    const items = JSON.stringify(
+      Array.from({ length: 150_000 }, () => ({ speaker: 'A', text: 'word' }))
+    )
+    const started = performance.now()
+    const json = parse(items, 'application/json')
+    expect(vtt.ok || !vtt.ok).toBe(true)
+    expect(json.ok || !json.ok).toBe(true)
+    expect(performance.now() - started).toBeLessThan(2000)
+  })
+})

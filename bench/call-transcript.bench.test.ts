@@ -41,3 +41,24 @@ test(`Transcript parse and Moments: the best of batches of 3 files of ${Math.rou
   expect(moments).toBeGreaterThan(1000)
   expect(result.bestMs).toBeLessThan(BUDGET_MS)
 }, 120_000)
+
+// The hostile shape: two speaker lines, then about a million short continuation lines. Each line
+// costs work proportional to itself, not to the turn built so far (a turn stops growing at its cap).
+// Typical best batch: see the log line; budget generous for CI runners, far under the quadratic cost.
+const HOSTILE_BUDGET_MS = 3000
+const hostile = new TextEncoder().encode(`A: start\nB: reply\n${'xx\n'.repeat(1_400_000)}`)
+
+test(`Transcript parse, hostile continuation lines: the best of 3 is within ${HOSTILE_BUDGET_MS} ms`, async () => {
+  const result = await measure(
+    async () => {
+      const parsed = parseTranscript(hostile, 'text/plain')
+      if (!parsed.ok) {
+        throw new Error('the hostile file did not parse')
+      }
+    },
+    { warmup: 1, batchRequests: 1, batches: 3 }
+  )
+
+  console.log(summary('call transcript hostile', result))
+  expect(result.bestMs).toBeLessThan(HOSTILE_BUDGET_MS)
+}, 120_000)
