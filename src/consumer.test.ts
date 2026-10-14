@@ -180,3 +180,22 @@ describe('the queue consumer', () => {
     expect(CONSUMER_NAME).toBe('playbook.ingestion')
   })
 })
+
+describe('the Deal Outcome message', () => {
+  test('is acknowledged by the default handlers, whatever it carries, until the re-tag job exists', async () => {
+    const deps = createTestDeps()
+    const organizationId = newOrganizationId()
+    const message = registry.create({
+      type: 'playbook.deal_outcome_changed',
+      organizationId,
+      traceId,
+      payload: { dealRecordId: formatId('deal', crypto.randomUUID()), outcomeSeq: 3 },
+    })
+    await deps.queue.publish(message)
+
+    expect(await deps.consumer.pollOnce()).toBe(1)
+
+    expect(deps.queue.depth()).toEqual({ visible: 0, inFlight: 0 })
+    expect(deps.errors.captured).toEqual([])
+  })
+})
