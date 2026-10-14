@@ -253,6 +253,23 @@ describe('the re-tag converges when things move under it', () => {
     expect(logged(h.deps, 'an Outcome re-tag pass ended')[0]).toMatchObject({ skipped: 1 })
   })
 
+  test('Deals that can never finish do not starve the Deals behind them', async () => {
+    const h = await createCallHarness()
+    for (let i = 0; i < RETAG_DEALS_PER_PASS; i++) {
+      const stuck = await readyCall(h, `stuck${i}`, `DEAL-S${i}`)
+      const key = h.deps.database.calls(h.organizationId).find((c) => c.id === stuck.id)?.object_key
+      await h.deps.objects.delete(h.organizationId, String(key))
+    }
+    const good = await readyCall(h, 'behind', 'DEAL-Z')
+    for (const deal of h.deps.database.deals(h.organizationId)) {
+      Object.assign(deal, { outcome: 'won', outcome_seq: 1 })
+    }
+
+    await pass(h)
+
+    expect((await h.moments(good.id)).returnable).toBe(2)
+  })
+
   test('a pass takes a bounded number of Deals', async () => {
     const h = await createCallHarness()
     for (let i = 0; i < RETAG_DEALS_PER_PASS + 2; i++) {

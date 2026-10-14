@@ -20,7 +20,10 @@ import { writeMomentVectors } from './moment-vectors'
 import { buildMoments } from './moments'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
-/** The Deals one Organization's pass re-tags; the rest wait for the next pass. */
+/** The most Deals a pass examines, completed or not, so a run of stuck Deals ends the pass. */
+export const RETAG_SCAN_LIMIT = 50
+
+/** The Deals one Organization's pass completes; the rest wait for the next pass. */
 export const RETAG_DEALS_PER_PASS = 5
 
 /** The Calls of a Deal one batch statement reads (the database clamps it to 500). */
@@ -255,25 +258,36 @@ export async function retagOutcomes(
   organizationId: string,
   signal: AbortSignal
 ): Promise<RetagResult> {
-  const pending = await inTransaction(
-    deps,
-    organizationId,
-    async (run) =>
-      (await run(DEAL_LIST_PENDING_RETAG, [organizationId, '', RETAG_DEALS_PER_PASS])).rows
-  )
   const result: RetagResult = { deals: 0, calls: 0, skipped: 0 }
-  for (const row of pending) {
-    if (signal.aborted) {
+  let scanned = 0
+  let after = ''
+  // Deals that cannot finish (an unreadable Call) are paged past, so they never starve the Deals
+  // behind them; a pass stops after RETAG_DEALS_PER_PASS completed Deals or RETAG_SCAN_LIMIT examined.
+  scan: while (result.deals < RETAG_DEALS_PER_PASS && scanned < RETAG_SCAN_LIMIT) {
+    const page = await inTransaction(
+      deps,
+      organizationId,
+      async (run) =>
+        (await run(DEAL_LIST_PENDING_RETAG, [organizationId, after, RETAG_DEALS_PER_PASS])).rows
+    )
+    if (page.length === 0) {
       break
     }
-    const outcome = await retagDeal(deps, organizationId, String(row.id), signal)
-    result.calls += outcome.calls
-    result.skipped += outcome.skipped
-    if (outcome.complete) {
-      result.deals++
+    for (const row of page) {
+      if (signal.aborted || result.deals >= RETAG_DEALS_PER_PASS || scanned >= RETAG_SCAN_LIMIT) {
+        break scan
+      }
+      scanned++
+      after = String(row.id)
+      const outcome = await retagDeal(deps, organizationId, after, signal)
+      result.calls += outcome.calls
+      result.skipped += outcome.skipped
+      if (outcome.complete) {
+        result.deals++
+      }
     }
   }
-  if (pending.length > 0) {
+  if (scanned > 0) {
     deps.logger.info('an Outcome re-tag pass ended', { organizationId, ...result })
   }
   return result

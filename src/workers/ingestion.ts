@@ -278,20 +278,35 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     return ran
   }
 
+  /** Organizations whose re-tag is running on this instance. */
+  const retagging = new Set<string>()
+
   /**
    * Starts the Organization's Outcome re-tag when the one pool has a free slot (one task per
    * Organization per pass). It is found by discovery, never by a message, and is not counted in the
    * number of jobs a pass ran: a Deal that cannot finish must not keep the loop from sleeping.
    */
   async function claimAndRunRetag(organizationId: string, mine: Set<Promise<void>>): Promise<void> {
-    await freeSlot()
-    if (shutdown.signal.aborted) {
+    // One re-tag per Organization per instance at a time: a second would repeat the embedding work.
+    // Only an optimisation; the re-tag is idempotent and correct without it.
+    if (retagging.has(organizationId)) {
       return
     }
+    await freeSlot()
+    if (shutdown.signal.aborted || retagging.has(organizationId)) {
+      return
+    }
+    retagging.add(organizationId)
     launchTask(
       'retag',
       organizationId,
-      () => retagOutcomes(deps, organizationId, shutdown.signal),
+      async () => {
+        try {
+          await retagOutcomes(deps, organizationId, shutdown.signal)
+        } finally {
+          retagging.delete(organizationId)
+        }
+      },
       mine
     )
   }

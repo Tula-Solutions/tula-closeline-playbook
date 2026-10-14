@@ -94,7 +94,9 @@ paths:
   never by a message. `playbook.deal_outcome_changed` and `playbook.call_rep_changed` only nudge. One task per
   Organization per pass, not counted in the pass's `ran`, so a Deal that cannot finish never keeps the loop
   awake. Per pass: at most `RETAG_DEALS_PER_PASS` Deals, batches of `RETAG_CALLS_PER_BATCH` Calls
-  (`DEAL_RETAG_BATCH`), `RETAG_ROUNDS` rounds per Deal.
+  (`DEAL_RETAG_BATCH`), `RETAG_ROUNDS` rounds per Deal. Deals that cannot finish are paged past (`after` cursor,
+  `RETAG_SCAN_LIMIT` examined per pass) so they never starve the Deals behind them; one re-tag per Organization
+  runs at a time per instance.
 - Vector attributes cannot be updated in place, so a re-tag re-embeds the Moments from the kept original
   Transcript (embed-budget follow-up) and upserts the same ids. Convergence is write, then verify: after the
   write the Deal is re-read; if `outcome_seq` moved, the Call is rewritten at the newer sequence (up to 4
