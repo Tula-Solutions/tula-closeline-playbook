@@ -31,6 +31,14 @@ _Avoid_: User, seller, salesperson, sales agent
 A group of Reps inside an Organization, overseen by one or more Managers.
 _Avoid_: Group, squad, department
 
+**Membership**:
+A person's place in one Organization, with the role they hold there.
+_Avoid_: Seat, license
+
+**Invitation**:
+An offer, sent to an email address, to join an Organization in a stated role.
+_Avoid_: Invite link, signup link
+
 **Prospect**:
 A person an Organization is trying to sell to.
 _Avoid_: Lead, contact, customer, user
@@ -62,3 +70,31 @@ _Avoid_: Voice clone, custom voice
 **Contact Consent**:
 A stored record that a Prospect agreed to be contacted by an Organization's Agent on one named channel.
 _Avoid_: Calling consent, opt-in, permission
+
+**Document**:
+A file an Organization uploaded to its Playbook, such as a sales deck or product guide.
+_Avoid_: Asset, knowledge article, attachment
+
+**Call**:
+A spoken exchange between a Prospect and a Rep or an Agent, live or uploaded from the Organization's past; not a text exchange.
+_Avoid_: Meeting, session
+
+**Recording**:
+The audio file of a Call, kept by the Organization; not the announcement that a Call is recorded.
+_Avoid_: Voice file, audio clip
+
+**Transcript**:
+The written turns of a Call, each attributed to one speaker.
+_Avoid_: Call notes, script, captions
+
+**Deal**:
+A sale an Organization is pursuing or has closed with a Prospect, named by the Organization's own identifier.
+_Avoid_: Opportunity, lead, order
+
+**Outcome**:
+Whether a Deal was won, lost or is still open.
+_Avoid_: Result, disposition, status (of a Deal)
+
+**Moment**:
+A short window of consecutive turns in a Call, kept with its Deal's Outcome so search can find similar ones. A piece of a Document is a chunk, not a Moment.
+_Avoid_: Snippet, segment, clip

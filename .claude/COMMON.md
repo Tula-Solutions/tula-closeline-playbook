@@ -118,9 +118,11 @@ and is part of `bun run verify`.
 ## Definition of done (the loop)
 
 1. `bun run verify` is green. It is exactly what CI runs.
-2. `/review-loop` reports no blocking findings (the `ollie-reviewer` subagent on Sonnet 5.5).
-3. Every fixed finding has a regression test that failed first.
-4. Repeat 1 to 3. After four rounds without converging, stop and report.
+2. `/run-check` passes: the change is run for real against the local stack (smoke test,
+   integration suite, the changed routes or screens; `agent-browser` for the portal).
+3. `/review-loop` reports no blocking findings (the `ollie-reviewer` subagent on Sonnet 5.5).
+4. Every fixed finding has a regression test that failed first.
+5. Repeat 1 to 4. After four rounds without converging, stop and report.
 
 Hooks enforce part of this: `protect-files.sh` blocks generated, locked and synced files;
 `format-file.sh` runs Biome on each edit; `stop-gate.sh` runs `bun run verify:changed` before you

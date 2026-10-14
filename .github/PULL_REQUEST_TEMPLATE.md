@@ -27,6 +27,10 @@
 - [ ] Regression test added for every bug fixed or review finding addressed
 - [ ] Not run or not verified (be specific):
 
+## 🖥️ Run check
+
+<!-- Report from /run-check: commands run, what was exercised, evidence, what could not be run and why. -->
+
 ## 🦦 Ollie review
 
 <!-- Final verdict from /review-loop, plus findings fixed / dismissed (with evidence) / deferred (issue link). -->

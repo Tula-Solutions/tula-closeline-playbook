@@ -15,6 +15,7 @@
       "Bash(bunx bunup:*)",
       "Bash(bunx drizzle-kit generate:*)",
       "Bash(bunx drizzle-kit check:*)",
+      "Bash(agent-browser:*)",
       "Bash(docker compose ps:*)",
       "Bash(docker compose up -d:*)",
       "Bash(docker compose logs:*)",
@@ -28,7 +29,9 @@
       "Bash(gh pr diff:*)",
       "Skill(otterbot-review)",
       "Skill(verify)",
-      "Skill(review-loop)"
+      "Skill(review-loop)",
+      "Skill(run-check)",
+      "Skill(agent-browser)"
     ],
     "deny": [
       "Read(./.env)",
