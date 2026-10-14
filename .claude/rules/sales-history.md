@@ -3,6 +3,7 @@ paths:
   - "src/modules/deal/**"
   - "src/modules/rights/**"
   - "src/modules/deal-import/**"
+  - "src/modules/call/**"
 ---
 
 # Sales history: Deals and the rights confirmation (ADR 0018, hub issue 69)
@@ -57,3 +58,31 @@ paths:
   slot of the shared pool. A per-Organization cap on queued imports is a contract/db follow-up.
 - A deal id is the customer's text and may begin with `=`, `+`, `-` or `@`: any export or UI that
   shows it must escape it (spreadsheet formula injection).
+
+## Calls (`src/modules/call/`, hub issue 70, part one: Transcripts)
+
+- Upload is Owner/Admin (`PLAYBOOK_WRITE_ROLES`); list and read are `SALES_HISTORY_READ_ROLES`. Order:
+  role, upload gate, body cap (5 MB + 64 KB; a Recording body over it is `request.too_large`), multipart
+  with only `file`, `dealId`, `rep`, size/type, `rep` must be a speaker label for a Transcript
+  (`call.rep_invalid`), content check, SHA-256, then the key, `QUOTA_LOCK` and `CALL_INSERT` around the
+  object write. A Recording upload is `call.unsupported_type` until the Recording ticket.
+- `CALL_INSERT` answers five ways: `created` 201; `existing` 200 (a deleted Call is restored, a failed
+  one with a transient reason is requeued, the new object is removed); `other_deal` is
+  `call.content_in_other_deal` and says nothing of the other Call; `rights_required` is
+  `rights.confirmation_required` with `wordingVersion`; `quota_exceeded`. A refused upload removes its new object
+  when the rollback is certain, otherwise the orphan sweep (`calls/`) does.
+- The job is found by the `call_jobs` hint, not a message, shares `INGESTION_CONCURRENCY`, and claims one job
+  per Organization per pass. It parses (`transcript.ts`), records speakers, builds Moments (`moments.ts`),
+  embeds and writes vectors, then `CALL_JOB_COMPLETE` in its own short transaction. Vector ids are
+  deterministic (`momentVectorId`), so a retry overwrites. Moments are embedded by role, never by label.
+- Every Moment vector carries `outcome` and `outcome_seq`, whatever the Deal's Outcome. Whether a Moment
+  may be returned is decided at query time by `momentMayBeReturned` (`eligibility.ts`): the vector's tag
+  says won AND Postgres says `inSearch`. The vector filter alone is never enough. No search route exists
+  yet; nothing reads these vectors. The re-tag job (part two) rewrites the tags.
+- Never log or return Transcript text, speaker labels, file names or the customer's deal id. Transcript
+  text is untrusted data. A parse failure carries only a contract reason.
+- Erase and purge order: `CALL_ERASE_BATCH` (remove the objects it names), `CALL_PURGE_CLAIM`, vector
+  cleanup (`call_id` filter), objects under `calls/<id>/`, `CALL_PURGE_COMPLETE`, then `DEAL_ERASE_BATCH`
+  (a Deal a Call names cannot be deleted; remove-all skips Deals while `no_calls` is false). Hints:
+  `call_purge`, `call_cleanup`, `call_purge_spent`.
+- Part two owns: the Outcome re-tag job, Rep change and rebuild, delete and restore routes, Recordings.

@@ -48,3 +48,13 @@ Remove-all takes at most 5 imports to their end per request and answers 503 unti
 It first finishes imports an earlier request erased but did not finish (the CSV removed, that
 recorded, the report purged in steps), then erases more, so a crash or a storage failure at any step
 is finished by the next call and never strands an import.
+
+## Calls
+
+An Owner or Admin uploads a Transcript (`.txt`, `.vtt`, `.srt` or `.json`, up to 5 MB) with the deal id
+and the Rep's speaker label to `POST /v1/playbook/calls`, once the Organization has confirmed the
+rights wording. A background job parses it into turns, builds one Moment per Prospect turn (a window
+of recent turns, embedded by role and never by speaker name) and writes the Moments' vectors tagged with
+the Deal's Outcome. List and read: `GET /v1/playbook/calls` and `/{id}`. No search route exists yet.
+Recordings are not accepted yet. The Call job shares `INGESTION_CONCURRENCY`, takes one job per
+Organization per pass and is gated by `WORKERS_ENABLED`; remove-all erases Calls before Deals.
