@@ -360,25 +360,6 @@ describe('the re-tag patches tags and never embeds', () => {
     }
   })
 
-  test('a missing vector leaves the Call not current, creates nothing and is logged by ids only', async () => {
-    const h = await createCallHarness()
-    const call = await readyCall(h, 'gap')
-    const row = h.deps.database.calls(h.organizationId).find((c) => c.id === call.id)
-    await h.deps.vectors.delete(h.organizationId, [
-      momentVectorId(call.id, Number(row?.epoch), Number(row?.rep_seq), 0),
-    ])
-    await h.setOutcome(dealOf(h).id, 'won')
-
-    await pass(h)
-
-    expect((await h.moments(call.id)).total).toBe(1)
-    expect(row?.tagged_outcome_seq).toBeLessThan(dealOf(h).outcome_seq)
-    expect(dealOf(h).retag_through ?? 0).toBeLessThan(dealOf(h).outcome_seq)
-    expect((await h.readCall(call.id)).inSearch).toBe(false)
-    const line = logged(h.deps, 'a Call has Moment vectors missing; its tag stays pending')[0]
-    expect(line).toMatchObject({ callId: call.id, missing: 1 })
-  })
-
   test('another Organization with the same Call ids loses nothing and gains nothing', async () => {
     const h = await createCallHarness()
     const call = await readyCall(h, 'mine')
@@ -401,5 +382,117 @@ describe('the re-tag patches tags and never embeds', () => {
       filter: { call_id: call.id },
     })
     expect(hits.map((hit) => hit.attributes?.outcome)).toEqual(['open'])
+  })
+})
+
+describe('the re-tag repairs a Call whose Moment vectors are missing', () => {
+  const dropFirstVector = async (h: CallHarness, callId: string) => {
+    const row = h.deps.database.calls(h.organizationId).find((c) => c.id === callId)
+    await h.deps.vectors.delete(h.organizationId, [
+      momentVectorId(callId, Number(row?.epoch), Number(row?.rep_seq), 0),
+    ])
+  }
+  const countEmbeds = (h: CallHarness) => {
+    const texts: number[] = []
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    h.deps.embedder.embed = async (batch, ...rest) => {
+      texts.push(batch.length)
+      return embed(batch, ...rest)
+    }
+    return texts
+  }
+
+  test('only the Call with missing vectors is embedded; it ends current, in search, complete and tagged', async () => {
+    const h = await createCallHarness()
+    const whole = await readyCall(h, 'whole')
+    const gap = await readyCall(h, 'gap')
+    await dropFirstVector(h, gap.id)
+    await h.setOutcome(dealOf(h).id, 'won')
+    const texts = countEmbeds(h)
+
+    await pass(h)
+
+    expect(texts).toEqual([2])
+    expect(await h.moments(gap.id)).toMatchObject({ total: 2, returnable: 2, outcomes: ['won'] })
+    expect(await h.moments(whole.id)).toMatchObject({ total: 2, returnable: 2, outcomes: ['won'] })
+    expect((await h.readCall(gap.id)).inSearch).toBe(true)
+    expect(dealOf(h).retag_through).toBe(dealOf(h).outcome_seq)
+    const line = logged(h.deps, 'a Call has Moment vectors missing; it is rebuilt')[0]
+    expect(line).toMatchObject({ callId: gap.id, missing: 1 })
+  })
+
+  test('a Call with every vector present costs no embed', async () => {
+    const h = await createCallHarness()
+    await readyCall(h, 'whole')
+    await h.setOutcome(dealOf(h).id, 'won')
+    const texts = countEmbeds(h)
+
+    await pass(h)
+
+    expect(texts).toEqual([])
+  })
+
+  test('a missing vector with the Outcome moving mid-pass converges on the newest sequence', async () => {
+    const h = await createCallHarness()
+    const call = await readyCall(h, 'both')
+    await dropFirstVector(h, call.id)
+    const id = dealOf(h).id
+    await h.setOutcome(id, 'won')
+    const patch = h.deps.vectors.setAttributes.bind(h.deps.vectors)
+    let moved = false
+    h.deps.vectors.setAttributes = async (...args) => {
+      if (!moved) {
+        moved = true
+        await h.setOutcome(id, 'lost')
+      }
+      return patch(...args)
+    }
+
+    await pass(h)
+
+    expect(await h.moments(call.id)).toMatchObject({ total: 2, outcomes: ['lost'], returnable: 0 })
+    expect(dealOf(h).retag_through).toBe(dealOf(h).outcome_seq)
+  })
+
+  test('a rebuild that fails leaves the Call pending and the next pass repairs it', async () => {
+    const h = await createCallHarness()
+    const call = await readyCall(h, 'flaky')
+    await dropFirstVector(h, call.id)
+    await h.setOutcome(dealOf(h).id, 'won')
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    h.deps.embedder.embed = async () => {
+      throw new Error('embedder down')
+    }
+
+    await pass(h)
+
+    expect((await h.moments(call.id)).total).toBe(1)
+    expect(dealOf(h).retag_through ?? 0).toBeLessThan(dealOf(h).outcome_seq)
+    expect((await h.readCall(call.id)).inSearch).toBe(false)
+    h.deps.embedder.embed = embed
+
+    await pass(h)
+
+    expect(await h.moments(call.id)).toMatchObject({ total: 2, returnable: 2 })
+    expect(dealOf(h).retag_through).toBe(dealOf(h).outcome_seq)
+  })
+
+  test('a Call deleted while it is rebuilt is not recorded and is never returnable', async () => {
+    const h = await createCallHarness()
+    const call = await readyCall(h, 'gone')
+    await dropFirstVector(h, call.id)
+    await h.setOutcome(dealOf(h).id, 'won')
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    h.deps.embedder.embed = async (...args) => {
+      expect((await h.send('DELETE', `/v1/playbook/calls/${call.id}`)).status).toBe(200)
+      return embed(...args)
+    }
+
+    await pass(h)
+
+    expect((await h.moments(call.id)).returnable).toBe(0)
+    await h.deps.time.advance(10 * 60_000)
+    await cleanupPendingCalls(h.deps, h.organizationId, never)
+    expect((await h.moments(call.id)).total).toBe(0)
   })
 })

@@ -17,6 +17,7 @@ import {
   within,
 } from '~/modules/ingestion/runtime'
 import { callObjectKey, momentVectorId } from './keys'
+import { writeMomentVectors } from './moment-vectors'
 import { buildMoments } from './moments'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
@@ -91,8 +92,9 @@ async function patchTags(
 /**
  * Re-tags one ready Call to the Deal's Outcome: rebuilds its Moments from the kept Transcript only
  * to name their vector ids, patches the tag of those vectors (`setAttributes`, no embedder call,
- * the vectors untouched), then records it with `CALL_RETAGGED`. Recorded only when every vector was
- * found; a missing one leaves the Call pending.
+ * the vectors untouched), then records it with `CALL_RETAGGED`. A Moment vector the store no longer
+ * has is the one case that embeds: that Call's Moments are written again (per Call, logged by id and
+ * count), and a failure leaves the Call pending for the next pass.
  *
  * Convergence: after the patch the Deal is read again; if its sequence moved past the one written,
  * the patch is repeated at the newer sequence before anything is recorded, so a slower instance's
@@ -109,6 +111,7 @@ async function retagCall(
 ): Promise<CallResult> {
   const timeout = deps.env.INGESTION_IO_TIMEOUT_MS
   let tag = first
+  let rebuilt = false
   for (let attempt = 0; attempt < RETAG_CALL_ATTEMPTS; attempt++) {
     const call = await inTransaction(
       deps,
@@ -138,20 +141,33 @@ async function retagCall(
     if (!parsed.ok) {
       return 'skipped'
     }
-    // Only the ids are needed, so no embedder call: the Moments are rebuilt to name their vectors.
-    const ids = buildMoments(parsed.transcript.turns, String(call.rep_label)).map((moment) =>
-      momentVectorId(callId, epoch, repSeq, moment.index)
-    )
+    // The patch needs only the ids, so no embedder call: the Moments are rebuilt to name their vectors.
+    const moments = buildMoments(parsed.transcript.turns, String(call.rep_label))
+    const ids = moments.map((moment) => momentVectorId(callId, epoch, repSeq, moment.index))
     const missing = await patchTags(deps, organizationId, ids, tag, signal)
     if (missing > 0) {
-      // A vector the patch did not find is never created empty: the Call stays pending (its tag is
-      // not recorded), and the id count is logged without ids of Moments or any content.
-      deps.logger.warn('a Call has Moment vectors missing; its tag stays pending', {
+      // Store data loss: visible, and repaired here, the only place the re-tag embeds. The Call's
+      // Moments are written again the way the parse job writes them (same ids, current epoch and
+      // Rep sequence, this pass's tag). A failure leaves the Call pending for the next pass.
+      deps.logger.warn('a Call has Moment vectors missing; it is rebuilt', {
         organizationId,
         callId,
         missing,
       })
-      return 'skipped'
+      await writeMomentVectors(
+        {
+          deps,
+          organizationId,
+          callId,
+          epoch,
+          repSeq,
+          signal,
+          beforeWrite: async () => signal.throwIfAborted(),
+        },
+        moments,
+        tag
+      )
+      rebuilt = true
     }
     const deal = await inTransaction(
       deps,
@@ -179,8 +195,14 @@ async function retagCall(
       Number(after.epoch) !== epoch ||
       Number(after.rep_seq) !== repSeq
     ) {
-      // The Call moved on (deleted, restored or a new Rep): the vectors patched belong to a build
-      // its own cleanup removes, and nothing was written that needs removing here.
+      // The Call moved on (deleted, restored or a new Rep). Vectors only patched belong to a build
+      // its own cleanup removes; vectors this pass wrote itself are removed here, since that cleanup
+      // may already have run (anything written later is stopped at query time by eligibility).
+      if (rebuilt) {
+        await within(deps, 'vector store', timeout, signal, () =>
+          deps.vectors.deleteByFilter(organizationId, { call_id: callId, epoch, rep_seq: repSeq })
+        )
+      }
       return 'skipped'
     }
     return 'tagged'

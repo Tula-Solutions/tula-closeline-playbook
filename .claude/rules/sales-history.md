@@ -104,9 +104,14 @@ paths:
   `setAttributes` as patch-by-id (turbopuffer patches attributes without resending the vector).
 - Convergence is patch, then verify: after the patch the Deal is re-read; if `outcome_seq` moved, the Call is
   patched again at the newer sequence (up to 4 attempts); only then `CALL_RETAGGED` records
-  `tagged_outcome_seq`. If any Moment vector is missing the Call is NOT recorded: it stays pending, a warning
-  names the Call id and the count, and the Deal cannot complete. The db has no statement to requeue a `ready`
-  Call's rebuild (`CALL_REQUEUE` is for failed Calls), so the repair is a Rep change or a restore.
+  `tagged_outcome_seq`. If `setAttributes` reports missing ids for a Call (store data loss), the re-tag
+  self-heals that one Call: it warns (Call id and count only), writes its Moments again like the parse job
+  (same ids, current `rep_seq`, this pass's tag; the only embed in the re-tag path), then continues with
+  the same re-read and record. A failed rebuild leaves the Call pending for the next pass. If the Call was
+  deleted, restored or Rep-changed meanwhile, the vectors this pass wrote are removed, and anything
+  written later is stopped at query time by `momentMayBeReturned`. Two re-taggers on one Deal are not
+  serialised during the rebuild (the Deal lock is taken only in the closing transaction): the ids are
+  deterministic and the writes idempotent, and each re-reads the Deal before recording.
 - Lock order: the Deal row (`DEAL_RETAG_LOCK`), then Call rows. The lock and `DEAL_RETAG_DONE` run in one short
   transaction, with no external call inside. `DEAL_RETAG_DONE` refuses while a ready Call is stale, which is
   how a Call that finished mid-re-tag, or an Outcome that moved, brings another round.
