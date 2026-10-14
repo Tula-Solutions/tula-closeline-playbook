@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { dealSchema, listDealsResponseSchema } from 'tula-closeline-contract'
+import { dealSchema, encodeCursor, listDealsResponseSchema } from 'tula-closeline-contract'
 import { DEAL_LIST, DEAL_SET_OUTCOME } from 'tula-closeline-db'
-import { postgresError } from '~/adapters/memory/playbook-database'
+import { MEMORY_DEAL_MAX_SEQ, postgresError } from '~/adapters/memory/playbook-database'
+import { describeError } from '~/describe-error'
 import { createDocumentHarness, errorCode, personIn } from '~/modules/document/test-support'
 import { newOrganizationId, type TestIdentity } from '~/testing'
 
@@ -132,6 +133,55 @@ describe('bad requests are refused with request.invalid', () => {
     expect(await errorCode(response)).toBe('request.invalid')
   })
 
+  test.each([
+    ['year zero', '0000-01-01T00:00:00+00:00'],
+    ['a day the month does not have', '2026-02-30T00:00:00+00:00'],
+    ['an hour out of range', '2026-01-01T25:00:00+00:00'],
+  ])(
+    'a cursor time with %s is request.invalid on every list, and is never echoed',
+    async (_label, createdAt) => {
+      const { h, send, seed } = await harness()
+      seed(1)
+      const cursor = encodeURIComponent(encodeCursor({ createdAt, id: deal(1) } as never))
+
+      for (const filter of ['', '&outcome=won', '&appearedInImport=true']) {
+        const response = await send('GET', `${DEALS}?cursor=${cursor}${filter}`)
+        const text = await response.text()
+
+        expect(response.status).toBe(400)
+        expect(JSON.parse(text).error.code).toBe('request.invalid')
+        expect(text).not.toContain(createdAt)
+      }
+      const logged = [
+        ...h.deps.logLines,
+        JSON.stringify(h.deps.reported.map((r) => String(r.error))),
+      ].join('\n')
+      expect(logged).not.toContain(createdAt)
+      expect(h.deps.reported).toEqual([])
+    }
+  )
+
+  test('an error of SQLSTATE class 22 from a list (here 22008) is request.invalid, not a 500', async () => {
+    const { h, send } = await harness()
+    h.deps.database.failNext(DEAL_LIST, postgresError('22008', 'secret cursor text'))
+
+    const response = await send('GET', DEALS)
+    const text = await response.text()
+
+    expect(response.status).toBe(400)
+    expect(JSON.parse(text).error.code).toBe('request.invalid')
+    expect(text).not.toContain('secret cursor text')
+    expect(h.deps.reported).toEqual([])
+  })
+
+  test('a class 23 error (a check constraint) is still a server error, not request.invalid', async () => {
+    const { h, send } = await harness()
+    h.deps.database.failNext(DEAL_LIST, postgresError('23514'))
+
+    expect((await send('GET', DEALS)).status).toBe(500)
+    expect(h.deps.reported).toHaveLength(1)
+  })
+
   test('a missing Deal is deal.not_found for a read and for an Outcome change', async () => {
     const { send } = await harness()
 
@@ -211,6 +261,43 @@ describe('listing Deals', () => {
   })
 })
 
+describe('a row the database returns that breaks the contract', () => {
+  test('is a generic 500 and no row value reaches the log or the error report', async () => {
+    const { h, send, seed } = await harness()
+    seed(1, {
+      deal_id: ` ${SECRET_DEAL_ID} `,
+      name: `SECRET-NAME-${'x'.repeat(300)}`,
+      amount: 'SECRET-AMOUNT',
+      currency: 'SECRET-CUR',
+      outcome: 'SECRET-OUTCOME' as never,
+    })
+
+    const response = await send('GET', `${DEALS}/${deal(1)}`)
+    const listed = await send('GET', DEALS)
+
+    expect(response.status).toBe(500)
+    expect(listed.status).toBe(500)
+    const everything = [
+      await response.clone().text(),
+      ...h.deps.logLines,
+      ...h.deps.reported.map((r) => JSON.stringify(describeError(r.error))),
+      // The reporter receives the error itself, so its own text and issue list are checked too.
+      ...h.deps.reported.map((r) => String((r.error as Error).message)),
+      ...h.deps.reported.map((r) => JSON.stringify(r.error)),
+    ].join('\n')
+    expect(h.deps.reported.length).toBeGreaterThan(0)
+    for (const secret of [
+      SECRET_DEAL_ID,
+      'SECRET-NAME',
+      'SECRET-AMOUNT',
+      'SECRET-CUR',
+      'SECRET-OUTCOME',
+    ]) {
+      expect(everything).not.toContain(secret)
+    }
+  })
+})
+
 describe('looking a Deal up by the customer id', () => {
   test('finds it exactly, in the body, and never prints the id', async () => {
     const { h, send, seed } = await harness()
@@ -224,7 +311,10 @@ describe('looking a Deal up by the customer id', () => {
     expect(found.status).toBe(200)
     expect(String(dealSchema.parse(await found.json()).id)).toBe(deal(1))
     expect(folded.status).toBe(404)
-    const output = [...h.deps.logLines, JSON.stringify(h.deps.errors.captured)].join('\n')
+    const output = [
+      ...h.deps.logLines,
+      JSON.stringify(h.deps.reported.map((r) => String(r.error))),
+    ].join('\n')
     expect(output).not.toContain(SECRET_DEAL_ID)
     expect(output.toLowerCase()).not.toContain(SECRET_DEAL_ID.toLowerCase())
   })
@@ -315,6 +405,17 @@ describe('setting an Outcome', () => {
     expect(logged).not.toContain(SECRET_DEAL_ID)
     expect(logged).not.toContain('Acme Secret Name')
     h.deps.queue.publish = publish
+  })
+
+  test('a Deal at the sequence ceiling is an accepted unclassified 500: nothing changes, nothing is published', async () => {
+    const { h, send, seed } = await harness()
+    seed(1, { outcome: 'open', outcome_seq: MEMORY_DEAL_MAX_SEQ })
+
+    const response = await send('PUT', `${DEALS}/${deal(1)}/outcome`, { body: { outcome: 'won' } })
+
+    expect(response.status).toBe(500)
+    expect(h.deps.database.deals(h.organizationId)[0]).toMatchObject({ outcome: 'open' })
+    expect(h.published).toEqual([])
   })
 
   test('a lock timeout is a retryable 503 and nothing is published', async () => {

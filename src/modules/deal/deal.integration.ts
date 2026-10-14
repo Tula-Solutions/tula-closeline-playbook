@@ -6,7 +6,12 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { sql } from 'drizzle-orm'
-import { dealSchema, listDealsResponseSchema, rightsStatusSchema } from 'tula-closeline-contract'
+import {
+  dealSchema,
+  encodeCursor,
+  listDealsResponseSchema,
+  rightsStatusSchema,
+} from 'tula-closeline-contract'
 import { createDb, withOrganization } from 'tula-closeline-db'
 import { scopeOver } from '~/adapters/postgres/processed-store'
 import { integrationUrls } from '~/integration-support'
@@ -89,17 +94,24 @@ describe('Deals against Postgres', () => {
     expect(seen.sort()).toEqual(['A', 'B', 'C', 'D', 'E'])
   })
 
-  test('a cursor the database cannot read is request.invalid, not a 500', async () => {
-    const { send } = await harness()
-    const bad = Buffer.from(
-      JSON.stringify({ createdAt: '2026-13-45T00:00:00+00:00', id: dealRecord() })
-    ).toString('base64url')
+  test.each([
+    ['year zero', '0000-01-01T00:00:00+00:00'],
+    ['a day the month does not have', '2026-02-30T00:00:00+00:00'],
+  ])(
+    'a cursor the database refuses (%s) is request.invalid on every list, not a 500',
+    async (_label, createdAt) => {
+      const { h, send } = await harness()
+      const cursor = encodeURIComponent(encodeCursor({ createdAt, id: dealRecord() } as never))
 
-    const response = await send('GET', `${DEALS}?cursor=${bad}`)
+      for (const filter of ['', '&outcome=won', '&appearedInImport=true']) {
+        const response = await send('GET', `${DEALS}?cursor=${cursor}${filter}`)
 
-    expect(response.status).toBe(400)
-    expect(await errorCode(response)).toBe('request.invalid')
-  })
+        expect(response.status).toBe(400)
+        expect(await errorCode(response)).toBe('request.invalid')
+      }
+      expect(h.deps.reported).toEqual([])
+    }
+  )
 
   test('looks a Deal up by the customer id and sets its Outcome once, moving the sequence once', async () => {
     const { h, send } = await harness()

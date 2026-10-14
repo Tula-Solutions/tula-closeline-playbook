@@ -19,3 +19,8 @@ paths:
 - Rights: only `RIGHTS_WORDING_VERSION` can be confirmed (else `rights.version_outdated`); who and
   when come from the token and the database clock. A repeat keeps the first record.
 - Remove-all erases Deals with `DEAL_ERASE_BATCH` in bounded batches and answers 503 until none remain.
+- A Deal at the sequence ceiling (about 2 billion Outcome changes) makes `DEAL_SET_OUTCOME` fail
+  with 23514 and the route answers an unclassified 500. Accepted: the contract (v0.8.0) has no code
+  for it and it cannot be reached in practice. Do not invent one here.
+- Any SQLSTATE class 22 from a list statement is `request.invalid` with the fixed message; the
+  cursor text is never echoed or logged. Other database errors stay 500.

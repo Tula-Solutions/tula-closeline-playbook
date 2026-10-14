@@ -301,8 +301,10 @@ function cursorMicroseconds(text: unknown): number {
         ? `${zone}:00`
         : zone.replace(/^([+-]\d{2})(\d{2})$/, '$1:$2')
   const ms = Date.parse(`${day}T${time}.${fraction.padEnd(3, '0').slice(0, 3)}${offset}`)
-  if (Number.isNaN(ms)) {
-    throw postgresError('22007', 'invalid input syntax for type timestamp with time zone')
+  // Postgres reads the shape but refuses a value that is no date (month 13, day 30 of February,
+  // hour 25) and year 0000, with 22008; this is the code the service must also map.
+  if (Number.isNaN(ms) || day?.startsWith('0000') === true) {
+    throw postgresError('22008', 'date/time field value out of range')
   }
   return ms * 1000 + Number(fraction.padEnd(6, '0').slice(3, 6))
 }

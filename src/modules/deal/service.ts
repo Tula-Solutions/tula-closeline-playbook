@@ -25,15 +25,22 @@ import { cursorOf, dealCursorSchema, outcomeSeqSchema, toDeal } from './schema'
 /** What the Deal service needs from the container. */
 export type DealDeps = Pick<Container, 'scope' | 'queue' | 'logger'>
 
-/** The state of a bad list cursor in Postgres, which the service answers as a validation error. */
-const INVALID_DATETIME = '22007'
+/**
+ * The SQLSTATE class of data exceptions (22007 invalid syntax, 22008 field overflow, 22003 and so
+ * on). A list statement's only caller-chosen input is the cursor text, so any of them means the
+ * cursor cannot be read.
+ */
+const DATA_EXCEPTION_CLASS = '22'
 
-/** Runs a read or write and maps an invalid-cursor answer from the database to `request.invalid`. */
+/**
+ * Runs a list statement and maps any data exception from the database to `request.invalid`, with
+ * the fixed message of that code, so the cursor text is never echoed or logged.
+ */
 async function mappingBadCursor<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work()
   } catch (error) {
-    if (postgresErrorOf(error)?.code === INVALID_DATETIME) {
+    if (postgresErrorOf(error)?.code?.startsWith(DATA_EXCEPTION_CLASS) === true) {
       throw failure('request.invalid')
     }
     throw error
@@ -149,6 +156,8 @@ export async function setOutcome(
   assertRole(context, SALES_HISTORY_READ_ROLES)
   const organizationId = context.organizationId
   const closedAtGiven = request.closedAt !== undefined
+  // A Deal at the sequence ceiling (DEAL_MAX_SEQ, about 2 billion changes) makes this statement fail
+  // with 23514. The contract has no code for it, so it stays an unclassified 500, accepted.
   const row = await transaction(
     deps,
     organizationId,

@@ -25,9 +25,9 @@ export function ingestionHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<Pl
         nudge(context.organizationId)
       }
     },
-    // The Call re-tag of a later ticket reads the Deal's `outcome_seq` from the database, so
-    // acknowledging this message loses nothing: a Call's tag is compared with that number, not with
-    // the message. Until that job exists the message is simply consumed.
+    // Acknowledged and dropped for now. A lost message is recovered by a discovery of Calls whose
+    // tag lags the Deal's `outcome_seq`; that discovery is in db v0.15.0 and the service Calls
+    // ticket, not in this repo yet. Until then the message is simply consumed.
     'playbook.deal_outcome_changed': async () => undefined,
     'playbook.document_deleted': async (message, context) => {
       const organizationId = context.organizationId
