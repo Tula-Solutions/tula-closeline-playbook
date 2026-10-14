@@ -1648,7 +1648,10 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             }
             return called
           }
-          if (text.startsWith('set local lock_timeout')) {
+          if (
+            text.startsWith('set local lock_timeout') ||
+            text.startsWith('set local statement_timeout')
+          ) {
             return none
           }
           throw new Error(`the database double does not model this statement: ${text.slice(0, 60)}`)

@@ -1,9 +1,34 @@
 import { describe, expect, test } from 'bun:test'
-import { MAX_REP_FOLLOWING_CHARACTERS, MAX_REP_FOLLOWING_TURNS } from 'tula-closeline-contract'
+import {
+  MAX_REP_FOLLOWING_CHARACTERS,
+  MAX_REP_FOLLOWING_TURNS,
+  momentQueryText,
+} from 'tula-closeline-contract'
 import { buildMoments, MOMENT_CONTEXT_CHARACTERS, MOMENT_CONTEXT_TURNS } from './moments'
 import type { Turn } from './transcript'
 
 const turn = (speaker: string, text: string): Turn => ({ speaker, text })
+
+describe('a Moment embeds the contract text, so an indexed Moment and a search query agree', () => {
+  test('the text is momentQueryText of the context, with each turn trimmed', () => {
+    const [moment] = buildMoments(
+      [turn('Rep', '  Hello there \n'), turn('Pat', '\t What does it cost?  ')],
+      'Rep'
+    )
+
+    expect(moment?.text).toBe('Rep: Hello there\nProspect: What does it cost?')
+    expect(moment?.text).toBe(momentQueryText(moment?.context ?? []))
+  })
+
+  test('a Prospect turn cut at the limit is trimmed again, so no line ends in a space', () => {
+    const long = `${'a'.repeat(MOMENT_CONTEXT_CHARACTERS - 1)} ${'b'.repeat(50)}`
+
+    const [moment] = buildMoments([turn('Pat', long)], 'Rep')
+
+    expect(moment?.text.endsWith(' ')).toBe(false)
+    expect(moment?.text).toBe(`Prospect: ${'a'.repeat(MOMENT_CONTEXT_CHARACTERS - 1)}`)
+  })
+})
 
 describe('Moments', () => {
   test('one per Prospect turn, with the context up to it and the Rep turns that follow', () => {

@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test'
-import { type Call, callSchema, dealSchema, listDealsResponseSchema } from 'tula-closeline-contract'
+import {
+  type Call,
+  callSchema,
+  dealSchema,
+  listDealsResponseSchema,
+  momentSnippet,
+} from 'tula-closeline-contract'
 import {
   CALL_JOB_CLAIM,
   CALL_JOB_COMPLETE,
@@ -54,8 +60,20 @@ describe('processing a Transcript', () => {
         rep_seq: 0,
         outcome: 'open',
         outcome_seq: 0,
+        v: 2,
       })
+      expect(typeof hit.attributes?.prospect).toBe('string')
+      expect(typeof hit.attributes?.rep_next).toBe('string')
+      expect(String(hit.attributes?.prospect).length).toBeGreaterThan(0)
+      expect(String(hit.attributes?.prospect).length).toBeLessThanOrEqual(512)
     }
+    // The snippets are the contract's: the Prospect's turn and what the Rep said next.
+    expect(hits.map((hit) => hit.attributes?.prospect)).toContain(
+      momentSnippet('I have a question about pricing, round 0.')
+    )
+    expect(hits.map((hit) => hit.attributes?.rep_next)).toContain(
+      momentSnippet('Hello x, this is the Rep speaking, turn 1.')
+    )
     expect(new Set(hits.map((hit) => hit.id)).size).toBe(3)
     // The embedded text is by role, never a speaker label.
     const embedded = h.deps.embedder.calls.flatMap((c) => c.texts).join('\n')

@@ -1,4 +1,8 @@
-import { MAX_REP_FOLLOWING_CHARACTERS, MAX_REP_FOLLOWING_TURNS } from 'tula-closeline-contract'
+import {
+  MAX_REP_FOLLOWING_CHARACTERS,
+  MAX_REP_FOLLOWING_TURNS,
+  momentQueryText,
+} from 'tula-closeline-contract'
 import type { Turn } from './transcript'
 
 /**
@@ -29,8 +33,6 @@ export type Moment = {
   repFollowing: string[]
   text: string
 }
-
-const SYMBOL_LABEL: Record<Role, string> = { rep: 'Rep', prospect: 'Prospect' }
 
 /** The first `max` code points of `text`; a string within `max` UTF-16 units is returned as it is. */
 function codePoints(text: string, max: number): string {
@@ -113,7 +115,8 @@ export function buildMoments(turns: readonly Turn[], repLabel: string): Moment[]
       turn: at,
       context,
       repFollowing,
-      text: context.map((entry) => `${SYMBOL_LABEL[entry.role]}: ${entry.text}`).join('\n'),
+      // The contract's function, which search also calls, so indexed text and query text are identical.
+      text: momentQueryText(context),
     })
   }
   return moments

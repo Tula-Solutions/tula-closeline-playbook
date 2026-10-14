@@ -13,6 +13,7 @@ import { createInternalDocumentRouter } from '~/modules/document/internal-router
 import { createDocumentRouter } from '~/modules/document/router'
 import { createHealthRouter } from '~/modules/health/router'
 import { createRightsRouter } from '~/modules/rights/router'
+import { createSearchRouter } from '~/modules/search/router'
 import { serveOpenApi } from '~/openapi'
 
 /** The prefix of every public route, which sits behind the access-token middleware. */
@@ -37,6 +38,7 @@ export function createApp(container: Container): OpenAPIHono<AppEnv> {
   publicRoutes.route('/', createDealImportRouter(container))
   publicRoutes.route('/', createCallRouter(container))
   publicRoutes.route('/', createRightsRouter(container))
+  publicRoutes.route('/', createSearchRouter(container))
   app.route(PUBLIC_PREFIX, publicRoutes)
 
   serveOpenApi(app)
