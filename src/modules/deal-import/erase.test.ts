@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { DEAL_IMPORT_PURGE_BATCH } from 'tula-closeline-db'
+import { DEAL_IMPORT_ERASE_BATCH, DEAL_IMPORT_PURGE_BATCH } from 'tula-closeline-db'
 import { INTERNAL_SECRET, newKey } from '~/modules/document/test-support'
 import { newOrganizationId } from '~/testing'
 import { IMPORT_PURGE_STEP_ROWS, IMPORTS_ERASED_PER_REQUEST } from './erase'
@@ -102,6 +102,42 @@ describe('remove-all erases imports, their reports and their files', () => {
     expect(stillThere).toHaveLength(1)
     expect(stillThere[0]?.erased_at).toBeNull()
     expect(repeated.status).toBe(200)
+  })
+
+  test('with more imports than one request erases, every file it needs is removed before any import is erased', async () => {
+    const h = await createImportHarness()
+    const total = IMPORTS_ERASED_PER_REQUEST + 3
+    for (let i = 0; i < total; i++) {
+      const id = `dimp_${(i * 7919).toString(16).padStart(32, '0')}`
+      h.deps.database.seedImport({ id, organization_id: h.organizationId })
+      await h.deps.objects.put(
+        h.organizationId,
+        `deal-imports/${id}/original.csv`,
+        new Uint8Array([1])
+      )
+    }
+    const events: string[] = []
+    const base = h.deps.scope
+    h.deps.scope = (organizationId, work) =>
+      base(organizationId, (run) =>
+        work(async (text, params) => {
+          if (text === DEAL_IMPORT_ERASE_BATCH) {
+            events.push('erase')
+          }
+          return run(text, params)
+        })
+      )
+    const remove = h.deps.objects.delete.bind(h.deps.objects)
+    h.deps.objects.delete = async (...args) => {
+      events.push('delete')
+      return remove(...args)
+    }
+
+    await removeAll(h, h.organizationId)
+
+    const firstErase = events.indexOf('erase')
+    expect(firstErase).toBeGreaterThan(-1)
+    expect(events.slice(firstErase)).not.toContain('delete')
   })
 
   test('an import that was running is fenced: the job it had cannot write after the erase', async () => {
