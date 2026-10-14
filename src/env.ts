@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MAX_DEALS,
   DEFAULT_MAX_DOCUMENT_BYTES_TOTAL,
   DEFAULT_MAX_DOCUMENTS,
   MAX_DOCUMENT_BYTES,
@@ -142,6 +143,11 @@ const schema = z
     /** The most pages a document may have. May lower the contract's limit, never raise it. */
     MAX_PAGES_PER_DOCUMENT: integer(1, MAX_DOCUMENT_PAGES).optional(),
     /**
+     * Deals an Organization may hold (ADR 0018). A Deal import stops creating Deals at this number
+     * and reports the rows it could not take as `deal_limit_reached`.
+     */
+    MAX_DEALS_PER_ORGANIZATION: integer(1, 1_000_000).default(DEFAULT_MAX_DEALS),
+    /**
      * The version of the rights confirmation wording the portal shows now (ADR 0018). Raising it
      * asks every Organization to confirm again before its next Recording or Transcript upload.
      */
@@ -184,6 +190,15 @@ const schema = z
       .enum(['true', 'false'])
       .optional()
       .transform((value) => (value === undefined ? undefined : value === 'true')),
+    /**
+     * Whether this instance runs Deal import jobs (parse a CSV, apply its rows). Independent of
+     * `WORKERS_ENABLED`: an import uses no embedder, OCR or vector store, so it runs where the
+     * document job loop is refused. Imports share the pool of `INGESTION_CONCURRENCY`.
+     */
+    IMPORTS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
     /**
      * Whether this instance runs the sweeps: the purge, `cleanup_pending`, housekeeping and orphan
      * objects. On by default everywhere, and independent of `WORKERS_ENABLED`: without them
