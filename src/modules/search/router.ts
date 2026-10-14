@@ -55,8 +55,13 @@ const searchMoments = createRoute({
   },
 })
 
+/** What this service adds to the contract's description of the page: the format rule it applies. */
+const PAGE_RULE =
+  ' In this service `page` is set only for a PDF (by its file name extension); it is null for PPTX and every other format.'
+
 const searchDocumentsRoute = createRoute({
   ...contractRoute('searchDocuments'),
+  description: `${contractRoute('searchDocuments').description}${PAGE_RULE}`,
   middleware: requirePlaybookReader,
   tags: ['search'],
   summary: 'Find similar passages in Playbook documents',

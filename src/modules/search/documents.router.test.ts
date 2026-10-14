@@ -215,6 +215,23 @@ describe('what a document search returns', () => {
   })
 })
 
+describe('the OpenAPI description', () => {
+  test('says page is set only for a PDF and null for PPTX and every other format', async () => {
+    const h = await createDocumentHarness()
+
+    const document = (await (await h.app.request('/openapi.json')).json()) as {
+      paths: Record<string, { post?: { description?: string } }>
+    }
+
+    expect(document.paths['/v1/playbook/search/documents']?.post?.description).toContain(
+      'only for a PDF'
+    )
+    expect(document.paths['/v1/playbook/search/documents']?.post?.description).toContain(
+      'null for PPTX and every other format'
+    )
+  })
+})
+
 describe('request.invalid', () => {
   test.each([
     ['no turns', { turns: [] }],

@@ -4,17 +4,25 @@
 // scope and the epoch and state it returns). Objects, vectors, parser and embedder stay in memory.
 
 import { afterAll, describe, expect, test } from 'bun:test'
-import { createDb, ORGANIZATIONS_WITH_WORK, type WorkDiscoveryRow } from 'tula-closeline-db'
+import { sql } from 'drizzle-orm'
+import {
+  createDb,
+  ORGANIZATIONS_WITH_WORK,
+  type WorkDiscoveryRow,
+  withOrganization,
+} from 'tula-closeline-db'
 import { type Discover, scopeOver, statementOf } from '~/adapters/postgres/processed-store'
 import { integrationUrls } from '~/integration-support'
+import { requeueReadyDocuments } from '~/modules/document/reindex'
 import * as Documents from '~/modules/document/service'
 import { createPipelineHarness, paragraphs } from '~/modules/ingestion/test-support'
 import { searchDocuments } from './documents'
 
 const urls = integrationUrls()
 const service = createDb(urls.service)
+const owner = createDb(urls.owner)
 afterAll(async () => {
-  await Promise.allSettled([service.close()])
+  await Promise.allSettled([service.close(), owner.close()])
 })
 
 const discover: Discover = (kind, after, batch) =>
@@ -78,5 +86,56 @@ describe('document search against Postgres', () => {
 
     expect(JSON.stringify(found)).not.toContain('LEAKED')
     expect(found.items).toEqual([])
+  })
+})
+
+describe('the local-dev re-index statement against Postgres', () => {
+  test('puts a ready document back in the queue at the same epoch, and the pipeline rewrites it', async () => {
+    const h = harness()
+    const id = await h.upload('notes.txt', paragraphs(2, 'rr'))
+    await h.pass()
+    const row = (organizationId: string, documentId: string) =>
+      withOrganization(owner.db, organizationId, (tx) =>
+        tx.execute<{ state: string; epoch: number }>(
+          sql`select state, epoch from playbook.documents where id = ${documentId}`
+        )
+      ).then((result) => result.rows[0])
+    const before = await row(h.organizationId, id)
+    expect(before?.state).toBe('ready')
+
+    const queued = await withOrganization(service.db, h.organizationId, (tx) =>
+      requeueReadyDocuments(tx, h.organizationId, '', 10)
+    )
+    const again = await withOrganization(service.db, h.organizationId, (tx) =>
+      requeueReadyDocuments(tx, h.organizationId, '', 10)
+    )
+
+    expect(queued).toEqual([id])
+    // Its job is queued now, so a second run skips it.
+    expect(again).toEqual([])
+    expect(await row(h.organizationId, id)).toMatchObject({
+      state: 'uploaded',
+      epoch: before?.epoch,
+    })
+    expect(await h.pass()).toBe(1)
+    expect(await row(h.organizationId, id)).toMatchObject({ state: 'ready', epoch: before?.epoch })
+  })
+
+  test('leaves a document that is not ready, and another Organization, alone', async () => {
+    const mine = harness()
+    const theirs = harness()
+    await mine.upload('uploaded.txt', paragraphs(2, 'uu'))
+    const theirId = await theirs.upload('theirs.txt', paragraphs(2, 'tt'))
+    await theirs.pass()
+
+    const queued = await withOrganization(service.db, mine.organizationId, (tx) =>
+      requeueReadyDocuments(tx, mine.organizationId, '', 10)
+    )
+
+    expect(queued).toEqual([])
+    const theirRow = await withOrganization(owner.db, theirs.organizationId, (tx) =>
+      tx.execute<{ state: string }>(sql`select state from playbook.documents where id = ${theirId}`)
+    )
+    expect(theirRow.rows[0]?.state).toBe('ready')
   })
 })
