@@ -34,3 +34,6 @@ Anything this reveals is a finding: fix it test-first, like a review finding.
 6. **Stop** a stack you started: `bun run dev --down` in the hub. Never `--volumes` unless asked.
 
 Use only test accounts and local origins. Never put evidence in the repo.
+
+Never leave a command waiting: give anything that reads stdin `< /dev/null`, give every wait loop a
+deadline, and stop every background process you started before you report.
