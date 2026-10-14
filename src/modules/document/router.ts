@@ -151,13 +151,12 @@ const upload = createRoute({
   },
 })
 
-/** The one `file` part of an upload, from a multipart body capped at the upload limit and `timeoutMs`. */
-export async function readFilePart(
+/** The parsed multipart body of an upload, read under a size cap and a deadline of `timeoutMs`. */
+export async function readUploadForm(
   c: Context<AuthedEnv>,
   maxBody: number,
-  timeoutMs: number,
-  field: string = UPLOAD_FILE_FIELD
-): Promise<File> {
+  timeoutMs: number
+): Promise<Awaited<ReturnType<Request['formData']>>> {
   const contentType = c.req.header('content-type') ?? ''
   if (!/^multipart\/form-data\s*(;|$)/i.test(contentType)) {
     throw domainError(ERRORS['request.unsupported_media_type'])
@@ -165,15 +164,24 @@ export async function readFilePart(
   // The deadline covers reading and parsing the body only; `arrayBuffer()` and the service call
   // that follows are bounded by their own limits (the file size cap, the storage and database timeouts).
   const capped = capBody(c.req.raw, maxBody, AbortSignal.timeout(timeoutMs))
-  let form: Awaited<ReturnType<Request['formData']>>
   try {
-    form = await capped.request.formData()
+    return await capped.request.formData()
   } catch {
     if (capped.timedOut()) {
       throw domainError(ERRORS['server.timeout'])
     }
     throw domainError(capped.exceeded() ? ERRORS['request.too_large'] : ERRORS['request.invalid'])
   }
+}
+
+/** The one `file` part of an upload, from a multipart body capped at the upload limit and `timeoutMs`. */
+export async function readFilePart(
+  c: Context<AuthedEnv>,
+  maxBody: number,
+  timeoutMs: number,
+  field: string = UPLOAD_FILE_FIELD
+): Promise<File> {
+  const form = await readUploadForm(c, maxBody, timeoutMs)
   const names = Array.from(form.keys())
   const part: unknown = form.get(field)
   if (names.length !== 1 || !(part instanceof File)) {

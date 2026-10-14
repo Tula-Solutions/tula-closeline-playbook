@@ -25,9 +25,9 @@ export function ingestionHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<Pl
         nudge(context.organizationId)
       }
     },
-    // Acknowledged and dropped for now. A lost message is recovered by a discovery of Calls whose
-    // tag lags the Deal's `outcome_seq`; that discovery is in db v0.15.0 and the service Calls
-    // ticket, not in this repo yet. Until then the message is simply consumed.
+    // Acknowledged and dropped for now. Nothing recovers an Outcome change yet: the re-tag job
+    // (Calls part two, via the db's lagging-tag discovery) will. Until then a Call whose Deal
+    // changed after its tag was read stays out of search (`inSearch` is false), which is safe.
     'playbook.deal_outcome_changed': async () => undefined,
     'playbook.document_deleted': async (message, context) => {
       const organizationId = context.organizationId

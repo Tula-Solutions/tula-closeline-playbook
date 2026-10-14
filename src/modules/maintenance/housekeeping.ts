@@ -1,4 +1,5 @@
 import {
+  CALL_GET,
   CONSUMED_PURGE_AGE_MS,
   DEAL_IMPORT_GET,
   DOCUMENT_GET,
@@ -9,6 +10,7 @@ import {
 } from 'tula-closeline-db'
 import type { ProcessedStore } from 'tula-closeline-kit'
 import { isLockTimeout } from '~/adapters/postgres/retry'
+import { callIdOfKey } from '~/modules/call/keys'
 import { importIdOfKey } from '~/modules/deal-import/keys'
 import { inTransaction, type PipelineDeps, within } from '~/modules/ingestion/runtime'
 
@@ -143,11 +145,28 @@ const ORPHAN_KINDS: readonly OrphanKind[] = [
         return found
       }),
   },
+  {
+    prefix: 'calls/',
+    ownerOf: callIdOfKey,
+    // A Call's objects are needed while its row exists, whatever its state: the purge removes the
+    // prefix before the row. An upload whose outcome was unknown, or that lost a race, leaves one
+    // with no row.
+    needed: (deps, organizationId, ids) =>
+      inTransaction(deps, organizationId, async (run) => {
+        const found = new Set<string>()
+        for (const id of ids) {
+          if ((await run(CALL_GET, [organizationId, id])).rows.length > 0) {
+            found.add(id)
+          }
+        }
+        return found
+      }),
+  },
 ]
 
 /**
- * Deletes the Organization's objects under `documents/` that no document names and under
- * `deal-imports/` that no waiting or running import names, when they are older than
+ * Deletes the Organization's objects under `documents/` that no document names, under
+ * `calls/` that no Call names and under `deal-imports/` that no waiting or running import names, when they are older than
  * {@link ORPHAN_OBJECT_MIN_AGE_MS} (an upload whose outcome was unknown leaves one, and so does an
  * ended import whose file could not be removed). Each listing is paged (`ORPHAN_PAGE_SIZE`, at most
  * `ORPHAN_MAX_PAGES` pages a pass); an object is deleted only when its owner no longer needs it and

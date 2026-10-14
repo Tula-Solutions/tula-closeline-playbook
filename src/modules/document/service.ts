@@ -46,6 +46,7 @@ import {
 import type { Container } from '~/container'
 import { RetryAfterError } from '~/http/domain-error'
 import { registry } from '~/messages'
+import { eraseCalls } from '~/modules/call/erase'
 import { eraseImports } from '~/modules/deal-import/erase'
 import {
   assertRole,
@@ -73,7 +74,10 @@ import {
 } from './schema'
 
 /** What the document service needs from the container. */
-export type DocumentDeps = Pick<Container, 'scope' | 'objects' | 'queue' | 'logger' | 'env'>
+export type DocumentDeps = Pick<
+  Container,
+  'scope' | 'objects' | 'queue' | 'logger' | 'env' | 'vectors' | 'sleep' | 'random' | 'clock'
+>
 
 export type { CallContext }
 
@@ -719,7 +723,13 @@ export async function removeAll(
   }
   await publishCleanups(deps, context, cleanups, options.publishBudgetMs ?? PUBLISH_BUDGET_MS)
   await eraseImports(deps, organizationId)
-  for (let batch = 0; batch < ERASE_BATCHES_PER_REQUEST; batch++) {
+  // Calls go before Deals: a Deal a Call refers to cannot be deleted.
+  await eraseCalls(deps, organizationId, INTERNAL_CALL_USER_ID)
+  const callsRemain = await transaction(deps, organizationId, async (run) => {
+    await run(LOCK_TIMEOUT_SQL, [])
+    return (await run(ORGANIZATION_REMOVAL_STATUS, [organizationId])).rows[0]?.no_calls !== true
+  })
+  for (let batch = 0; batch < (callsRemain ? 0 : ERASE_BATCHES_PER_REQUEST); batch++) {
     const deleted = await transaction(deps, organizationId, async (run) => {
       await run(LOCK_TIMEOUT_SQL, [])
       return (await run(DEAL_ERASE_BATCH, [organizationId, DEAL_ERASE_BATCH_SIZE])).rows[0]?.deleted
@@ -732,7 +742,12 @@ export async function removeAll(
   const finished = await transaction(deps, organizationId, async (run) => {
     await run(LOCK_TIMEOUT_SQL, [])
     const status = (await run(ORGANIZATION_REMOVAL_STATUS, [organizationId])).rows[0]
-    if (status?.no_documents !== true || status.no_deals !== true || status.no_imports !== true) {
+    if (
+      status?.no_documents !== true ||
+      status.no_deals !== true ||
+      status.no_imports !== true ||
+      status.no_calls !== true
+    ) {
       // Nothing is written, so no key row is left in flight.
       return false
     }
