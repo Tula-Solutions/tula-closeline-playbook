@@ -18,6 +18,7 @@ Run the rounds below in order. Keep a findings ledger in the conversation
 
 1. **Gate.** Run the `verify` skill until `bun run verify` is green. Don't spend a review on red
    code.
+   Round 1: then run the `run-check` skill and fix what it finds.
 2. **Review.** Spawn the `ollie-reviewer` subagent (it is pinned to `claude-sonnet-5-5`). Prompt:
    (Project agents register at session start. If `ollie-reviewer` is "not found" in a session
    where `.claude/agents/ollie-reviewer.md` was just created, spawn `general-purpose` with
@@ -39,7 +40,7 @@ Run the rounds below in order. Keep a findings ledger in the conversation
    1. Write a regression test that reproduces the finding and **watch it fail**.
    2. Make the smallest fix that makes it pass.
    3. Run the affected package's tests.
-5. **Exit check:** `bun run verify` is green **and** Ollie's verdict is `no blocking findings` with
+5. **Exit check:** `bun run verify` is green, `run-check` passes (rerun it at exit), **and** Ollie's verdict is `no blocking findings` with
    no unresolved 🔴/🟠 and every 🟡 fixed or deferred → exit the loop. Otherwise start the next
    round.
 
@@ -51,6 +52,7 @@ Don't keep looping.
 ```
 Review loop: <converged in N rounds | stopped after 4 rounds>
 Final gate: bun run verify ✅
+Run check: <pass | blocked: reason> (see report)
 Final Ollie verdict: <verdict> (Sonnet 5.5, local mode)
 Fixed:     F1 🟠 session/service.ts:88 — reuse inside grace window revoked family → test 'reuse within grace…'
 Dismissed: F4 🟡 … — evidence …
@@ -58,7 +60,7 @@ Deferred:  F6 🟡 … — issue #…
 Tests added: <n> (list names)
 ```
 
-Copy this report into the PR's "🦦 Ollie review" section.
+Copy this report into the PR's "🦦 Ollie review" section and the run check report into "🖥️ Run check".
 
 ## Posting to GitHub (only on request)
 
