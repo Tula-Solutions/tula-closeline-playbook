@@ -1,6 +1,7 @@
 import {
   type Call,
   type CallCursor,
+  CURRENT_RIGHTS_WORDING_VERSION,
   callCursorSchema,
   callReuploadRequeues,
   callSchema,
@@ -180,13 +181,13 @@ type UploadOutcome =
   | { kind: 'done'; status: 200 | 201; call: Call; created: boolean }
 
 /** The refusal for a missing rights confirmation: the contract's code with the wording version the portal must show. */
-function rightsRequired(deps: CallDeps): AppError {
+function rightsRequired(): AppError {
   const refusal = failure('rights.confirmation_required')
   return new AppError({
     code: refusal.code,
     status: refusal.status,
     message: refusal.message,
-    details: { wordingVersion: deps.env.RIGHTS_WORDING_VERSION },
+    details: { wordingVersion: CURRENT_RIGHTS_WORDING_VERSION },
   })
 }
 
@@ -273,7 +274,7 @@ export async function upload(
         DEFAULT_MAX_CALLS,
         DEFAULT_MAX_RECORDING_BYTES_TOTAL,
         deps.env.MAX_DEALS_PER_ORGANIZATION,
-        deps.env.RIGHTS_WORDING_VERSION,
+        CURRENT_RIGHTS_WORDING_VERSION,
       ])
     ).rows[0]
     switch (answer?.result) {
@@ -305,7 +306,7 @@ export async function upload(
       case 'other_deal':
         throw failure('call.content_in_other_deal')
       case 'rights_required':
-        throw rightsRequired(deps)
+        throw rightsRequired()
       case 'quota_exceeded':
         throw failure('call.quota_exceeded')
       default:

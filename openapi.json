@@ -7477,7 +7477,7 @@
     },
     "/v1/playbook/rights-confirmation": {
       "get": {
-        "description": "Reads the Organization's recorded confirmation that it may share Recordings and Transcripts, with who confirmed and when, the version of the wording they saw, the current wording version and whether the stored one is current. Owner and Admin only. Without a current confirmation, uploads of Calls are refused; existing Calls are kept and stay searchable.",
+        "description": "Reads the Organization's recorded confirmation that it may share Recordings and Transcripts, with who confirmed and when, the version of the wording they saw, the current wording version, optionally the text of that version (also in RIGHTS_WORDINGS) and whether the stored one is current. Owner and Admin only. Without a current confirmation, uploads of Calls are refused; existing Calls are kept and stay searchable.",
         "tags": ["rights"],
         "summary": "Read the rights confirmation",
         "security": [
@@ -7520,6 +7520,37 @@
                     },
                     "confirmed": {
                       "type": "boolean"
+                    },
+                    "currentWording": {
+                      "type": "object",
+                      "properties": {
+                        "heading": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "paragraphs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1,
+                          "maxItems": 10
+                        },
+                        "checkbox": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "draft": {
+                          "type": "boolean",
+                          "enum": [true]
+                        }
+                      },
+                      "required": ["heading", "paragraphs", "checkbox"],
+                      "additionalProperties": false
                     }
                   },
                   "required": ["currentWordingVersion", "confirmation", "confirmed"]
@@ -7691,6 +7722,37 @@
                     },
                     "confirmed": {
                       "type": "boolean"
+                    },
+                    "currentWording": {
+                      "type": "object",
+                      "properties": {
+                        "heading": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "paragraphs": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "minItems": 1,
+                          "maxItems": 10
+                        },
+                        "checkbox": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "draft": {
+                          "type": "boolean",
+                          "enum": [true]
+                        }
+                      },
+                      "required": ["heading", "paragraphs", "checkbox"],
+                      "additionalProperties": false
                     }
                   },
                   "required": ["currentWordingVersion", "confirmation", "confirmed"]

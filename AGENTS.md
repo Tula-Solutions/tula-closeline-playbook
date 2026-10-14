@@ -69,7 +69,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 - Sales history (ADR 0018, hub issue 69): `src/modules/deal/` (Deal routes) and
   `src/modules/rights/` (rights confirmation), Owner and Admin only, rules in
   `.claude/rules/sales-history.md`. `src/modules/service-kit.ts` holds the shared transaction helper,
-  caller context and error lookup. `RIGHTS_WORDING_VERSION` is the current wording version.
+  caller context and error lookup. The rights wording version is the contract's `CURRENT_RIGHTS_WORDING_VERSION`.
   `src/modules/deal-import/` is the Deal CSV import (upload, read routes, `job.ts`, `erase.ts`); the
   job shares the `INGESTION_CONCURRENCY` pool, is gated by `IMPORTS_ENABLED`, caps Deals at `MAX_DEALS_PER_ORGANIZATION`.
   `src/modules/call/` is the Call Transcript path (hub issue 70: upload, read, `job.ts` Moments, `purge.ts`, `erase.ts`,
