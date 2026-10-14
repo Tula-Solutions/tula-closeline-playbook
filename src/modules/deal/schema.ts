@@ -11,17 +11,19 @@ import { z } from 'zod'
 import { parsePgTimestamp } from '~/modules/document/schema'
 
 /** A timestamp column (text or Date) as an ISO string, or null. */
-const optionalTimestamp = z.union([z.string(), z.date(), z.null()]).transform((value, context) => {
-  if (value === null) {
-    return null
-  }
-  const date = value instanceof Date ? value : parsePgTimestamp(value)
-  if (date === undefined || Number.isNaN(date.getTime())) {
-    context.addIssue({ code: 'custom', message: 'not a timestamp' })
-    return z.NEVER
-  }
-  return date.toISOString()
-})
+export const optionalTimestamp = z
+  .union([z.string(), z.date(), z.null()])
+  .transform((value, context) => {
+    if (value === null) {
+      return null
+    }
+    const date = value instanceof Date ? value : parsePgTimestamp(value)
+    if (date === undefined || Number.isNaN(date.getTime())) {
+      context.addIssue({ code: 'custom', message: 'not a timestamp' })
+      return z.NEVER
+    }
+    return date.toISOString()
+  })
 
 /** The columns of a Deal statement that the public Deal is made from, checked as they leave the database. */
 const dealRowSchema = z.object({
@@ -67,17 +69,19 @@ const CURSOR_TEXT =
   /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?)([+-]\d{2})(?::?(\d{2}))?$/
 
 /** The cursor for the page after a row whose statement gave `cursor_at` text; the microseconds are kept as text, never through a Date. */
-export function cursorOf(row: Record<string, unknown>): DealCursor {
+export function cursorPosition(row: Record<string, unknown>): { createdAt: string; id: string } {
   const text = z.string().parse(row.cursor_at)
   const match = CURSOR_TEXT.exec(text)
   if (match === null) {
     throw new Error('a list row has no usable cursor_at')
   }
   const [, day, time, hours, minutes = '00'] = match
-  return dealCursorSchema.parse({
-    createdAt: `${day}T${time}${hours}:${minutes}`,
-    id: z.string().parse(row.id),
-  })
+  return { createdAt: `${day}T${time}${hours}:${minutes}`, id: z.string().parse(row.id) }
+}
+
+/** The Deal cursor for the page after `row`. */
+export function cursorOf(row: Record<string, unknown>): DealCursor {
+  return dealCursorSchema.parse(cursorPosition(row))
 }
 
 export { dealCursorSchema }

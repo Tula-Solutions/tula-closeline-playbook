@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { MAX_DOCUMENT_BYTES, MAX_DOCUMENT_PAGES } from 'tula-closeline-contract'
+import { DEFAULT_MAX_DEALS, MAX_DOCUMENT_BYTES, MAX_DOCUMENT_PAGES } from 'tula-closeline-contract'
 import { LOCAL_INTERNAL_API_TOKEN, loadEnv, MAX_CONCURRENT_UPLOADS_LIMIT } from './env'
 
 /** Every key that has no default outside `local`, set to a valid value. */
@@ -375,5 +375,26 @@ describe('RIGHTS_WORDING_VERSION', () => {
     for (const bad of ['0', '-1', '1.5', 'two', '1000001', '']) {
       expect(() => loadEnv({ ENVIRONMENT: 'local', RIGHTS_WORDING_VERSION: bad })).toThrow()
     }
+  })
+})
+
+describe('MAX_DEALS_PER_ORGANIZATION and IMPORTS_ENABLED', () => {
+  test('the Deal limit defaults to the contract quota and is a bounded positive integer', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).MAX_DEALS_PER_ORGANIZATION).toBe(DEFAULT_MAX_DEALS)
+    expect(
+      loadEnv({ ENVIRONMENT: 'local', MAX_DEALS_PER_ORGANIZATION: '5' }).MAX_DEALS_PER_ORGANIZATION
+    ).toBe(5)
+    for (const bad of ['0', '-1', '1.5', 'many', '1000001', '']) {
+      expect(() => loadEnv({ ENVIRONMENT: 'local', MAX_DEALS_PER_ORGANIZATION: bad })).toThrow()
+    }
+  })
+
+  test('imports run by default everywhere, including where the document workers are refused', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).IMPORTS_ENABLED).toBe(true)
+    expect(loadEnv({ ENVIRONMENT: 'local', IMPORTS_ENABLED: 'false' }).IMPORTS_ENABLED).toBe(false)
+    expect(() => loadEnv({ ENVIRONMENT: 'local', IMPORTS_ENABLED: 'yes' })).toThrow()
+    // WORKERS_ENABLED=true is refused outside local while the ports are fakes; imports use none.
+    expect(loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev' }).IMPORTS_ENABLED).toBe(true)
+    expect(loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev' }).WORKERS_ENABLED).toBe(false)
   })
 })

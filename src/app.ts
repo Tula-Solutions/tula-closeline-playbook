@@ -7,6 +7,7 @@ import { createRouter } from '~/http/router'
 import { registerSecuritySchemes } from '~/http/security'
 import type { AppEnv } from '~/http/types'
 import { createDealRouter } from '~/modules/deal/router'
+import { createDealImportRouter } from '~/modules/deal-import/router'
 import { createInternalDocumentRouter } from '~/modules/document/internal-router'
 import { createDocumentRouter } from '~/modules/document/router'
 import { createHealthRouter } from '~/modules/health/router'
@@ -32,6 +33,7 @@ export function createApp(container: Container): OpenAPIHono<AppEnv> {
   publicRoutes.use('*', authenticate(container))
   publicRoutes.route('/', createDocumentRouter(container))
   publicRoutes.route('/', createDealRouter(container))
+  publicRoutes.route('/', createDealImportRouter(container))
   publicRoutes.route('/', createRightsRouter(container))
   app.route(PUBLIC_PREFIX, publicRoutes)
 

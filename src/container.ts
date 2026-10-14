@@ -266,6 +266,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     sleep: systemSleep,
     random,
     reportError,
+    queue,
   }
   const workers = createWorkers(pipeline, processed)
 

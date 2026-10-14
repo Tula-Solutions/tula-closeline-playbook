@@ -2,6 +2,7 @@
 paths:
   - "src/modules/deal/**"
   - "src/modules/rights/**"
+  - "src/modules/deal-import/**"
 ---
 
 # Sales history: Deals and the rights confirmation (ADR 0018, hub issue 69)
@@ -24,3 +25,35 @@ paths:
   for it and it cannot be reached in practice. Do not invent one here.
 - Any SQLSTATE class 22 from a list statement is `request.invalid` with the fixed message; the
   cursor text is never echoed or logged. Other database errors stay 500.
+
+## Deal imports (`src/modules/deal-import/`)
+
+- Upload order: role, upload gate, body cap, multipart, size then `.csv` type, header on the first
+  8192 characters (`deal_import.header_invalid` with a closed `problem`, never a cell), SHA-256, then
+  one transaction (key first, insert) around the object write. Nothing is stored on a refusal.
+  The rights confirmation is not checked here: the contract's upload errors do not list it.
+- The job is found by the `import_apply` discovery hint, not a message. It runs under the same
+  `INGESTION_CONCURRENCY` pool as documents and is gated by `IMPORTS_ENABLED`.
+- Each batch is 500 rows in one transaction: `lock_timeout`, then `QUOTA_LOCK`, then
+  `DEAL_IMPORT_APPLY` (the statement requires the upload lock). Resume starts after `report_through`;
+  never apply a row twice, never renumber. A lock wait is retried with jitter, not failed.
+- Publish Outcome-changed messages only after the batch commits. A lost publish is recovered from
+  `outcome_seq`, as for a single Deal.
+- Failure reasons are the closed set `too_many_rows`, `unreadable`, `processing_failed`. Reports,
+  logs and errors carry row numbers, counts and reasons only: no cell, deal id, name or amount.
+- The CSV is held whole (at most 10 MB): the object store port and the contract's reader do not
+  stream. Records are released as batches finish.
+- Remove-all finishes erased-but-unpurged imports first (`DEAL_IMPORT_LIST_ERASED`: remove the CSV
+  when `object_pending`, `DEAL_IMPORT_OBJECT_REMOVED`, `DEAL_IMPORT_PURGE_BATCH` to the end), then
+  erases more with `DEAL_IMPORT_ERASE_BATCH` one at a time and finishes each at once, at most 5
+  imports per request, before it erases Deals. Any failure leaves the import listed, so the repeat
+  finishes it; never add a step that loses the id (db README, v0.16.0 section).
+- A blank record in the middle of the file is reported as a rejected `wrong_column_count` row, since
+  the report must be contiguous; trailing blank records are dropped.
+- A CSV whose delete failed after its import ended stays until the orphan sweep next visits the
+  Organization. That sweep is scheduled by upload attempts, so it can wait for a later upload; remove-all
+  also deletes it.
+- A claim takes at most one import per Organization per pass, so one Organization cannot hold every
+  slot of the shared pool. A per-Organization cap on queued imports is a contract/db follow-up.
+- A deal id is the customer's text and may begin with `=`, `+`, `-` or `@`: any export or UI that
+  shows it must escape it (spreadsheet formula injection).

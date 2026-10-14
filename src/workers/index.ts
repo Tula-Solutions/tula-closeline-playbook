@@ -9,7 +9,7 @@ export interface Workers {
   ingestion: Ingestion
   /** The periodic sweeps. */
   sweeps: Sweeps
-  /** Starts the job loop (if `WORKERS_ENABLED`) and the sweeps (if `SWEEPS_ENABLED`); a second call does nothing. */
+  /** Starts the job loop (if `WORKERS_ENABLED` or `IMPORTS_ENABLED`) and the sweeps (if `SWEEPS_ENABLED`); a second call does nothing. */
   start(): void
   /**
    * Stops them for shutdown: no new claim or sweep pass starts, calls in flight are cancelled, a
@@ -29,7 +29,8 @@ export function createWorkers(deps: PipelineDeps, processed: ProcessedStore): Wo
     start: () => {
       // Two switches: the job loop needs real adapters, the sweeps do not (they must run
       // wherever documents can be deleted, or nothing is ever purged).
-      if (deps.env.WORKERS_ENABLED) {
+      // The job loop serves two gates: document jobs (`WORKERS_ENABLED`) and imports (`IMPORTS_ENABLED`).
+      if (deps.env.WORKERS_ENABLED || deps.env.IMPORTS_ENABLED) {
         ingestion.start()
       }
       if (deps.env.SWEEPS_ENABLED) {

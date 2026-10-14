@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { errorBodySchema } from 'tula-closeline-contract'
+import { errorBodySchema, MAX_DOCUMENT_BYTES } from 'tula-closeline-contract'
 import { createApp } from '~/app'
 import { createTestDeps } from '~/testing'
-import { UPLOAD_BODY_OVERHEAD_BYTES } from './limits'
+import { IMPORT_BODY_LIMIT, UPLOAD_BODY_OVERHEAD_BYTES } from './limits'
 import { BODY_LIMIT_MARGIN_BYTES, serveOptions } from './serve'
 
 function optionsFor(env: Record<string, string>) {
@@ -46,15 +46,22 @@ describe('Bun.serve options', () => {
   test('Bun is given the largest route limit, the upload route, because it cannot limit one route', () => {
     const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '2048', MAX_UPLOAD_BYTES: '5000' })
 
+    // The Deal import upload keeps its own, larger limit when the document limit is lowered.
+    expect(options.maxRequestBodySize).toBe(IMPORT_BODY_LIMIT + BODY_LIMIT_MARGIN_BYTES)
+  })
+
+  test('with the document limit at its maximum, the document upload route sets the limit', () => {
+    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '2048' })
+
     expect(options.maxRequestBodySize).toBe(
-      5000 + UPLOAD_BODY_OVERHEAD_BYTES + BODY_LIMIT_MARGIN_BYTES
+      MAX_DOCUMENT_BYTES + UPLOAD_BODY_OVERHEAD_BYTES + BODY_LIMIT_MARGIN_BYTES
     )
   })
 
   test('a limit raised above the upload limit wins, so no route is cut by Bun first', () => {
-    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '9000000', MAX_UPLOAD_BYTES: '5000' })
+    const { options } = optionsFor({ MAX_REQUEST_BODY_BYTES: '50000000', MAX_UPLOAD_BYTES: '5000' })
 
-    expect(options.maxRequestBodySize).toBe(9_000_000 + BODY_LIMIT_MARGIN_BYTES)
+    expect(options.maxRequestBodySize).toBe(50_000_000 + BODY_LIMIT_MARGIN_BYTES)
   })
 })
 
