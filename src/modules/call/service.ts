@@ -402,12 +402,11 @@ export async function get(deps: CallDeps, context: CallContext, callId: string):
     throw failure('call.not_found')
   }
   const call = toCall(row)
-  // Only where a Rep can still be picked: not in `ready`, where the choice is made and the read is
-  // frequent. `failed` counts only for the reasons a different Rep can fix.
+  // Only where the contract lets a Rep be picked or corrected (`awaiting_rep`, `ready`, and `failed`
+  // for the reasons a different Rep can fix); any other state does no object read.
   if (
     call.kind !== 'recording' ||
     call.speakerLabels.length === 0 ||
-    call.state === 'ready' ||
     !repChangeAllowed(call.state, call.failureReason)
   ) {
     return call

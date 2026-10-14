@@ -148,7 +148,7 @@ describe('the speakers of a Recording', () => {
     expect(reads).toBe(0)
   })
 
-  test('a ready Recording does no object read at all and returns no speakers', async () => {
+  test('a ready Recording, whose Rep can still be changed, returns the excerpts too', async () => {
     const h = await createCallHarness()
     const call = await awaitingRep(h)
     const picked = await h.send('PUT', `${CALLS}/${call.id}/rep`, {
@@ -157,6 +157,21 @@ describe('the speakers of a Recording', () => {
     expect(picked.status).toBe(200)
     await h.runCalls()
     expect((await h.readCall(call.id)).state).toBe('ready')
+
+    const read = await h.readCall(call.id)
+
+    expect(read.speakers).toEqual(await expectedExcerpts(h, call.id))
+  })
+
+  test('a Recording in a state where the Rep cannot be changed does no object read and has no speakers', async () => {
+    const h = await createCallHarness()
+    const call = await awaitingRep(h)
+    const row = h.deps.database.calls(h.organizationId).find((c) => c.id === call.id)
+    if (row === undefined) {
+      throw new Error('no Call')
+    }
+    row.state = 'failed'
+    row.failure_reason = 'transcription_failed'
     const touched: string[] = []
     for (const name of ['get', 'head', 'getStream'] as const) {
       h.deps.objects[name] = (async () => {
@@ -168,10 +183,9 @@ describe('the speakers of a Recording', () => {
     const response = await h.send('GET', `${CALLS}/${call.id}`)
 
     expect(response.status).toBe(200)
-    expect(callSchema.parse(await response.json())).toMatchObject({ state: 'ready' })
-    expect(
-      callSchema.parse(await (await h.send('GET', `${CALLS}/${call.id}`)).json()).speakers
-    ).toBeUndefined()
+    const read = callSchema.parse(await response.json())
+    expect(read).toMatchObject({ state: 'failed', speakerLabels: ['A', 'B'] })
+    expect(read.speakers).toBeUndefined()
     expect(touched).toEqual([])
   })
 
