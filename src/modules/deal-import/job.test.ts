@@ -7,7 +7,7 @@ import {
 import { DEAL_IMPORT_APPLY, DEAL_IMPORT_CLAIM, DEAL_IMPORT_HEARTBEAT } from 'tula-closeline-db'
 import { ShuttingDown } from '~/modules/ingestion/runtime'
 import { newOrganizationId } from '~/testing'
-import { claimedImports, runImport } from './job'
+import { claimedImports, parseImportFile, runImport } from './job'
 import { createImportHarness, csv, HEADER, IMPORTS } from './test-support'
 
 const SECRET_ID = 'ACME-SECRET-DEAL-7731'
@@ -74,14 +74,17 @@ describe('a file the job cannot read fails the import and applies nothing', () =
     expect(await h.objectKeys()).toEqual([])
   })
 
-  test('exactly the limit is accepted', async () => {
-    const h = await createImportHarness()
-    const rows = Array.from({ length: MAX_DEAL_IMPORT_ROWS }, (_, i) => `D${i},open,,,,`)
-    const id = await upload(h, csv(rows))
+  test('exactly the limit is accepted by the parse, and one more row is too many', () => {
+    // The job applies the file in batches of 500 rows; running 50,000 rows through the database
+    // double clones its state for each batch (about 7 s), so the limit is pinned at the parse, which
+    // is where the job decides it. The whole job over 50,000 rows runs in bench/deal-import.bench.test.ts.
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => `D${i},open,,,,`)
+    const encode = (text: string) => new TextEncoder().encode(text)
 
-    await h.runImports()
-
-    expect(await read(h, id)).toMatchObject({ state: 'completed', rowCount: MAX_DEAL_IMPORT_ROWS })
+    expect(parseImportFile(encode(csv(rows(MAX_DEAL_IMPORT_ROWS)))).records).toHaveLength(
+      MAX_DEAL_IMPORT_ROWS
+    )
+    expect(() => parseImportFile(encode(csv(rows(MAX_DEAL_IMPORT_ROWS + 1))))).toThrow()
   })
 
   test('a row without a stored file is processing_failed', async () => {
