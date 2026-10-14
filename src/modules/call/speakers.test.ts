@@ -123,6 +123,58 @@ describe('the speakers of a Recording', () => {
     expect(h.deps.logLines.join('\n')).not.toContain(SECRET)
   })
 
+  test('a Transcript the store reports over the cap is never read: head only, get and getStream untouched', async () => {
+    const h = await createCallHarness()
+    const call = await awaitingRep(h)
+    const head = h.deps.objects.head.bind(h.deps.objects)
+    h.deps.objects.head = async (organizationId, key) => {
+      const info = await head(organizationId, key)
+      return info === undefined ? info : { ...info, size: 6 * 1024 * 1024 }
+    }
+    let reads = 0
+    h.deps.objects.get = async () => {
+      reads++
+      throw new Error('get must not be called')
+    }
+    h.deps.objects.getStream = async () => {
+      reads++
+      throw new Error('getStream must not be called')
+    }
+
+    const response = await h.send('GET', `${CALLS}/${call.id}`)
+
+    expect(response.status).toBe(200)
+    expect(callSchema.parse(await response.json()).speakers).toBeUndefined()
+    expect(reads).toBe(0)
+  })
+
+  test('a ready Recording does no object read at all and returns no speakers', async () => {
+    const h = await createCallHarness()
+    const call = await awaitingRep(h)
+    const picked = await h.send('PUT', `${CALLS}/${call.id}/rep`, {
+      body: { rep: { by: 'speaker', label: 'A' } },
+    })
+    expect(picked.status).toBe(200)
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    const touched: string[] = []
+    for (const name of ['get', 'head', 'getStream'] as const) {
+      h.deps.objects[name] = (async () => {
+        touched.push(name)
+        throw new Error(`${name} must not be called`)
+      }) as never
+    }
+
+    const response = await h.send('GET', `${CALLS}/${call.id}`)
+
+    expect(response.status).toBe(200)
+    expect(callSchema.parse(await response.json())).toMatchObject({ state: 'ready' })
+    expect(
+      callSchema.parse(await (await h.send('GET', `${CALLS}/${call.id}`)).json()).speakers
+    ).toBeUndefined()
+    expect(touched).toEqual([])
+  })
+
   test('a stored Transcript over the byte cap is not parsed: speakers are left out and the read is 200', async () => {
     const h = await createCallHarness()
     const call = await awaitingRep(h)
