@@ -218,6 +218,8 @@ export type MemoryPlaybookDatabase = {
   seedDeal(
     row: Partial<MemoryDealRow> & Pick<MemoryDealRow, 'id' | 'organization_id' | 'deal_id'>
   ): void
+  /** Stores a rights confirmation directly, for a state the routes cannot reach (an older wording version). */
+  seedRights(row: MemoryRightsRow): void
   /** The Organization's index settings row, if one exists. */
   settings(organizationId: string): MemorySettingsRow | undefined
   /** The committed consumed-message records of an Organization (or the global scope). */
@@ -1652,6 +1654,12 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     jobs: (organizationId) => committed.jobs.filter((j) => j.organization_id === organizationId),
     deals: (organizationId) => committed.deals.filter((d) => d.organization_id === organizationId),
     rights: (organizationId) => committed.rights.find((r) => r.organization_id === organizationId),
+    seedRights: (row) => {
+      committed.rights = [
+        ...committed.rights.filter((r) => r.organization_id !== row.organization_id),
+        row,
+      ]
+    },
     seedDeal: (row) => {
       const at = now()
       committed.deals.push({
