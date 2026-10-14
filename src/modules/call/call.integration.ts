@@ -78,6 +78,32 @@ describe('a Call against Postgres', () => {
     expect(await count(h.organizationId, 'deals')).toBe(1)
   })
 
+  test('a Rep label not in the file fails the Call and keeps the labels it does hold; too many speakers keeps none', async () => {
+    const h = await harness()
+    const response = await h.uploadCall(transcriptText('norep'), {
+      rep: JSON.stringify({ by: 'speaker', label: 'Nobody' }),
+    })
+    const wrong = callSchema.parse(await response.json())
+    const many = await uploadOk(
+      h,
+      `${Array.from({ length: 21 }, (_, i) => `Speaker${i}: hello number ${i}`).join('\n')}\n`,
+      'DEAL-MANY'
+    )
+
+    await h.runCalls()
+
+    expect(await h.readCall(wrong.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'rep_label_not_found',
+      speakerLabels: ['Alex', 'Sam'],
+    })
+    expect(await h.readCall(many.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'too_many_speakers',
+      speakerLabels: [],
+    })
+  })
+
   test('answers the duplicate rule: the same file is the stored Call, another deal is refused', async () => {
     const h = await harness()
     const first = await uploadOk(h, 'dup')

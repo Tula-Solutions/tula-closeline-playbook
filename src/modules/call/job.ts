@@ -267,12 +267,6 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
     throw new CallFailure(parsed.reason)
   }
   const { turns, speakers } = parsed.transcript
-  if (claim.rep_by !== 'speaker' || claim.rep_label === null) {
-    throw new CallFailure('rep_label_not_found')
-  }
-  if (!speakers.includes(claim.rep_label)) {
-    throw new CallFailure('rep_label_not_found')
-  }
   const recorded = await inTransaction(deps, c.organizationId, (run) =>
     run(CALL_JOB_RECORD, [
       c.organizationId,
@@ -288,6 +282,14 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
   if (recorded.rows.length === 0) {
     c.lost.abort(new ClaimLost())
     throw new ClaimLost()
+  }
+  // After the speakers are recorded, so a Call that fails here keeps the labels the Rep can be changed to.
+  if (
+    claim.rep_by !== 'speaker' ||
+    claim.rep_label === null ||
+    !speakers.includes(claim.rep_label)
+  ) {
+    throw new CallFailure('rep_label_not_found')
   }
   const moments = buildMoments(turns, claim.rep_label)
   const tag = await readDealOutcome(c)

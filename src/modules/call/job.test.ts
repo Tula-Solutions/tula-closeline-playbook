@@ -10,6 +10,7 @@ import { personIn } from '~/modules/document/test-support'
 import { ShuttingDown } from '~/modules/ingestion/runtime'
 import { logged } from '~/modules/ingestion/test-support'
 import { runCallJob } from './job'
+import { purgeCalls } from './purge'
 import { CALLS, type CallHarness, createCallHarness, transcriptText } from './test-support'
 
 const SECRET_LABEL = 'Zebediah Quillfeather'
@@ -103,6 +104,10 @@ describe('processing a Transcript', () => {
     const failed = await h.readCall(call.id)
     expect(failed).toMatchObject({ state: 'failed', failureReason: reason })
     expect(await vectorsOf(h, call.id)).toHaveLength(0)
+    // The labels the file does hold stay, so the Rep can be changed to one of them.
+    if (reason === 'rep_label_not_found') {
+      expect(failed.speakerLabels).toEqual(['Alex', 'Sam'])
+    }
   })
 
   test('more than 20 speakers fails too_many_speakers and keeps no labels', async () => {
@@ -182,6 +187,77 @@ describe('processing a Transcript', () => {
 
     expect(await vectorsOf(h, call.id)).toHaveLength(0)
     expect((await h.readCall(call.id)).state).toBe('processing')
+  })
+
+  test('a Call deleted mid-job stops writing, and after the lease the cleanup leaves no vector and no object', async () => {
+    for (const when of ['before the vectors', 'after the vectors'] as const) {
+      const h = await createCallHarness()
+      const call = await upload(h, transcriptText('gone', 2))
+      const markDeleted = () => {
+        const row = h.deps.database.calls(h.organizationId)[0]
+        const job = h.deps.database.callJobs(h.organizationId)[0]
+        if (row === undefined || job === undefined) {
+          throw new Error('no Call')
+        }
+        const now = h.deps.clock.now().getTime()
+        row.state = 'deleted'
+        row.deleted_at = now
+        row.deletion_seq += 1
+        row.epoch += 1
+        row.purge_due_at = now
+        job.state = 'cancelled'
+        job.next_attempt_at = now + 60_000
+      }
+      if (when === 'before the vectors') {
+        const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+        h.deps.embedder.embed = async (...args) => {
+          markDeleted()
+          return embed(...args)
+        }
+      } else {
+        const upsert = h.deps.vectors.upsert.bind(h.deps.vectors)
+        h.deps.vectors.upsert = async (...args) => {
+          await upsert(...args)
+          markDeleted()
+        }
+      }
+
+      await h.runCalls()
+
+      // The job stopped: the Call was not completed, and a vector exists only if it was written first.
+      expect(h.deps.database.calls(h.organizationId)[0]?.state).toBe('deleted')
+      if (when === 'before the vectors') {
+        expect(await vectorsOf(h, call.id)).toHaveLength(0)
+      }
+      await h.deps.time.advance(2 * 60_000)
+      await purgeCalls(h.deps, h.organizationId, new AbortController().signal)
+      expect(await vectorsOf(h, call.id)).toHaveLength(0)
+      expect(await h.objectKeys()).toEqual([])
+      expect(h.deps.database.calls(h.organizationId)).toEqual([])
+    }
+  })
+
+  test('a Deal that becomes won between the tag read and the completion leaves the Call ready but out of search', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText('race'), { dealId: 'DEAL-R' })
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    h.deps.embedder.embed = async (...args) => {
+      await h.deps.database.scope(h.organizationId, (run) =>
+        run(DEAL_SET_OUTCOME, [
+          h.organizationId,
+          h.deps.database.deals(h.organizationId)[0]?.id,
+          'won',
+        ])
+      )
+      return embed(...args)
+    }
+
+    await h.runCalls()
+
+    const ready = await h.readCall(call.id)
+    expect(ready).toMatchObject({ state: 'ready', dealOutcome: 'won', inSearch: false })
+    // The vectors carry the tag as it was read; only the re-tag job (part two) can repair it.
+    expect((await vectorsOf(h, call.id))[0]?.attributes).toMatchObject({ outcome: 'open' })
   })
 
   test('shutdown gives the job back, due at once', async () => {
