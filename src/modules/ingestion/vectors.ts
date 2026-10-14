@@ -9,8 +9,19 @@ import {
   within,
 } from './runtime'
 
+/** The version of a document chunk's attributes: 2 carries the snippet a search returns. Search filters on it. */
+export const DOCUMENT_VECTOR_VERSION = 2
+
 /** The attributes every vector carries: what the cleanup deletes by and what a search shows. */
-export type VectorMeta = { document_id: string; epoch: number; chunk: number; page: number }
+export type VectorMeta = {
+  document_id: string
+  epoch: number
+  chunk: number
+  page: number
+  snippet: string
+  kind: 'document'
+  v: number
+}
 
 /** The parsed pages kept between the parse step and the chunk step (a resume point); bounded by the settings. */
 export function pagesArtifactSchema(env: Pick<PipelineDeps['env'], 'MAX_TEXT_CHARS_PER_DOCUMENT'>) {
