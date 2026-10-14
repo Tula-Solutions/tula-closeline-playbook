@@ -44,6 +44,8 @@ describe('the booted app', () => {
       '/readyz',
       '/v1/playbook/calls',
       '/v1/playbook/calls/{callId}',
+      '/v1/playbook/calls/{callId}/rep',
+      '/v1/playbook/calls/{callId}/restore',
       '/v1/playbook/deal-imports',
       '/v1/playbook/deal-imports/{importId}',
       '/v1/playbook/deal-imports/{importId}/rows',

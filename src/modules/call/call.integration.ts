@@ -191,3 +191,147 @@ describe('a Call against Postgres', () => {
     expect(await h.objectKeys()).toEqual([])
   })
 })
+
+/** The Deal's Outcome sequence and re-tag progress, read as the table owner. */
+async function dealProgress(organizationId: string) {
+  const result = await withOrganization(owner.db, organizationId, (tx) =>
+    tx.execute<{ outcome_seq: number; retag_through: number }>(
+      sql`select outcome_seq, retag_through from playbook.deals limit 1`
+    )
+  )
+  return result.rows[0]
+}
+
+describe('the Outcome re-tag, Rep change, delete and restore against Postgres', () => {
+  test('an Outcome changed with no handler running is re-tagged by the job alone, without any message', async () => {
+    const h = await harness()
+    const call = await uploadOk(h, 'retag')
+    await h.runCalls()
+    const dealRecordId = (
+      await withOrganization(owner.db, h.organizationId, (tx) =>
+        tx.execute<{ id: string }>(sql`select id from playbook.deals limit 1`)
+      )
+    ).rows[0]?.id
+    expect(dealRecordId).toBeDefined()
+    await h.setOutcome(String(dealRecordId), 'won')
+    // No consumer exists in this test: the Outcome-changed message is never handled.
+    h.published.length = 0
+    expect((await h.moments(call.id)).returnable).toBe(0)
+
+    await h.deps.workers.ingestion.runPass()
+
+    expect(await h.moments(call.id)).toMatchObject({ total: 2, returnable: 2, outcomes: ['won'] })
+    const progress = await dealProgress(h.organizationId)
+    expect(progress?.retag_through).toBe(progress?.outcome_seq)
+    expect((await h.readCall(call.id)).inSearch).toBe(true)
+  })
+
+  test('a Deal won then lost then won again is only returnable once re-tagged at the newest sequence', async () => {
+    const h = await harness()
+    const call = await uploadOk(h, 'flap')
+    await h.runCalls()
+    const id = String(
+      (
+        await withOrganization(owner.db, h.organizationId, (tx) =>
+          tx.execute<{ id: string }>(sql`select id from playbook.deals limit 1`)
+        )
+      ).rows[0]?.id
+    )
+
+    await h.setOutcome(id, 'won')
+    await h.deps.workers.ingestion.runPass()
+    expect((await h.moments(call.id)).returnable).toBe(2)
+    await h.setOutcome(id, 'lost')
+    expect((await h.moments(call.id)).returnable).toBe(0)
+    await h.setOutcome(id, 'won')
+    expect((await h.moments(call.id)).returnable).toBe(0)
+    await h.deps.workers.ingestion.runPass()
+
+    expect(await h.moments(call.id)).toMatchObject({ returnable: 2, outcomes: ['won'] })
+  })
+
+  test('a Rep change rebuilds the Moments, keeps only the new rep_seq and fixes a Call that failed on its label', async () => {
+    const h = await harness()
+    const response = await h.uploadCall(transcriptText('rep', 2), {
+      dealId: 'DEAL-1',
+      rep: JSON.stringify({ by: 'speaker', label: 'Nobody' }),
+    })
+    const call = callSchema.parse(await response.json())
+    await h.runCalls()
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'rep_label_not_found',
+    })
+
+    const fixed = await h.send('PUT', `${CALLS}/${call.id}/rep`, {
+      body: { rep: { by: 'speaker', label: 'Alex' } },
+    })
+    expect(fixed.status).toBe(200)
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('ready')
+
+    const again = await h.send('PUT', `${CALLS}/${call.id}/rep`, {
+      body: { rep: { by: 'speaker', label: 'Sam' } },
+    })
+    expect(again.status).toBe(200)
+    expect(
+      (
+        await h.send('PUT', `${CALLS}/${call.id}/rep`, {
+          body: { rep: { by: 'speaker', label: 'Alex' } },
+        })
+      ).status
+    ).toBe(409)
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    expect((await h.moments(call.id)).total).toBe(2)
+    const stranger = personIn(`org_${'9'.repeat(32)}`, 'owner')
+    const other = await h.send('PUT', `${CALLS}/${call.id}/rep`, {
+      as: stranger,
+      body: { rep: { by: 'speaker', label: 'Sam' } },
+    })
+    expect(other.status).toBe(404)
+  })
+
+  test('delete hides the Call, the cleanup removes its vectors, and a restore processes it again', async () => {
+    const h = await harness()
+    const call = await uploadOk(h, 'del')
+    await h.runCalls()
+
+    const deleted = await h.send('DELETE', `${CALLS}/${call.id}`)
+    expect(deleted.status).toBe(200)
+    expect(
+      await errorCode(
+        await h.send('PUT', `${CALLS}/${call.id}/rep`, {
+          body: { rep: { by: 'speaker', label: 'Sam' } },
+        })
+      )
+    ).toBe('call.rep_not_changeable')
+    expect((await h.listAll()).map((c) => c.id)).toEqual([])
+    expect((await h.moments(call.id)).returnable).toBe(0)
+
+    const restored = await h.send('POST', `${CALLS}/${call.id}/restore`)
+    expect(restored.status).toBe(200)
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    expect((await h.moments(call.id)).total).toBe(2)
+    const stranger = personIn(`org_${'9'.repeat(32)}`, 'owner')
+    expect((await h.send('DELETE', `${CALLS}/${call.id}`, { as: stranger })).status).toBe(404)
+  })
+
+  test('past the purge time a restore is call.not_restorable', async () => {
+    const h = await harness()
+    const call = await uploadOk(h, 'late')
+    await h.runCalls()
+    expect((await h.send('DELETE', `${CALLS}/${call.id}`)).status).toBe(200)
+    await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute(sql`update playbook.calls set purge_due_at = now() - interval '1 minute'`)
+    )
+
+    const response = await h.send('POST', `${CALLS}/${call.id}/restore`)
+
+    expect(response.status).toBe(410)
+    expect(await errorCode(response)).toBe('call.not_restorable')
+  })
+})

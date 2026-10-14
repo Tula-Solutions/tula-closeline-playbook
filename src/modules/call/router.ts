@@ -10,6 +10,7 @@ import {
   type Role,
   SALES_HISTORY_READ_ROLES,
   SALES_HISTORY_ROUTES,
+  setCallRepRequestSchema,
   UPLOAD_CONTENT_TYPE,
   UPLOAD_FILE_FIELD,
 } from 'tula-closeline-contract'
@@ -127,6 +128,58 @@ const get = createRoute({
   },
 })
 
+const del = createRoute({
+  ...contractRoute('deleteCall'),
+  middleware: requireRole(PLAYBOOK_WRITE_ROLES),
+  tags,
+  summary: 'Delete a Call',
+  security,
+  request: { params: callParamsSchema },
+  responses: {
+    200: {
+      description: 'The Call in state deleted, with its purge time.',
+      content: { 'application/json': { schema: callSchema } },
+    },
+    ...failureResponses('deleteCall'),
+  },
+})
+
+const restoreRoute = createRoute({
+  ...contractRoute('restoreCall'),
+  middleware: requireRole(PLAYBOOK_WRITE_ROLES),
+  tags,
+  summary: 'Restore a deleted Call',
+  security,
+  request: { params: callParamsSchema },
+  responses: {
+    200: {
+      description: 'The Call, processing again, or as it is when it was not deleted.',
+      content: { 'application/json': { schema: callSchema } },
+    },
+    ...failureResponses('restoreCall'),
+  },
+})
+
+const setRep = createRoute({
+  ...contractRoute('setCallRep'),
+  middleware: requireRole(PLAYBOOK_WRITE_ROLES),
+  tags,
+  summary: 'Pick or change the Rep of a Call',
+  security,
+  request: {
+    params: callParamsSchema,
+    body: { required: true, content: { 'application/json': { schema: setCallRepRequestSchema } } },
+  },
+  responses: {
+    200: {
+      description:
+        'The Call, processing while its Moments are rebuilt, or as it is when the Rep is unchanged.',
+      content: { 'application/json': { schema: callSchema } },
+    },
+    ...failureResponses('setCallRep'),
+  },
+})
+
 /** A text field of the upload form, or `undefined` when absent; a file in its place is `request.invalid`. */
 function textField(
   form: Awaited<ReturnType<Request['formData']>>,
@@ -214,6 +267,18 @@ export function createCallRouter(container: Container): OpenAPIHono<AuthedEnv> {
   )
   router.openapi(get, async (c) =>
     c.json(await Calls.get(container, contextOf(c), c.req.valid('param').callId), 200)
+  )
+  router.openapi(del, async (c) =>
+    c.json(await Calls.remove(container, contextOf(c), c.req.valid('param').callId), 200)
+  )
+  router.openapi(restoreRoute, async (c) =>
+    c.json(await Calls.restore(container, contextOf(c), c.req.valid('param').callId), 200)
+  )
+  router.openapi(setRep, async (c) =>
+    c.json(
+      await Calls.setRep(container, contextOf(c), c.req.valid('param').callId, c.req.valid('json')),
+      200
+    )
   )
   return router
 }

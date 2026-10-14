@@ -24,8 +24,7 @@ import {
   ShuttingDown,
   within,
 } from '~/modules/ingestion/runtime'
-import { MAX_EMBED_TEXTS } from '~/ports/embedder'
-import { momentVectorId } from './keys'
+import { writeMomentVectors } from './moment-vectors'
 import { buildMoments } from './moments'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
@@ -186,67 +185,55 @@ async function deleteEarlierEpochs(c: CallJobContext): Promise<void> {
   }
 }
 
-/** Embeds the Moments in batches and writes each batch's vectors, tagged with the Deal's Outcome as read. */
+/**
+ * Deletes the Call's vectors of earlier Rep sequences in this epoch, one filter per sequence
+ * (equality filters only), the newest {@link MAX_STALE_EPOCHS}. A Rep change cancels the job it
+ * replaces, but a write that job had in flight may land after this one began, so this runs after
+ * the new vectors are written; what still slips through is stopped at query time by
+ * `momentMayBeReturned` (it compares the vector's `rep_seq` with the Call's).
+ */
+async function deleteEarlierRepSeqs(c: CallJobContext): Promise<void> {
+  const { deps } = c
+  const from = Math.max(0, c.repSeq - MAX_STALE_EPOCHS)
+  for (let repSeq = from; repSeq < c.repSeq; repSeq++) {
+    await within(deps, 'vector store', deps.env.INGESTION_IO_TIMEOUT_MS, c.signal, () =>
+      deps.vectors.deleteByFilter(c.organizationId, {
+        call_id: c.callId,
+        epoch: c.epoch,
+        rep_seq: repSeq,
+      })
+    )
+  }
+}
+
+/** Embeds the Moments and writes their vectors, renewing the lease before each write and counting writes in flight. */
 async function writeMoments(
   c: CallJobContext,
   moments: readonly { index: number; text: string }[],
   tag: { outcome: string; outcomeSeq: number }
 ): Promise<void> {
-  const { deps } = c
-  const { env, embedder } = deps
-  for (let start = 0; start < moments.length; start += MAX_EMBED_TEXTS) {
-    c.signal.throwIfAborted()
-    const batch = moments.slice(start, start + MAX_EMBED_TEXTS)
-    const vectors = await within(
-      deps,
-      'embedder',
-      env.INGESTION_IO_TIMEOUT_MS,
-      c.signal,
-      (signal) =>
-        embedder.embed(
-          batch.map((moment) => moment.text),
-          { purpose: 'document', signal }
-        )
+  try {
+    await writeMomentVectors(
+      {
+        ...c,
+        beforeWrite: () => beat(c),
+        track: (write) => {
+          // Counted until the store itself answers, not until the caller stops waiting.
+          c.writesInFlight++
+          const done = () => {
+            c.writesInFlight--
+          }
+          write.then(done, done)
+        },
+      },
+      moments,
+      tag
     )
-    if (vectors.length !== batch.length) {
-      throw new Error('the embedder answered with the wrong number of vectors')
+  } catch (error) {
+    if (error instanceof CallTimeout) {
+      throw new UncertainWrite()
     }
-    if (vectors.some((vector) => vector.length !== embedder.dimensions)) {
-      throw new PermanentFailure('processing_failed')
-    }
-    // The claim must be alive when the write starts; the lease is longer than the write's deadline.
-    await beat(c)
-    try {
-      await within(deps, 'vector store', env.INGESTION_IO_TIMEOUT_MS, c.signal, () => {
-        const write = deps.vectors.upsert(
-          c.organizationId,
-          batch.map((moment, at) => ({
-            id: momentVectorId(c.callId, c.epoch, c.repSeq, moment.index),
-            vector: vectors[at] ?? [],
-            attributes: {
-              call_id: c.callId,
-              epoch: c.epoch,
-              rep_seq: c.repSeq,
-              moment: moment.index,
-              outcome: tag.outcome,
-              outcome_seq: tag.outcomeSeq,
-            },
-          }))
-        )
-        // Counted until the store itself answers, not until the caller stops waiting.
-        c.writesInFlight++
-        const done = () => {
-          c.writesInFlight--
-        }
-        write.then(done, done)
-        return write
-      })
-    } catch (error) {
-      if (error instanceof CallTimeout) {
-        throw new UncertainWrite()
-      }
-      throw error
-    }
+    throw error
   }
 }
 
@@ -254,11 +241,11 @@ async function writeMoments(
 async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void> {
   const { deps } = c
   if (
-    claim.job_kind !== 'process' ||
+    (claim.job_kind !== 'process' && claim.job_kind !== 'rebuild') ||
     claim.call_kind !== 'transcript' ||
     claim.object_key === null
   ) {
-    // Recordings and Rep rebuilds are later work; a job of another kind is not run by this code.
+    // Recordings are later work; a job of another kind is not run by this code.
     throw new CallFailure('processing_failed')
   }
   const bytes = await readTranscript(c, claim.object_key)
@@ -299,6 +286,9 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
   }
   if (c.epoch > 0) {
     await deleteEarlierEpochs(c)
+  }
+  if (c.repSeq > 0) {
+    await deleteEarlierRepSeqs(c)
   }
   await beat(c)
   // The completion runs in its own short transaction, after every external write.

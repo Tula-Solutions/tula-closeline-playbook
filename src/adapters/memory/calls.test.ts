@@ -588,7 +588,7 @@ async function readyCall(db: Db) {
     rep_by: 'speaker',
     rep_label: 'Rep',
   })
-  db.callJobs(ORG)[0]!.state = 'succeeded'
+  Object.assign(db.callJobs(ORG)[0] ?? {}, { state: 'succeeded' })
 }
 
 const run = (db: Db, statement: string, params: unknown[], organization = ORG) =>

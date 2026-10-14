@@ -6212,6 +6212,1267 @@
             }
           }
         }
+      },
+      "delete": {
+        "description": "Soft-deletes a Call: it and its Moments are hidden from search at once and purged after 30 days, and it can be restored until then. Owner and Admin only. Idempotent by end state: answers 200 with the Call in state \"deleted\" and its purge time, and deleting an already deleted Call answers the same. Takes no body.",
+        "tags": ["calls"],
+        "summary": "Delete a Call",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^call_[0-9a-f]{32}$"
+            },
+            "required": true,
+            "name": "callId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Call in state deleted, with its purge time.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^call_[0-9a-f]{32}$"
+                    },
+                    "dealId": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "dealRecordId": {
+                      "type": "string",
+                      "pattern": "^deal_[0-9a-f]{32}$"
+                    },
+                    "dealOutcome": {
+                      "type": "string",
+                      "enum": ["won", "lost", "open"]
+                    },
+                    "inSearch": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["transcript", "recording"]
+                    },
+                    "fileName": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "text/plain",
+                        "text/vtt",
+                        "application/x-subrip",
+                        "application/json",
+                        "audio/mpeg",
+                        "audio/mp4",
+                        "audio/wav",
+                        "audio/ogg",
+                        "audio/webm",
+                        "audio/flac"
+                      ]
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 524288000
+                    },
+                    "durationSeconds": {
+                      "type": ["integer", "null"],
+                      "minimum": 1,
+                      "maximum": 10800
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "uploaded",
+                        "transcribing",
+                        "awaiting_rep",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
+                    "failureReason": {
+                      "type": ["string", "null"],
+                      "enum": [
+                        "no_turns",
+                        "too_few_speakers",
+                        "too_many_speakers",
+                        "rep_label_not_found",
+                        "not_per_side",
+                        "too_long",
+                        "transcription_failed",
+                        "transcription_timed_out",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
+                    },
+                    "rep": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["speaker"]
+                            },
+                            "label": {
+                              "type": "string",
+                              "maxLength": 1000
+                            }
+                          },
+                          "required": ["by", "label"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["channel"]
+                            },
+                            "channel": {
+                              "type": "string",
+                              "enum": ["left", "right"]
+                            }
+                          },
+                          "required": ["by", "channel"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "speakerLabels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "deletedAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "purgeAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "uploadedByUserId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{32}$"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "dealId",
+                    "dealRecordId",
+                    "dealOutcome",
+                    "inSearch",
+                    "kind",
+                    "fileName",
+                    "mediaType",
+                    "sizeBytes",
+                    "durationSeconds",
+                    "state",
+                    "failureReason",
+                    "rep",
+                    "speakerLabels",
+                    "deletedAt",
+                    "purgeAt",
+                    "uploadedByUserId",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "call.not_found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/playbook/calls/{callId}/restore": {
+      "post": {
+        "description": "Restores a soft-deleted Call within the retention period; it is processed again from the kept Transcript (a Recording is never transcribed twice) and shows as \"processing\". Owner and Admin only. Idempotent by end state: a Call that is no longer deleted answers 200 with the Call as it is. A deleted Call whose purge time has passed but which the purge has not yet removed is call.not_restorable (410); once purged the record is gone and the answer is call.not_found (404). Takes no body.",
+        "tags": ["calls"],
+        "summary": "Restore a deleted Call",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^call_[0-9a-f]{32}$"
+            },
+            "required": true,
+            "name": "callId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Call, processing again, or as it is when it was not deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^call_[0-9a-f]{32}$"
+                    },
+                    "dealId": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "dealRecordId": {
+                      "type": "string",
+                      "pattern": "^deal_[0-9a-f]{32}$"
+                    },
+                    "dealOutcome": {
+                      "type": "string",
+                      "enum": ["won", "lost", "open"]
+                    },
+                    "inSearch": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["transcript", "recording"]
+                    },
+                    "fileName": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "text/plain",
+                        "text/vtt",
+                        "application/x-subrip",
+                        "application/json",
+                        "audio/mpeg",
+                        "audio/mp4",
+                        "audio/wav",
+                        "audio/ogg",
+                        "audio/webm",
+                        "audio/flac"
+                      ]
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 524288000
+                    },
+                    "durationSeconds": {
+                      "type": ["integer", "null"],
+                      "minimum": 1,
+                      "maximum": 10800
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "uploaded",
+                        "transcribing",
+                        "awaiting_rep",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
+                    "failureReason": {
+                      "type": ["string", "null"],
+                      "enum": [
+                        "no_turns",
+                        "too_few_speakers",
+                        "too_many_speakers",
+                        "rep_label_not_found",
+                        "not_per_side",
+                        "too_long",
+                        "transcription_failed",
+                        "transcription_timed_out",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
+                    },
+                    "rep": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["speaker"]
+                            },
+                            "label": {
+                              "type": "string",
+                              "maxLength": 1000
+                            }
+                          },
+                          "required": ["by", "label"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["channel"]
+                            },
+                            "channel": {
+                              "type": "string",
+                              "enum": ["left", "right"]
+                            }
+                          },
+                          "required": ["by", "channel"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "speakerLabels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "deletedAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "purgeAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "uploadedByUserId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{32}$"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "dealId",
+                    "dealRecordId",
+                    "dealOutcome",
+                    "inSearch",
+                    "kind",
+                    "fileName",
+                    "mediaType",
+                    "sizeBytes",
+                    "durationSeconds",
+                    "state",
+                    "failureReason",
+                    "rep",
+                    "speakerLabels",
+                    "deletedAt",
+                    "purgeAt",
+                    "uploadedByUserId",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "call.not_found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "call.not_restorable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/playbook/calls/{callId}/rep": {
+      "put": {
+        "description": "Picks the Rep of a Call waiting in \"awaiting_rep\", or changes the Rep of a \"ready\" Call or a \"failed\" Call whose failureReason is rep_label_not_found or not_per_side, with {\"rep\":{\"by\":\"speaker\",\"label\":...}} or {\"rep\":{\"by\":\"channel\",\"channel\":...}}. Owner and Admin only, and any of them may pick, not only the uploader. A choice that does not suit the Call, or a label that is not among its speakers, is call.rep_invalid; a Call in any other state or with any other failure reason is call.rep_not_changeable. A different Rep answers 200 with the Call in state \"processing\": its Moments are rebuilt by a queued job and the Call is out of search until it finishes. Idempotent by end state: choosing the Rep the Call already has changes nothing and answers 200 with the Call as it is.",
+        "tags": ["calls"],
+        "summary": "Pick or change the Rep of a Call",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^call_[0-9a-f]{32}$"
+            },
+            "required": true,
+            "name": "callId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "rep": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "by": {
+                            "type": "string",
+                            "enum": ["speaker"]
+                          },
+                          "label": {
+                            "type": "string",
+                            "maxLength": 1000
+                          }
+                        },
+                        "required": ["by", "label"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "by": {
+                            "type": "string",
+                            "enum": ["channel"]
+                          },
+                          "channel": {
+                            "type": "string",
+                            "enum": ["left", "right"]
+                          }
+                        },
+                        "required": ["by", "channel"],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "required": ["rep"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The Call, processing while its Moments are rebuilt, or as it is when the Rep is unchanged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^call_[0-9a-f]{32}$"
+                    },
+                    "dealId": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "dealRecordId": {
+                      "type": "string",
+                      "pattern": "^deal_[0-9a-f]{32}$"
+                    },
+                    "dealOutcome": {
+                      "type": "string",
+                      "enum": ["won", "lost", "open"]
+                    },
+                    "inSearch": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["transcript", "recording"]
+                    },
+                    "fileName": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "text/plain",
+                        "text/vtt",
+                        "application/x-subrip",
+                        "application/json",
+                        "audio/mpeg",
+                        "audio/mp4",
+                        "audio/wav",
+                        "audio/ogg",
+                        "audio/webm",
+                        "audio/flac"
+                      ]
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 524288000
+                    },
+                    "durationSeconds": {
+                      "type": ["integer", "null"],
+                      "minimum": 1,
+                      "maximum": 10800
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "uploaded",
+                        "transcribing",
+                        "awaiting_rep",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
+                    "failureReason": {
+                      "type": ["string", "null"],
+                      "enum": [
+                        "no_turns",
+                        "too_few_speakers",
+                        "too_many_speakers",
+                        "rep_label_not_found",
+                        "not_per_side",
+                        "too_long",
+                        "transcription_failed",
+                        "transcription_timed_out",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
+                    },
+                    "rep": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["speaker"]
+                            },
+                            "label": {
+                              "type": "string",
+                              "maxLength": 1000
+                            }
+                          },
+                          "required": ["by", "label"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["channel"]
+                            },
+                            "channel": {
+                              "type": "string",
+                              "enum": ["left", "right"]
+                            }
+                          },
+                          "required": ["by", "channel"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "speakerLabels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "deletedAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "purgeAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "uploadedByUserId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{32}$"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "dealId",
+                    "dealRecordId",
+                    "dealOutcome",
+                    "inSearch",
+                    "kind",
+                    "fileName",
+                    "mediaType",
+                    "sizeBytes",
+                    "durationSeconds",
+                    "state",
+                    "failureReason",
+                    "rep",
+                    "speakerLabels",
+                    "deletedAt",
+                    "purgeAt",
+                    "uploadedByUserId",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "call.not_found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "call.rep_not_changeable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "call.rep_invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/playbook/rights-confirmation": {
