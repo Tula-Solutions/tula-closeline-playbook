@@ -53,7 +53,8 @@ is finished by the next call and never strands an import.
 
 An Owner or Admin uploads a Transcript (`.txt`, `.vtt`, `.srt` or `.json`, up to 5 MB) with the deal id
 and the Rep's speaker label to `POST /v1/playbook/calls`, once the Organization has confirmed the
-rights wording. A background job parses it into turns, builds one Moment per Prospect turn (a window
+rights wording (its version and text come from the contract; `GET /v1/playbook/rights-confirmation` returns
+the current text). A background job parses it into turns, builds one Moment per Prospect turn (a window
 of recent turns, embedded by role and never by speaker name) and writes the Moments' vectors tagged with
 the Deal's Outcome. List and read: `GET /v1/playbook/calls` and `/{id}`. No search route exists yet.
 Recordings are not accepted yet. Changing the Rep (`PUT /v1/playbook/calls/{id}/rep`) rebuilds the Moments;

@@ -18,7 +18,9 @@ paths:
 - Setting an Outcome publishes `playbook.deal_outcome_changed` after the commit and only when the
   statement says `changed`. A failed publish keeps the change and logs ids; the later re-tag recovers
   from the Deal's `outcome_seq`. The consumer acknowledges the message for now.
-- Rights: only `RIGHTS_WORDING_VERSION` can be confirmed (else `rights.version_outdated`); who and
+- Rights: only the contract's `CURRENT_RIGHTS_WORDING_VERSION` can be confirmed (else
+  `rights.version_outdated`); there is no setting for it, a wording change is a contract release. The read route
+  returns `currentWording` (`rightsWordingFor(current)`) for the version it reports. Who and
   when come from the token and the database clock. A repeat keeps the first record.
 - Remove-all erases Deals with `DEAL_ERASE_BATCH` in bounded batches and answers 503 until none remain.
 - A Deal at the sequence ceiling (about 2 billion Outcome changes) makes `DEAL_SET_OUTCOME` fail

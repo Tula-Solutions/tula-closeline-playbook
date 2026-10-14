@@ -1,8 +1,10 @@
 import {
   type ConfirmRightsRequest,
+  CURRENT_RIGHTS_WORDING_VERSION,
   type RightsStatus,
   rightsConfirmationSchema,
   rightsStatusSchema,
+  rightsWordingFor,
   SALES_HISTORY_READ_ROLES,
 } from 'tula-closeline-contract'
 import { RIGHTS_CONFIRM, RIGHTS_GET } from 'tula-closeline-db'
@@ -11,7 +13,7 @@ import { parsePgTimestamp } from '~/modules/document/schema'
 import { assertRole, type CallContext, failure, transaction } from '~/modules/service-kit'
 
 /** What the rights service needs from the container. */
-export type RightsDeps = Pick<Container, 'scope' | 'env'>
+export type RightsDeps = Pick<Container, 'scope'>
 
 /** The stored confirmation as the contract's, or null when the row is missing. */
 function confirmationOf(row: Record<string, unknown> | undefined) {
@@ -27,11 +29,12 @@ function confirmationOf(row: Record<string, unknown> | undefined) {
 }
 
 /** The status the contract describes: confirmed only when the stored version is the current one. */
-function statusOf(deps: RightsDeps, row: Record<string, unknown> | undefined): RightsStatus {
+function statusOf(row: Record<string, unknown> | undefined): RightsStatus {
   const confirmation = confirmationOf(row)
-  const current = deps.env.RIGHTS_WORDING_VERSION
+  const current = CURRENT_RIGHTS_WORDING_VERSION
   return rightsStatusSchema.parse({
     currentWordingVersion: current,
+    currentWording: rightsWordingFor(current),
     confirmation,
     confirmed: confirmation !== null && confirmation.wordingVersion === current,
   })
@@ -45,7 +48,7 @@ export async function get(deps: RightsDeps, context: CallContext): Promise<Right
     context.organizationId,
     async (run) => (await run(RIGHTS_GET, [context.organizationId])).rows[0]
   )
-  return statusOf(deps, row)
+  return statusOf(row)
 }
 
 /**
@@ -59,7 +62,7 @@ export async function confirm(
   request: ConfirmRightsRequest
 ): Promise<RightsStatus> {
   assertRole(context, SALES_HISTORY_READ_ROLES)
-  if (request.wordingVersion !== deps.env.RIGHTS_WORDING_VERSION) {
+  if (request.wordingVersion !== CURRENT_RIGHTS_WORDING_VERSION) {
     throw failure('rights.version_outdated')
   }
   const row = await transaction(
@@ -69,5 +72,5 @@ export async function confirm(
       (await run(RIGHTS_CONFIRM, [context.organizationId, context.userId, request.wordingVersion]))
         .rows[0]
   )
-  return statusOf(deps, row)
+  return statusOf(row)
 }

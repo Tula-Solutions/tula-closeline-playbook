@@ -6,7 +6,7 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { sql } from 'drizzle-orm'
-import { type Call, callSchema } from 'tula-closeline-contract'
+import { type Call, CURRENT_RIGHTS_WORDING_VERSION, callSchema } from 'tula-closeline-contract'
 import {
   createDb,
   ORGANIZATIONS_WITH_WORK,
@@ -39,11 +39,7 @@ async function harness(): Promise<CallHarness> {
   h.deps.discover = discover
   // The memory double's seeded confirmation does not exist here: record the real one.
   await h.deps.scope(h.organizationId, (run) =>
-    run(RIGHTS_CONFIRM, [
-      h.organizationId,
-      h.people.owner.userId,
-      h.deps.env.RIGHTS_WORDING_VERSION,
-    ])
+    run(RIGHTS_CONFIRM, [h.organizationId, h.people.owner.userId, CURRENT_RIGHTS_WORDING_VERSION])
   )
   return h
 }

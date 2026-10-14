@@ -366,15 +366,11 @@ describe('PARSER_MEMORY_LIMIT_BYTES', () => {
   })
 })
 
-describe('RIGHTS_WORDING_VERSION', () => {
-  test('defaults to 1, is a positive integer and stays within the contract maximum', () => {
-    expect(loadEnv({ ENVIRONMENT: 'local' }).RIGHTS_WORDING_VERSION).toBe(1)
-    expect(
-      loadEnv({ ENVIRONMENT: 'local', RIGHTS_WORDING_VERSION: '4' }).RIGHTS_WORDING_VERSION
-    ).toBe(4)
-    for (const bad of ['0', '-1', '1.5', 'two', '1000001', '']) {
-      expect(() => loadEnv({ ENVIRONMENT: 'local', RIGHTS_WORDING_VERSION: bad })).toThrow()
-    }
+describe('the rights wording version', () => {
+  test('is not a setting: the contract fixes it, so a variable of that name changes nothing', () => {
+    const env = loadEnv({ ENVIRONMENT: 'local', RIGHTS_WORDING_VERSION: '4' })
+
+    expect('RIGHTS_WORDING_VERSION' in env).toBe(false)
   })
 })
 

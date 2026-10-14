@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { callSchema, DEFAULT_MAX_CALLS } from 'tula-closeline-contract'
+import {
+  CURRENT_RIGHTS_WORDING_VERSION,
+  callSchema,
+  DEFAULT_MAX_CALLS,
+} from 'tula-closeline-contract'
 import { errorCode, personIn } from '~/modules/document/test-support'
 import { CALLS, createCallHarness, transcriptText } from './test-support'
 
@@ -26,18 +30,18 @@ describe('Call upload', () => {
   })
 
   test('without rights confirmed the answer carries the wording version and stores no Call', async () => {
-    const h = await createCallHarness({ env: { RIGHTS_WORDING_VERSION: '3' } })
+    const h = await createCallHarness()
     h.deps.database.seedRights({
       organization_id: h.organizationId,
       confirmed_by: h.people.owner.userId,
       confirmed_at: 0,
-      wording_version: 2,
+      wording_version: CURRENT_RIGHTS_WORDING_VERSION + 1,
     })
     const response = await h.uploadCall(transcriptText())
     expect(response.status).toBe(403)
     const body = (await response.json()) as { error: { code: string; details?: unknown } }
     expect(body.error.code).toBe('rights.confirmation_required')
-    expect(body.error.details).toEqual({ wordingVersion: 3 })
+    expect(body.error.details).toEqual({ wordingVersion: CURRENT_RIGHTS_WORDING_VERSION })
     expect(h.deps.database.calls(h.organizationId)).toHaveLength(0)
     expect(await h.objectKeys()).toHaveLength(0)
   })

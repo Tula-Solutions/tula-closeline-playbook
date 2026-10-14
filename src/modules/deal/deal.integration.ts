@@ -7,6 +7,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { sql } from 'drizzle-orm'
 import {
+  CURRENT_RIGHTS_WORDING_VERSION,
   dealSchema,
   encodeCursor,
   listDealsResponseSchema,
@@ -36,10 +37,7 @@ const dealRecord = () => `deal_${crypto.randomUUID().replaceAll('-', '')}`
 
 /** A harness over the real database, with its own Organization and its own people. */
 async function harness() {
-  const h = await createDocumentHarness({
-    scope: scopeOver(service.db),
-    env: { RIGHTS_WORDING_VERSION: '2' },
-  })
+  const h = await createDocumentHarness({ scope: scopeOver(service.db) })
   const send = async (method: string, path: string, body?: unknown, as = h.people.owner) =>
     h.app.request(path, {
       method,
@@ -156,15 +154,17 @@ describe('the rights confirmation against Postgres', () => {
     const stranger = personIn(newOrganizationId(), 'owner')
 
     const first = rightsStatusSchema.parse(
-      await (await send('PUT', RIGHTS, { wordingVersion: 2 })).json()
+      await (await send('PUT', RIGHTS, { wordingVersion: CURRENT_RIGHTS_WORDING_VERSION })).json()
     )
     const repeat = rightsStatusSchema.parse(
-      await (await send('PUT', RIGHTS, { wordingVersion: 2 })).json()
+      await (await send('PUT', RIGHTS, { wordingVersion: CURRENT_RIGHTS_WORDING_VERSION })).json()
     )
     const other = rightsStatusSchema.parse(
       await (await send('GET', RIGHTS, undefined, stranger)).json()
     )
-    const outdated = await send('PUT', RIGHTS, { wordingVersion: 1 })
+    const outdated = await send('PUT', RIGHTS, {
+      wordingVersion: CURRENT_RIGHTS_WORDING_VERSION + 1,
+    })
 
     expect(first.confirmed).toBe(true)
     expect(repeat.confirmation).toEqual(first.confirmation)
@@ -178,7 +178,7 @@ describe('remove-all against Postgres', () => {
   test('erases Deals in batches and the rights confirmation, then answers removed', async () => {
     const { h, send } = await harness()
     await seedDeals(h.organizationId, ['X-1', 'X-2'])
-    await send('PUT', RIGHTS, { wordingVersion: 2 })
+    await send('PUT', RIGHTS, { wordingVersion: CURRENT_RIGHTS_WORDING_VERSION })
 
     const response = await h.app.request(
       `/internal/playbook/organizations/${h.organizationId}/remove-all`,

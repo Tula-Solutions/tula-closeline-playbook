@@ -1,4 +1,9 @@
-import { type Call, callSchema, listCallsResponseSchema } from 'tula-closeline-contract'
+import {
+  type Call,
+  CURRENT_RIGHTS_WORDING_VERSION,
+  callSchema,
+  listCallsResponseSchema,
+} from 'tula-closeline-contract'
 import { CALL_GET } from 'tula-closeline-db'
 import { createDocumentHarness, type DocumentHarness } from '~/modules/document/test-support'
 import type { TestDepsOverrides, TestIdentity } from '~/testing'
@@ -64,7 +69,7 @@ export async function createCallHarness(overrides: TestDepsOverrides = {}): Prom
       organization_id: organizationId,
       confirmed_by: h.people.owner.userId,
       confirmed_at: 0,
-      wording_version: h.deps.env.RIGHTS_WORDING_VERSION,
+      wording_version: CURRENT_RIGHTS_WORDING_VERSION,
     })
   }
   confirmRights()
