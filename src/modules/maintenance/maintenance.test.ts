@@ -184,6 +184,59 @@ describe('the orphan object sweep', () => {
     expect(keys).toEqual([key('1'), key('5'), 'deal-imports/not-an-import/original.csv'].sort())
   })
 
+  test('covers Call files: one with a Call of any state stays, an old one no Call names goes, a young one stays', async () => {
+    const h = createPipelineHarness()
+    const key = (id: string, file = 'original.txt') => `calls/call_${id.repeat(32)}/${file}`
+    const put = (id: string, file?: string) =>
+      h.deps.objects.put(h.organizationId, key(id, file), new Uint8Array([1]))
+    h.deps.database.seedDeal({
+      id: `deal_${'a'.repeat(32)}`,
+      organization_id: h.organizationId,
+      deal_id: 'D',
+    })
+    for (const [id, state] of [
+      ['1', 'uploaded'],
+      ['2', 'ready'],
+      ['3', 'deleted'],
+    ] as const) {
+      h.deps.database.seedCall({
+        id: `call_${id.repeat(32)}`,
+        organization_id: h.organizationId,
+        deal_record_id: `deal_${'a'.repeat(32)}`,
+        state,
+      })
+    }
+    for (const id of ['1', '2', '3', '4']) {
+      await put(id)
+    }
+    await put('4', 'extra.json')
+    await h.deps.objects.put(h.organizationId, 'calls/not-a-call/original.txt', new Uint8Array([1]))
+    await h.deps.time.advance(25 * 60 * 60 * 1000)
+    await put('5') // young: an upload may be about to name it
+
+    const deleted = await sweepOrphanObjects(h.deps, h.organizationId, never)
+
+    expect(deleted).toBe(2)
+    const keys = (await h.deps.objects.list(h.organizationId)).items.map((i) => i.key).sort()
+    expect(keys).toEqual(
+      [key('1'), key('2'), key('3'), key('5'), 'calls/not-a-call/original.txt'].sort()
+    )
+  })
+
+  test('a Call file of another Organization is not looked at', async () => {
+    const h = createPipelineHarness()
+    const other = h.other().organizationId
+    await h.deps.objects.put(
+      other,
+      `calls/call_${'8'.repeat(32)}/original.txt`,
+      new Uint8Array([1])
+    )
+    await h.deps.time.advance(25 * 60 * 60 * 1000)
+
+    expect(await sweepOrphanObjects(h.deps, h.organizationId, never)).toBe(0)
+    expect((await h.deps.objects.list(other)).items).toHaveLength(1)
+  })
+
   test('an import file of another Organization is not looked at', async () => {
     const h = createPipelineHarness()
     const other = h.other().organizationId

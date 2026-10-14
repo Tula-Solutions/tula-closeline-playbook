@@ -1,4 +1,5 @@
 import type { ProcessedStore } from 'tula-closeline-kit'
+import { cleanupPendingCalls, logSpentCallPurges, purgeCalls } from '~/modules/call/purge'
 import {
   jittered,
   type PipelineDeps,
@@ -64,6 +65,11 @@ export function createSweeps(deps: PipelineDeps, processed: ProcessedStore): Swe
         await logSpentPurges(deps, organizationId)
       })
     )
+    await attempt('call_purge_spent', () =>
+      forEachOrganization(deps, 'call_purge_spent', signal, async (organizationId) => {
+        await logSpentCallPurges(deps, organizationId)
+      })
+    )
     // Orphan objects have a work kind of their own: an Organization with one failed upload is named
     // 25 hours after it, and `ORPHAN_SWEEP_DONE` records the sweep.
     await attempt('orphan_sweep', () =>
@@ -93,6 +99,9 @@ export function createSweeps(deps: PipelineDeps, processed: ProcessedStore): Swe
         await forEachOrganization(deps, 'cleanup_pending', signal, async (organizationId) => {
           await cleanupPending(deps, organizationId, signal)
         })
+        await forEachOrganization(deps, 'call_cleanup', signal, async (organizationId) => {
+          await cleanupPendingCalls(deps, organizationId, signal)
+        })
       },
     },
     purge: {
@@ -100,6 +109,9 @@ export function createSweeps(deps: PipelineDeps, processed: ProcessedStore): Swe
       run: async () => {
         await forEachOrganization(deps, 'purge_due', signal, async (organizationId) => {
           await purgeDue(deps, organizationId, signal)
+        })
+        await forEachOrganization(deps, 'call_purge', signal, async (organizationId) => {
+          await purgeCalls(deps, organizationId, signal)
         })
       },
     },

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { callSchema } from 'tula-closeline-contract'
+import { callSchema, DEFAULT_MAX_CALLS } from 'tula-closeline-contract'
 import { errorCode, personIn } from '~/modules/document/test-support'
 import { CALLS, createCallHarness, transcriptText } from './test-support'
 
@@ -136,6 +136,86 @@ describe('Call upload', () => {
   test('no token is refused', async () => {
     const h = await createCallHarness()
     expect((await h.uploadCall(transcriptText(), { as: null })).status).toBe(401)
+  })
+})
+
+describe('Call upload against stored Calls', () => {
+  test('an Organization at its Call limit gets call.quota_exceeded and no new object stays', async () => {
+    const h = await createCallHarness()
+    h.deps.database.seedDeal({
+      id: `deal_${'a'.repeat(32)}`,
+      organization_id: h.organizationId,
+      deal_id: 'SEED',
+    })
+    for (let i = 0; i < DEFAULT_MAX_CALLS; i++) {
+      h.deps.database.seedCall({
+        id: `call_${i.toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        deal_record_id: `deal_${'a'.repeat(32)}`,
+      })
+    }
+    const response = await h.uploadCall(transcriptText())
+    expect(response.status).toBe(409)
+    expect(await errorCode(response)).toBe('call.quota_exceeded')
+    expect(await h.objectKeys()).toHaveLength(0)
+  })
+
+  test('the same file again restores a deleted Call and queues it', async () => {
+    const h = await createCallHarness()
+    const first = callSchema.parse(await (await h.uploadCall(transcriptText())).json())
+    await h.runCalls()
+    const row = h.deps.database.calls(h.organizationId)[0]
+    if (row === undefined) {
+      throw new Error('no Call')
+    }
+    row.state = 'deleted'
+    row.deleted_at = Date.now()
+    row.deletion_seq += 1
+    row.epoch += 1
+    row.purge_due_at = Date.now() + 86_400_000
+
+    const again = await h.uploadCall(transcriptText())
+
+    expect(again.status).toBe(200)
+    const restored = callSchema.parse(await again.json())
+    expect(restored.id).toBe(first.id)
+    expect(restored.state).not.toBe('deleted')
+    await h.runCalls()
+    expect((await h.readCall(first.id)).state).toBe('ready')
+  })
+
+  test('the same file again re-queues a Call that failed with processing_failed', async () => {
+    const h = await createCallHarness()
+    const first = callSchema.parse(await (await h.uploadCall(transcriptText())).json())
+    await h.runCalls()
+    const row = h.deps.database.calls(h.organizationId)[0]
+    if (row === undefined) {
+      throw new Error('no Call')
+    }
+    row.state = 'failed'
+    row.failure_reason = 'processing_failed'
+
+    const again = await h.uploadCall(transcriptText())
+
+    expect(again.status).toBe(200)
+    expect(callSchema.parse(await again.json()).state).not.toBe('failed')
+    await h.runCalls()
+    expect((await h.readCall(first.id)).state).toBe('ready')
+    expect(await h.objectKeys()).toHaveLength(1)
+  })
+
+  test('the same file again re-queues a Call that failed for a transient reason, not one the file caused', async () => {
+    const h = await createCallHarness()
+    const first = callSchema.parse(await (await h.uploadCall('Alex: hi\nAlex: again\n')).json())
+    await h.runCalls()
+    expect((await h.readCall(first.id)).failureReason).toBe('too_few_speakers')
+    const jobs = h.deps.database.callJobs(h.organizationId).length
+
+    const again = await h.uploadCall('Alex: hi\nAlex: again\n')
+
+    expect(again.status).toBe(200)
+    expect(callSchema.parse(await again.json()).state).toBe('failed')
+    expect(h.deps.database.callJobs(h.organizationId)).toHaveLength(jobs)
   })
 })
 
