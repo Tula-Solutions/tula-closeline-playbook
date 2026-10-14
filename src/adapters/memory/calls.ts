@@ -26,6 +26,7 @@ import {
   PLAYBOOK_MIN_LEASE_MS,
 } from 'tula-closeline-db'
 import type { Result } from '~/adapters/postgres/processed-store'
+import { parseTextArrayLiteral } from '~/adapters/postgres/text-array'
 import type { MemoryApplyDeal } from './deal-imports'
 
 /** One row of `playbook.calls`, as far as the Transcript path reads or writes it. Times are milliseconds except `created_at_us`. */
@@ -617,9 +618,18 @@ export function runCallStatement(
         string,
         string | null,
         number | null,
-        string[] | null,
+        string | null,
         number,
       ]
+      // The statement helper binds a JavaScript array as a list `($1, $2)`, which Postgres cannot cast to text[].
+      if (labels !== null && labels !== undefined && typeof labels !== 'string') {
+        throw ctx.postgresError('42846', 'cannot cast type record to text[]')
+      }
+      const parsedLabels =
+        labels === null || labels === undefined ? null : parseTextArrayLiteral(labels)
+      if (labels !== null && labels !== undefined && parsedLabels === undefined) {
+        throw ctx.postgresError('22P02', 'malformed array literal')
+      }
       const j = jobsOf(organization).find(
         (x) => x.id === id && x.claim_token === token && x.state === 'running'
       )
@@ -630,7 +640,7 @@ export function runCallStatement(
       j.next_attempt_at = now() + lease(leaseMs)
       c.transcript_key = transcriptKey ?? c.transcript_key
       c.duration_seconds = duration ?? c.duration_seconds
-      c.speaker_labels = labels === null || labels === undefined ? c.speaker_labels : [...labels]
+      c.speaker_labels = parsedLabels ?? c.speaker_labels
       touch(c)
       return rows([{ id: c.id }])
     }

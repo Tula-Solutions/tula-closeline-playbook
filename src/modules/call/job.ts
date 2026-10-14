@@ -9,6 +9,7 @@ import {
   type ClaimedCallJob,
   DEAL_GET,
 } from 'tula-closeline-db'
+import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
 import { ensureIndexSettings } from '~/modules/ingestion/job'
 import {
   CallTimeout,
@@ -279,7 +280,8 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
       c.token,
       null,
       null,
-      speakers,
+      // A text-array literal: the statement helper would bind a JavaScript array as a record list.
+      toTextArrayLiteral(speakers),
       deps.env.INGESTION_LEASE_MS,
     ])
   )

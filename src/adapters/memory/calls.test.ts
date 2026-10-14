@@ -30,6 +30,7 @@ import {
   QUOTA_LOCK,
 } from 'tula-closeline-db'
 import { createFixedClock } from 'tula-closeline-kit'
+import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
 import {
   createMemoryPlaybookDatabase,
   type MemoryCallRow,
@@ -43,6 +44,7 @@ const call = (n: number) => `call_${n.toString(16).padStart(32, '0')}`
 const job = (n: number) => `cjob_${n.toString(16).padStart(32, '0')}`
 const record = (n: number) => `deal_${n.toString(16).padStart(32, '0')}`
 const WORDING = 2
+const labels = (values: string[]) => toTextArrayLiteral(values)
 
 function setup() {
   const clock = createFixedClock(new Date('2026-01-01T00:00:00Z'))
@@ -374,9 +376,9 @@ describe('the job statements', () => {
     expect((await run(CALL_JOB_HEARTBEAT, [ORG, id, wrong, 60_000])).rows).toEqual([])
     expect((await run(CALL_JOB_HEARTBEAT, [ORG, id, token, 60_000])).rows).toHaveLength(1)
     expect(
-      (await run(CALL_JOB_RECORD, [ORG, id, wrong, null, null, ['Rep'], 60_000])).rows
+      (await run(CALL_JOB_RECORD, [ORG, id, wrong, null, null, labels(['Rep']), 60_000])).rows
     ).toEqual([])
-    await run(CALL_JOB_RECORD, [ORG, id, token, null, null, ['Rep', 'Prospect'], 60_000])
+    await run(CALL_JOB_RECORD, [ORG, id, token, null, null, labels(['Rep', 'Prospect']), 60_000])
     expect(db.calls(ORG)[0]?.speaker_labels).toEqual(['Rep', 'Prospect'])
     const retried = await run(CALL_JOB_RETRY, [ORG, id, token, 5000])
     expect(retried.rows[0]).toMatchObject({ id, attempts: 1 })
@@ -390,7 +392,7 @@ describe('the job statements', () => {
     const id = String(claimed?.id)
     const token = String(claimed?.claim_token)
     await db.scope(ORG, (run) =>
-      run(CALL_JOB_RECORD, [ORG, id, token, null, null, ['Rep', 'Prospect'], 60_000])
+      run(CALL_JOB_RECORD, [ORG, id, token, null, null, labels(['Rep', 'Prospect']), 60_000])
     )
     Object.assign(db.deals(ORG)[0] ?? {}, { outcome: 'won', outcome_seq: 3 })
 
@@ -410,7 +412,7 @@ describe('the job statements', () => {
     const id = String(claimed?.id)
     const token = String(claimed?.claim_token)
     await db.scope(ORG, (run) =>
-      run(CALL_JOB_RECORD, [ORG, id, token, null, null, ['Someone'], 60_000])
+      run(CALL_JOB_RECORD, [ORG, id, token, null, null, labels(['Someone']), 60_000])
     )
 
     const done = await db.scope(ORG, (run) => run(CALL_JOB_COMPLETE, [ORG, id, token, 0]))
@@ -545,5 +547,23 @@ describe('erasure and purge', () => {
     await expect(db.scope(ORG, (run) => run(DEAL_ERASE_BATCH, [ORG, 10]))).rejects.toMatchObject({
       code: '23503',
     })
+  })
+})
+
+describe('a text-array parameter', () => {
+  test('a JavaScript array is refused as Postgres refuses it, and a literal round-trips awkward labels', async () => {
+    const { db } = setup()
+    await insert(db)
+    const [claimed] = await claim(db)
+    const id = String(claimed?.id)
+    const token = String(claimed?.claim_token)
+    const run = (statement: string, params: unknown[]) => db.scope(ORG, (r) => r(statement, params))
+
+    await expect(
+      run(CALL_JOB_RECORD, [ORG, id, token, null, null, ['Rep', 'Prospect'], 60_000])
+    ).rejects.toMatchObject({ code: '42846' })
+    const awkward = ['A "q"', 'b\\c', 'x,y', '']
+    await run(CALL_JOB_RECORD, [ORG, id, token, null, null, toTextArrayLiteral(awkward), 60_000])
+    expect(db.calls(ORG)[0]?.speaker_labels).toEqual(awkward)
   })
 })
