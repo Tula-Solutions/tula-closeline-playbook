@@ -179,6 +179,57 @@ describe('uploading a Recording', () => {
     expect(run.h.deps.database.calls(run.h.organizationId)).toHaveLength(0)
   }, 60_000)
 
+  test('a sender below the minimum rate is cut off as server.timeout, and the partial object is deleted', async () => {
+    // 100,000 bytes a second over a 200 ms window; the sender manages about 400 a second.
+    const h = await createCallHarness({
+      env: { RECORDING_MIN_BYTES_PER_SECOND: '100000', RECORDING_RATE_WINDOW_MS: '200' },
+    })
+    const del = spyOn(h.deps.objects, 'delete')
+    const head = new TextEncoder().encode(
+      '--B\r\nContent-Disposition: form-data; name="dealId"\r\n\r\nDEAL-1\r\n' +
+        '--B\r\nContent-Disposition: form-data; name="file"; filename="slow.wav"\r\nContent-Type: audio/wav\r\n\r\n'
+    )
+    const audio = wavBytes('slow')
+    let sent = 0
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (sent === 0) {
+          controller.enqueue(head)
+          controller.enqueue(audio.subarray(0, 64))
+          sent = 64
+          return
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        controller.enqueue(audio.subarray(sent, sent + 20))
+        sent += 20
+      },
+    })
+
+    const response = await h.app.request(CALLS, {
+      method: 'POST',
+      body,
+      duplex: 'half',
+      headers: {
+        ...(await h.bearer(h.people.owner)),
+        'content-type': 'multipart/form-data; boundary=B',
+      },
+    })
+
+    expect(response.status).toBe(504)
+    expect(await errorCode(response)).toBe('server.timeout')
+    expect(await h.objectKeys()).toHaveLength(0)
+    expect(del).toHaveBeenCalled()
+    expect(h.deps.database.calls(h.organizationId)).toHaveLength(0)
+  }, 10_000)
+
+  test('a sender at the minimum rate is not cut off', async () => {
+    const h = await createCallHarness({
+      env: { RECORDING_MIN_BYTES_PER_SECOND: '1000', RECORDING_RATE_WINDOW_MS: '200' },
+    })
+    const response = await h.uploadRecording('fast-enough')
+    expect(response.status).toBe(201)
+  })
+
   test('a body that declares more than the Call upload limit is request.too_large before it is read', async () => {
     const h = await createCallHarness()
     const response = await h.uploadRecording('declared', {})

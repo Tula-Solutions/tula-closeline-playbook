@@ -311,6 +311,36 @@ describe('the re-tag converges when things move under it', () => {
     expect(passes).toBeLessThanOrEqual(3)
   })
 
+  test('a pass starts at a random Deal and keeps no memory: the start decides what a pass reaches', async () => {
+    const h = await createCallHarness()
+    for (let i = 0; i < RETAG_SCAN_LIMIT; i++) {
+      const stuck = await readyCall(h, `rnd${i}`, `DEAL-S${i}`)
+      const key = h.deps.database.calls(h.organizationId).find((c) => c.id === stuck.id)?.object_key
+      await h.deps.objects.delete(h.organizationId, String(key))
+    }
+    const good = await readyCall(h, 'rnd-good', 'DEAL-Z')
+    const lastId = `deal_${'f'.repeat(32)}`
+    const goodDeal = h.deps.database.deals(h.organizationId).find((d) => d.deal_id === 'DEAL-Z')
+    for (const call of h.deps.database.calls(h.organizationId)) {
+      if (call.deal_record_id === goodDeal?.id) {
+        call.deal_record_id = lastId
+      }
+    }
+    Object.assign(goodDeal ?? {}, { id: lastId })
+    for (const deal of h.deps.database.deals(h.organizationId)) {
+      Object.assign(deal, { outcome: 'won', outcome_seq: 1 })
+    }
+
+    // Starting at the very beginning, the stuck Deals use the whole scan: the healthy one is not reached.
+    Object.assign(h.deps, { random: () => 0 })
+    await pass(h)
+    expect((await h.moments(good.id)).returnable).toBe(0)
+    // The same state, another start: a pass that begins near the end reaches it. Nothing carried over.
+    Object.assign(h.deps, { random: () => 0.999 })
+    await pass(h)
+    expect((await h.moments(good.id)).returnable).toBe(2)
+  })
+
   test('a pass takes a bounded number of Deals', async () => {
     const h = await createCallHarness()
     for (let i = 0; i < RETAG_DEALS_PER_PASS + 2; i++) {
@@ -602,9 +632,11 @@ describe('a stuck Deal is not logged on every pass', () => {
     await h.deps.objects.delete(h.organizationId, String(key))
     await h.setOutcome(dealOf(h).id, 'won')
 
-    await pass(h)
-    await pass(h)
-    await pass(h)
+    // The log is throttled by the clock alone (no memory): once per window, at the start of it.
+    for (let i = 0; i < 3; i++) {
+      await pass(h)
+      await h.deps.time.advance(60_000)
+    }
 
     expect(logged(h.deps, 'an Outcome re-tag pass ended')).toHaveLength(1)
   })

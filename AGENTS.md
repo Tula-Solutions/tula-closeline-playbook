@@ -34,7 +34,7 @@ What does not: the vendor adapters for the vector store, embedder and OCR, and s
 is real (`src/adapters/parser/`).
 **The pipeline is not deployable until plan steps 1.35 and 1.36 (hub issue 48 and the
 embedder/OCR adapters) land.** Until then `WORKERS_ENABLED=true` is refused at
-boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`, which now includes the `transcriber`; env keys `RECORDING_BODY_TIMEOUT_MS`, `TRANSCRIBE_POLL_INTERVAL_MS`, `TRANSCRIBE_MAX_WAIT_MS`), and the
+boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`, which now includes the `transcriber`; env keys `RECORDING_BODY_TIMEOUT_MS`, `TRANSCRIBE_POLL_INTERVAL_MS`, `TRANSCRIBE_MAX_WAIT_MS`, `RECORDING_MIN_BYTES_PER_SECOND`, `RECORDING_RATE_WINDOW_MS`), and the
 default there is false: an API-only instance whose uploads stay `uploaded`, nothing claiming them.
 The sweeps (`SWEEPS_ENABLED`, default true everywhere) run regardless, so deletes are purged.
 

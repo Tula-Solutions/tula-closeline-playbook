@@ -7,6 +7,7 @@ import {
   speakerLabelSchema,
 } from 'tula-closeline-contract'
 import {
+  CALL_JOB_MAX_ATTEMPTS,
   CALL_JOB_RECORD,
   CALL_JOB_TRANSCRIBED,
   CALL_SENT_TO_VENDOR,
@@ -66,17 +67,17 @@ const VENDOR_FAILURE: Readonly<Record<TranscriptionFailure, CallFailureReason>> 
   timed_out: 'transcription_timed_out',
 }
 
-/** A copy of an earlier send of this Call that the vendor still holds and has not failed. */
-type LiveCopy = { reference: string; seq: number; vendorId: string }
+/** The newest copy the vendor holds for this Call, whatever its state: a failed one is read for its failure, not sent again. */
+type VendorCopy = { reference: string; seq: number; vendorId: string }
 
 /**
- * Finds the newest copy of an earlier send that is still pending or done, by listing the vendor's
- * jobs for this Call's reference prefix (a background job may; the prefix ends with the separator).
- * A retry or a restore then reads that copy instead of paying for a second transcription.
+ * Finds the copy of the newest send of this Call, by listing the vendor's jobs for the Call's
+ * reference prefix (a background job may; the prefix ends with the separator). A retry or a later
+ * poll then reads that copy instead of paying for a second transcription.
  */
-async function findLiveCopy(c: TranscribeContext): Promise<LiveCopy | undefined> {
+async function findNewestCopy(c: TranscribeContext): Promise<VendorCopy | undefined> {
   const { deps } = c
-  let best: LiveCopy | undefined
+  let best: VendorCopy | undefined
   let cursor: string | undefined
   for (let page = 0; page < MAX_LIST_PAGES; page++) {
     const listed = await within(
@@ -92,7 +93,7 @@ async function findLiveCopy(c: TranscribeContext): Promise<LiveCopy | undefined>
     )
     for (const item of listed.items) {
       const seq = sendOfReference(c.callId, item.clientReference)
-      if (seq !== undefined && item.status !== 'failed' && (best === undefined || seq > best.seq)) {
+      if (seq !== undefined && (best === undefined || seq > best.seq)) {
         best = { reference: item.clientReference, seq, vendorId: item.vendorId }
       }
     }
@@ -141,30 +142,62 @@ async function recordVendorId(
   return false
 }
 
+/** What one look at the vendor found: the result, or that it is still working and when to look again. */
+type Step =
+  | { kind: 'done'; result: Extract<TranscriptionResult, { status: 'done' }> }
+  | { kind: 'pending'; pollAfterMs: number }
+
 /**
- * Sends the Recording to the transcriber and waits for its result. A send is counted before the
+ * How long until the next look at a send that is still pending: the time already waited, at least
+ * the poll interval and at most what is left of `TRANSCRIBE_MAX_WAIT_MS`, so the looks thin out
+ * (a job is claimed at most {@link CALL_JOB_MAX_ATTEMPTS} times) and the last one lands on the
+ * deadline. A wait that has run out fails the Call with `transcription_timed_out`.
+ */
+function pollDelayMs(c: TranscribeContext, claim: ClaimedCallJob, startedMs: number): number {
+  const { deps } = c
+  const elapsed = Math.max(0, deps.clock.now().getTime() - startedMs)
+  const remaining = deps.env.TRANSCRIBE_MAX_WAIT_MS - elapsed
+  if (remaining <= 0) {
+    throw new CallFailure('transcription_timed_out')
+  }
+  if ((claim.attempts ?? 1) >= CALL_JOB_MAX_ATTEMPTS - 2) {
+    // The last claims: one look at the deadline, so the job is not given up as spent before it.
+    return Math.ceil(remaining)
+  }
+  const base = Math.max(deps.env.TRANSCRIBE_POLL_INTERVAL_MS, elapsed)
+  return Math.max(1, Math.min(jittered(deps, base), Math.ceil(remaining)))
+}
+
+/**
+ * Looks at the transcriber once, sending first when it holds no copy. A send is counted before the
  * request (`CALL_SENT_TO_VENDOR`, at most 20 per Call: `sent: false` fails the Call, it is never
  * retried), carries the client reference `<call id>:<seq>`, and gets a presigned URL signed just
  * before the request. After the vendor accepts, its id is stored beside the send. A copy of an
- * earlier attempt that is still live is read instead of sending again.
+ * earlier send (found by listing, unless `fresh`) is read instead of sending again. The job never
+ * waits here: a result that is not ready is `pending`, and the caller gives the job back.
  */
-async function sendAndWait(
+async function sendAndRead(
   c: TranscribeContext,
   claim: ClaimedCallJob,
-  mode: 'split_channels' | 'diarize'
-): Promise<Extract<TranscriptionResult, { status: 'done' }>> {
+  mode: 'split_channels' | 'diarize',
+  fresh: boolean
+): Promise<Step> {
   const { deps } = c
   const timeout = deps.env.INGESTION_IO_TIMEOUT_MS
   if (claim.object_key === null) {
     throw new CallFailure('processing_failed')
   }
   await c.beat()
-  let copy = claim.sent_to_vendor_at === null ? undefined : await findLiveCopy(c)
+  let copy = !fresh && claim.sent_to_vendor_at !== null ? await findNewestCopy(c) : undefined
   let hint: string | undefined
+  let startedMs: number
   if (copy !== undefined) {
     if (await recordVendorId(c, copy.seq, copy.vendorId)) {
       hint = copy.vendorId
     }
+    const sentAt =
+      claim.sent_to_vendor_at === null ? Number.NaN : new Date(claim.sent_to_vendor_at).getTime()
+    startedMs = Number.isNaN(sentAt) ? deps.clock.now().getTime() : sentAt
   } else {
     const sent = await inTransaction(deps, c.organizationId, (run) =>
       run(CALL_SENT_TO_VENDOR, [c.organizationId, c.jobId, c.token])
@@ -180,6 +213,7 @@ async function sendAndWait(
     const seq = Number(row.vendor_send_seq)
     const reference = clientReferenceOf(c.callId, seq)
     const objectKey = claim.object_key
+    startedMs = deps.clock.now().getTime()
     // Signed as late as possible: the URL lives for the shorter of this and the credentials' life.
     const url = await within(deps, 'object store', timeout, c.signal, () =>
       deps.objects.presignGet(c.organizationId, objectKey, { expiresInSeconds: AUDIO_URL_SECONDS })
@@ -199,31 +233,24 @@ async function sendAndWait(
     }
   }
   const { reference } = copy
-  const started = deps.clock.now().getTime()
-  for (;;) {
-    const result = await within(deps, 'transcriber', timeout, c.signal, () =>
-      deps.transcriber.getResult(
-        c.organizationId,
-        reference,
-        hint === undefined ? undefined : { vendorId: hint }
-      )
+  const result = await within(deps, 'transcriber', timeout, c.signal, () =>
+    deps.transcriber.getResult(
+      c.organizationId,
+      reference,
+      hint === undefined ? undefined : { vendorId: hint }
     )
-    if (result === undefined) {
-      // The copy is gone (deleted at the vendor): another attempt sends again.
-      throw new Error('the transcriber no longer holds the send')
-    }
-    if (result.status === 'failed') {
-      throw new CallFailure(VENDOR_FAILURE[result.reason])
-    }
-    if (result.status === 'done') {
-      return result
-    }
-    if (deps.clock.now().getTime() - started >= deps.env.TRANSCRIBE_MAX_WAIT_MS) {
-      throw new CallFailure('transcription_timed_out')
-    }
-    await deps.sleep(jittered(deps, deps.env.TRANSCRIBE_POLL_INTERVAL_MS), c.signal)
-    c.signal.throwIfAborted()
+  )
+  if (result === undefined) {
+    // The copy is gone (deleted at the vendor): another attempt sends again.
+    throw new Error('the transcriber no longer holds the send')
   }
+  if (result.status === 'failed') {
+    throw new CallFailure(VENDOR_FAILURE[result.reason])
+  }
+  if (result.status === 'done') {
+    return { kind: 'done', result }
+  }
+  return { kind: 'pending', pollAfterMs: pollDelayMs(c, claim, startedMs) }
 }
 
 /** The label a per-side Recording's turns carry: the channel's name. */
@@ -282,22 +309,71 @@ export function keepTranscript(
 }
 
 /**
- * The whole transcribe job: when no Transcript is kept yet, send the audio, wait, keep the Transcript
- * under the Call's prefix and record it with its duration and speakers (`CALL_JOB_RECORD`); then
- * `CALL_JOB_TRANSCRIBED` moves the Call to `awaiting_rep` (mono, no Rep chosen) or `processing`
- * with a queued process job, the same Moment path as a Transcript. A crash between the two statements
- * leaves the kept Transcript, so the retry only finishes. Idempotent at every step.
+ * Whether a result is the diarized copy a per-side Recording falls back to: the Rep was declared by
+ * channel, yet the turns carry no channel. Derived from the data, so a retry that finds only that
+ * copy knows what it is without any state of its own.
  */
-export async function runTranscribe(c: TranscribeContext, claim: ClaimedCallJob): Promise<void> {
+function isDiarizedFallback(
+  claim: ClaimedCallJob,
+  result: Extract<TranscriptionResult, { status: 'done' }>
+): boolean {
+  return (
+    claim.rep_by === 'channel' &&
+    result.turns.length > 0 &&
+    result.turns.every((turn) => turn.channel === undefined)
+  )
+}
+
+/**
+ * The whole transcribe job. When no Transcript is kept yet it looks at the vendor once (sending
+ * first if there is no copy) and either keeps the Transcript under the Call's prefix and records it
+ * with its duration and speakers (`CALL_JOB_RECORD`), or, when the vendor is still working, returns
+ * how long until the next look: the caller gives the job back for that long, so a job never holds a
+ * worker while the vendor works. Then `CALL_JOB_TRANSCRIBED` moves the Call to `awaiting_rep`
+ * (mono, no Rep chosen) or `processing` with a queued process job, the same Moment path as a
+ * Transcript. A crash between the two statements leaves the kept Transcript, so the retry only
+ * finishes. Idempotent at every step.
+ *
+ * A Recording declared per-side whose file is not (a channel that never speaks) is sent once more
+ * as a diarized transcription; its Transcript and speaker labels are kept and the Call then fails
+ * `not_per_side`, so a Rep change to one of the speakers rebuilds the Moments.
+ */
+export async function runTranscribe(
+  c: TranscribeContext,
+  claim: ClaimedCallJob
+): Promise<{ pollAfterMs: number } | undefined> {
   const { deps } = c
   if (claim.call_kind !== 'recording' || claim.object_key === null) {
     throw new CallFailure('processing_failed')
   }
+  let notPerSide = false
   if (claim.transcript_key === null) {
     // Declared per-side: the channels are the speakers. Otherwise the vendor separates them.
     const mode = claim.rep_by === 'channel' ? 'split_channels' : 'diarize'
-    const done = await sendAndWait(c, claim, mode)
-    const kept = keepTranscript(done, mode)
+    let step = await sendAndRead(c, claim, mode, false)
+    if (step.kind === 'pending') {
+      return { pollAfterMs: step.pollAfterMs }
+    }
+    let kept: ReturnType<typeof keepTranscript>
+    if (mode === 'split_channels' && isDiarizedFallback(claim, step.result)) {
+      kept = keepTranscript(step.result, 'diarize')
+      notPerSide = true
+    } else {
+      try {
+        kept = keepTranscript(step.result, mode)
+      } catch (error) {
+        if (!(error instanceof CallFailure) || error.reason !== 'not_per_side') {
+          throw error
+        }
+        // Not per-side after all. Keep the speakers a Rep can be picked from before failing.
+        step = await sendAndRead(c, claim, 'diarize', true)
+        if (step.kind === 'pending') {
+          return { pollAfterMs: step.pollAfterMs }
+        }
+        kept = keepTranscript(step.result, 'diarize')
+        notPerSide = true
+      }
+    }
     const key = recordingTranscriptKey(c.callId)
     await within(deps, 'object store', deps.env.INGESTION_IO_TIMEOUT_MS, c.signal, () =>
       deps.objects.put(c.organizationId, key, kept.bytes, { contentType: 'application/json' })
@@ -316,6 +392,9 @@ export async function runTranscribe(c: TranscribeContext, claim: ClaimedCallJob)
     if (recorded.rows.length === 0) {
       throw new ClaimLost()
     }
+    if (notPerSide) {
+      throw new CallFailure('not_per_side')
+    }
   }
   await c.beat()
   const moved = await inTransaction(deps, c.organizationId, (run) =>
@@ -329,4 +408,5 @@ export async function runTranscribe(c: TranscribeContext, claim: ClaimedCallJob)
   if (moved.rows.length === 0) {
     throw new ClaimLost()
   }
+  return undefined
 }

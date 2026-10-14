@@ -166,6 +166,16 @@ const schema = z
     RECORDING_BODY_TIMEOUT_MS: integer(1_000, 7_200_000).default(1_800_000),
 
     /**
+     * The least a Recording upload must send, in bytes a second, measured over each
+     * `RECORDING_RATE_WINDOW_MS`; a slower sender is cut off (`server.timeout`) so it cannot keep
+     * one of the upload places for the whole `RECORDING_BODY_TIMEOUT_MS` at a trickle.
+     */
+    RECORDING_MIN_BYTES_PER_SECOND: integer(1, 100_000_000).default(32_768),
+
+    /** The window the minimum rate is judged over, in milliseconds (a quiet sender is cut off after at most this long). */
+    RECORDING_RATE_WINDOW_MS: integer(100, 600_000).default(60_000),
+
+    /**
      * The secrets the callers of the internal routes may present, comma separated (ADR 0013): more
      * than one lets a secret be rotated without downtime. Each is 32 to 512 printable characters.
      * Required outside `local`, where the public local default is refused.

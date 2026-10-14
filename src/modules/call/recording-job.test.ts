@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { type Call, callSchema } from 'tula-closeline-contract'
-import { CALL_JOB_TRANSCRIBED, CALL_VENDOR_ID_RECORD } from 'tula-closeline-db'
+import { CALL_JOB_RECORD, CALL_JOB_TRANSCRIBED, CALL_VENDOR_ID_RECORD } from 'tula-closeline-db'
 import { logged } from '~/modules/ingestion/test-support'
 import { CALLS, type CallHarness, channelRep, createCallHarness } from './test-support'
 
@@ -136,7 +136,7 @@ describe('transcribing a Recording', () => {
     expect(options?.expiresInSeconds).toBeLessThanOrEqual(300)
   })
 
-  test('a result that is still pending is polled until it is done', async () => {
+  test('a result that is still pending gives the job back instead of holding it, and is read again later', async () => {
     const h = await createCallHarness()
     const call = await uploadRecording(h, 'slow')
     h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
@@ -148,18 +148,28 @@ describe('transcribing a Recording', () => {
       },
     })
 
-    const running = h.runCalls()
-    await h.deps.time.advance(7_000)
-    await h.deps.time.advance(7_000)
-    await running
+    // The first claim submits, reads once, sees it pending and returns: nothing is left running.
+    expect(await h.runCalls()).toBe(1)
+    const job = h.deps.database.callJobs(h.organizationId).at(-1)
+    expect(job?.state).toBe('queued')
+    expect(job?.next_attempt_at).toBeGreaterThan(h.deps.clock.now().getTime())
+    expect((await h.readCall(call.id)).state).toBe('transcribing')
+
+    // Not due yet: nothing is claimed.
+    expect(await h.runCalls()).toBe(0)
+    await h.deps.time.advance(h.deps.env.TRANSCRIBE_POLL_INTERVAL_MS + 1000)
+    await h.runCalls()
+    await h.deps.time.advance(60_000)
+    await h.runCalls()
 
     expect((await h.readCall(call.id)).state).toBe('awaiting_rep')
+    // Every look read the same send: one counted send, no second.
     expect(vendorSendsOf(h)).toHaveLength(1)
   })
 
-  test('a result that never arrives fails the Call with transcription_timed_out', async () => {
+  test('the looks thin out and a result that never arrives fails the Call with transcription_timed_out', async () => {
     const h = await createCallHarness({
-      env: { TRANSCRIBE_POLL_INTERVAL_MS: '200', TRANSCRIBE_MAX_WAIT_MS: '1000' },
+      env: { TRANSCRIBE_POLL_INTERVAL_MS: '200', TRANSCRIBE_MAX_WAIT_MS: '10000' },
     })
     const call = await uploadRecording(h, 'never')
     h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
@@ -167,16 +177,45 @@ describe('transcribing a Recording', () => {
       result: { status: 'failed', reason: 'timed_out' },
     })
 
-    const running = h.runCalls()
-    for (let i = 0; i < 12; i++) {
-      await h.deps.time.advance(300)
+    let claims = 0
+    for (let i = 0; i < 60 && (await h.readCall(call.id)).state !== 'failed'; i++) {
+      claims += await h.runCalls()
+      await h.deps.time.advance(500)
     }
-    await running
 
     expect(await h.readCall(call.id)).toMatchObject({
       state: 'failed',
       failureReason: 'transcription_timed_out',
     })
+    // Bounded: about a dozen looks for ten seconds, far fewer than one every poll interval.
+    expect(claims).toBeLessThan(20)
+    expect(vendorSendsOf(h)).toHaveLength(1)
+  })
+
+  test('a transient failure at a later look is retried, not given up at the ingestion attempt cap', async () => {
+    const h = await createCallHarness({ env: { INGESTION_MAX_ATTEMPTS: '2' } })
+    const call = await uploadRecording(h, 'later')
+    h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
+      pendingReads: 3,
+      result: {
+        status: 'done',
+        durationMs: 20_000,
+        turns: turns([{ speaker: 'A' }, { speaker: 'B' }]),
+      },
+    })
+    await h.runCalls()
+    await h.deps.time.advance(10_000)
+    await h.runCalls()
+    h.deps.transcriber.failNext('getResult', 'transcriber.unavailable')
+    await h.deps.time.advance(20_000)
+    await h.runCalls()
+    expect((await h.readCall(call.id)).state).toBe('transcribing')
+    for (let i = 0; i < 6; i++) {
+      await h.deps.time.advance(60_000)
+      await h.runCalls()
+    }
+
+    expect((await h.readCall(call.id)).state).toBe('awaiting_rep')
   })
 
   test.each([
@@ -217,7 +256,7 @@ describe('transcribing a Recording', () => {
     expect(await h.objectKeys()).not.toContain(`calls/${call.id}/transcript.json`)
   })
 
-  test('a declared per-side Recording that has one channel speaking is not_per_side, and a different Rep fixes it', async () => {
+  test('a declared per-side Recording that has one channel speaking is not_per_side, keeps its speakers, and a different Rep fixes it', async () => {
     const h = await createCallHarness()
     const call = await uploadRecording(h, 'mono-as-stereo', { rep: channelRep('left') })
     h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
@@ -231,13 +270,74 @@ describe('transcribing a Recording', () => {
         ]),
       },
     })
+    // The fallback send of the same file, separated by voice instead of by channel.
+    h.deps.transcriber.script(h.organizationId, `${call.id}:2`, {
+      pendingReads: 0,
+      result: {
+        status: 'done',
+        durationMs: 20_000,
+        turns: turns([{ speaker: 'A' }, { speaker: 'B' }, { speaker: 'A' }, { speaker: 'B' }]),
+      },
+    })
 
+    await h.runCalls()
+
+    // Failed, but the Transcript and the speakers a Rep can be picked from are kept.
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'not_per_side',
+      speakerLabels: ['A', 'B'],
+    })
+    expect(await h.objectKeys()).toContain(`calls/${call.id}/transcript.json`)
+    expect(vendorSendsOf(h)).toHaveLength(2)
+
+    const picked = await h.send('PUT', `/v1/playbook/calls/${call.id}/rep`, {
+      body: { rep: { by: 'speaker', label: 'B' } },
+    })
+    expect(picked.status).toBe(200)
+    await h.runCalls()
+
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'ready',
+      rep: { by: 'speaker', label: 'B' },
+    })
+    expect((await vectorsOf(h, call.id)).length).toBeGreaterThan(0)
+    // Fixing it needed no third send.
+    expect(vendorSendsOf(h)).toHaveLength(2)
+  })
+
+  test('a worker that dies after the fallback send finds that copy and ends the same way', async () => {
+    const h = await createCallHarness()
+    const call = await uploadRecording(h, 'fallback-crash', { rep: channelRep('right') })
+    h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
+      pendingReads: 0,
+      result: {
+        status: 'done',
+        durationMs: 20_000,
+        turns: turns([{ speaker: 'ch1', channel: 1 }]),
+      },
+    })
+    h.deps.transcriber.script(h.organizationId, `${call.id}:2`, {
+      pendingReads: 0,
+      result: {
+        status: 'done',
+        durationMs: 20_000,
+        turns: turns([{ speaker: 'A' }, { speaker: 'B' }]),
+      },
+    })
+    // The record statement fails once after both sends: the retry reads the newest copy.
+    h.deps.database.failNext(CALL_JOB_RECORD, new Error('connection lost'))
+
+    await h.runCalls()
+    await h.deps.time.advance(20 * 60 * 1000)
     await h.runCalls()
 
     expect(await h.readCall(call.id)).toMatchObject({
       state: 'failed',
       failureReason: 'not_per_side',
+      speakerLabels: ['A', 'B'],
     })
+    expect(vendorSendsOf(h)).toHaveLength(2)
   })
 
   test('a result with too few or too many speakers fails with the contract reason', async () => {

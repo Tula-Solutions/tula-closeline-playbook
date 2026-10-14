@@ -74,10 +74,10 @@ paths:
   `putStream` with `maxBytes` 500 MB (`call.too_large`), a partial object is deleted, and the container's
   magic bytes must match (`call.unsupported_type`). The `transcribe` job presigns just before submit,
   uses client reference `<callId>:<vendor_send_seq>`, counts each send (`CALL_SENT_TO_VENDOR`, max 20),
-  records the vendor id (`CALL_VENDOR_ID_RECORD`; a conflict is non-fatal), polls with a deadline, keeps
+  records the vendor id (`CALL_VENDOR_ID_RECORD`; a conflict is non-fatal), looks once and, while the vendor works, gives the job back (`CALL_JOB_RETRY`, delay about the time already waited, bounded by `TRANSCRIBE_MAX_WAIT_MS` and the 20-claim cap; never holds a worker), keeps
   the JSON transcript at `calls/<id>/transcript.json`; mono with no Rep waits in `awaiting_rep`.
   Purge/erase delete vendor copies (per send, then by reference prefix), then the audio, then
-  `CALL_VENDOR_REMOVED`, then confirm. Re-tag resumes per Organization after the last Deal it examined.
+  `CALL_VENDOR_REMOVED`, then confirm. Re-tag starts each pass at a random Deal id and wraps once (no process state). A per-side Recording whose file is not per-side is sent once more diarized, its Transcript and speakers are kept, then it fails `not_per_side`, so a speaker Rep change rebuilds. The upload aborts a sender under `RECORDING_MIN_BYTES_PER_SECOND` over `RECORDING_RATE_WINDOW_MS` (`server.timeout`, partial object deleted).
 - `CALL_INSERT` answers five ways: `created` 201; `existing` 200 (a deleted Call is restored, a failed
   one with a transient reason is requeued, the new object is removed); `other_deal` is
   `call.content_in_other_deal` and says nothing of the other Call; `rights_required` is
@@ -107,7 +107,7 @@ paths:
   Organization per pass, not counted in the pass's `ran`, so a Deal that cannot finish never keeps the loop
   awake. Per pass: at most `RETAG_DEALS_PER_PASS` Deals, batches of `RETAG_CALLS_PER_BATCH` Calls
   (`DEAL_RETAG_BATCH`), `RETAG_ROUNDS` rounds per Deal. Deals that cannot finish are paged past (`after` cursor,
-  `RETAG_SCAN_LIMIT` examined per pass) so they never starve the Deals behind them; one re-tag per Organization
+  `RETAG_SCAN_LIMIT` examined per pass) so they never starve the Deals behind them (each pass starts at a random Deal id and wraps once); one re-tag per Organization
   runs at a time per instance.
 - The re-tag patches tags, it never embeds: `VectorStore.setAttributes` (kit v0.9.0) merges `outcome` and
   `outcome_seq` into the existing Moment vectors, in batches of `MAX_UPSERT_BATCH`, under the vector store
@@ -129,7 +129,7 @@ paths:
 - `setAttributes` is not retried inside the re-tag: the kit adapter owns the per-call retry, and this job
   relies on the next pass. A pass is bounded by the Calls of the Deals it takes (`RETAG_DEALS_PER_PASS`,
   `RETAG_SCAN_LIMIT`; a Deal holds at most the Call quota). The end-of-pass line is logged when work was done, or
-  when the count of stuck Calls changes, not on every poll of the same stuck Deal.
+  once per ten-minute clock window when only stuck Deals were found (by the clock, no memory), not on every poll.
 - Lock order: the Deal row (`DEAL_RETAG_LOCK`), then Call rows. The lock and `DEAL_RETAG_DONE` run in one short
   transaction, with no external call inside. `DEAL_RETAG_DONE` refuses while a ready Call is stale, which is
   how a Call that finished mid-re-tag, or an Outcome that moved, brings another round.

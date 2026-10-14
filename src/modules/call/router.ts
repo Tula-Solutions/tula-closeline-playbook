@@ -236,6 +236,7 @@ async function readAndStoreUpload(
   }
   const deadline = new AbortController()
   let timer = setTimeout(() => deadline.abort(), container.env.UPLOAD_BODY_TIMEOUT_MS)
+  let rate: ReturnType<typeof setInterval> | undefined
   const capped = capBody(c.req.raw, CALL_BODY_LIMIT, deadline.signal)
   const context = contextOf(c)
   try {
@@ -292,8 +293,22 @@ async function readAndStoreUpload(
       clearTimeout(timer)
       timer = setTimeout(() => deadline.abort(), container.env.RECORDING_BODY_TIMEOUT_MS)
       const file = part
+      // A sender that trickles is cut off: each window must carry the minimum rate's worth of bytes.
+      let windowBytes = 0
+      const windowMs = container.env.RECORDING_RATE_WINDOW_MS
+      const minPerWindow = (container.env.RECORDING_MIN_BYTES_PER_SECOND * windowMs) / 1000
+      rate = setInterval(() => {
+        if (windowBytes < minPerWindow) {
+          deadline.abort()
+        }
+        windowBytes = 0
+      }, windowMs)
       const body = (async function* () {
-        yield* file.body
+        for await (const chunk of file.body) {
+          windowBytes += chunk.byteLength
+          yield chunk
+        }
+        clearInterval(rate)
         if ((await parts.next()) !== undefined) {
           throw domainError(ERRORS['request.invalid'])
         }
@@ -338,6 +353,7 @@ async function readAndStoreUpload(
     throw error
   } finally {
     clearTimeout(timer)
+    clearInterval(rate)
   }
 }
 

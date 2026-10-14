@@ -38,6 +38,7 @@ import {
   DEAL_RETAG_BATCH,
   DEAL_RETAG_DONE,
   DEAL_RETAG_LOCK,
+  INGESTION_MAX_RETRY_DELAY_MS,
   PLAYBOOK_MIN_LEASE_MS,
 } from 'tula-closeline-db'
 import type { Result } from '~/adapters/postgres/processed-store'
@@ -737,7 +738,7 @@ export function runCallStatement(
       }
       j.state = 'queued'
       j.claim_token = null
-      j.next_attempt_at = now() + Math.min(Math.max(delayMs ?? 0, 0), 600_000)
+      j.next_attempt_at = now() + Math.min(Math.max(delayMs ?? 0, 0), INGESTION_MAX_RETRY_DELAY_MS)
       return rows([{ id: j.id, attempts: j.attempts }])
     }
     case CALL_JOB_RECORD: {

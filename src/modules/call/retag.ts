@@ -58,11 +58,19 @@ function objectKeyOf(callId: string, mediaType: string): string | undefined {
 
 type CallResult = 'tagged' | 'skipped'
 
-/** Where each Organization's last re-tag pass stopped paging (the id of the last Deal it examined). */
-const resumeAfter = new Map<string, string>()
+/** How often a pass that only found stuck Deals is logged: once in a window, by the clock, with no memory of earlier passes. */
+const STUCK_LOG_WINDOW_MS = 10 * 60 * 1000
 
-/** The count of stuck Calls last logged per Organization, so a repeating stall is logged once. */
-const stuckSeen = new Map<string, number>()
+/** A random Deal id to start a pass from: the id prefix and 32 hex digits from `deps.random`, so it sorts anywhere among the Organization's Deals. */
+function randomStart(deps: Pick<PipelineDeps, 'random'>): string {
+  let hex = ''
+  for (let i = 0; i < 4; i++) {
+    hex += Math.floor(deps.random() * 0x1_0000_0000)
+      .toString(16)
+      .padStart(8, '0')
+  }
+  return `deal_${hex}`
+}
 
 /**
  * Patches the `outcome` and `outcome_seq` of existing Moment vectors in batches of
@@ -327,13 +335,13 @@ export async function retagOutcomes(
 ): Promise<RetagResult> {
   const result: RetagResult = { deals: 0, calls: 0, skipped: 0 }
   let scanned = 0
-  // Where the last pass of this Organization stopped, so Deals that cannot finish are not the only
-  // ones each pass examines: it carries on after the last Deal it looked at, and starts over from
-  // the beginning only when it reaches the end (one extra read). The point is a fairness hint kept
-  // in this process; losing it (a restart, another instance) only starts the next pass from the top.
-  let after = resumeAfter.get(organizationId) ?? ''
-  let wrapped = after === ''
-  let exhausted = false
+  // Each pass starts at a random Deal id and wraps to the beginning once, so Deals that cannot
+  // finish cannot be the only ones every pass examines, and no process holds any state about it:
+  // a restart or another instance changes nothing. A pass that starts past the last pending Deal
+  // costs one empty read before it wraps.
+  const start = randomStart(deps)
+  let after = start
+  let wrapped = false
   // Deals that cannot finish (an unreadable Call) are paged past, so they never starve the Deals
   // behind them; a pass stops after RETAG_DEALS_PER_PASS completed Deals or RETAG_SCAN_LIMIT examined.
   scan: while (result.deals < RETAG_DEALS_PER_PASS && scanned < RETAG_SCAN_LIMIT) {
@@ -349,11 +357,14 @@ export async function retagOutcomes(
         after = ''
         continue
       }
-      exhausted = true
       break
     }
     for (const row of page) {
       if (signal.aborted || result.deals >= RETAG_DEALS_PER_PASS || scanned >= RETAG_SCAN_LIMIT) {
+        break scan
+      }
+      if (wrapped && String(row.id) > start) {
+        // Back at where the pass began: every Deal has been looked at once.
         break scan
       }
       scanned++
@@ -366,18 +377,14 @@ export async function retagOutcomes(
       }
     }
   }
-  if (exhausted) {
-    resumeAfter.delete(organizationId)
-  } else {
-    resumeAfter.set(organizationId, after)
-  }
-  // A pass that did work is logged; a pass that only found the same stuck Deals again is logged
-  // when its count of stuck Calls changes, not every poll (the log is per process, for noise only).
-  if (result.calls > 0 || result.deals > 0) {
-    stuckSeen.delete(organizationId)
-    deps.logger.info('an Outcome re-tag pass ended', { organizationId, ...result })
-  } else if (scanned > 0 && stuckSeen.get(organizationId) !== result.skipped) {
-    stuckSeen.set(organizationId, result.skipped)
+  // A pass that did work is logged. A pass that only found stuck Deals is logged once in a clock
+  // window (the pass interval is shorter than the window), not on every poll.
+  if (
+    result.calls > 0 ||
+    result.deals > 0 ||
+    (scanned > 0 &&
+      deps.clock.now().getTime() % STUCK_LOG_WINDOW_MS < deps.env.INGESTION_POLL_INTERVAL_MS)
+  ) {
     deps.logger.info('an Outcome re-tag pass ended', { organizationId, ...result })
   }
   return result

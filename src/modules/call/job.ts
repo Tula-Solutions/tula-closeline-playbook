@@ -4,6 +4,7 @@ import {
   CALL_JOB_COMPLETE,
   CALL_JOB_FAIL,
   CALL_JOB_HEARTBEAT,
+  CALL_JOB_MAX_ATTEMPTS,
   CALL_JOB_RECORD,
   CALL_JOB_RETRY,
   type ClaimedCallJob,
@@ -233,11 +234,14 @@ async function writeMoments(
   }
 }
 
-/** Parses, records the speakers, builds and writes the Moments, and completes the Call. */
-async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void> {
+/**
+ * Parses, records the speakers, builds and writes the Moments, and completes the Call. Returns how
+ * long to give the job back for when a transcription is still pending (the job is released, not held).
+ */
+async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<number | undefined> {
   const { deps } = c
   if (claim.job_kind === 'transcribe') {
-    await runTranscribe(
+    const waiting = await runTranscribe(
       {
         deps,
         organizationId: c.organizationId,
@@ -249,7 +253,7 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
       },
       claim
     )
-    return
+    return waiting?.pollAfterMs
   }
   // A Transcript is read from its upload; a Recording from the Transcript the transcribe job kept.
   const recording = claim.call_kind === 'recording'
@@ -313,6 +317,7 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<void>
     c.lost.abort(new ClaimLost())
     throw new ClaimLost()
   }
+  return undefined
 }
 
 /**
@@ -345,8 +350,16 @@ export async function runCallJob(
   const heartbeat = startHeartbeat(context)
   let outcome: CallJobOutcome
   try {
-    await runSteps(context, claim)
-    outcome = 'completed'
+    const pollAfterMs = await runSteps(context, claim)
+    if (pollAfterMs === undefined) {
+      outcome = 'completed'
+    } else {
+      // The vendor is still working: give the job back for a while instead of holding a worker.
+      const released = await inTransaction(deps, organizationId, (run) =>
+        run(CALL_JOB_RETRY, [organizationId, claim.id, context.token, pollAfterMs])
+      )
+      outcome = released.rows.length > 0 ? 'retried' : 'lost'
+    }
   } catch (error) {
     outcome = await settle(context, claim, error, shutdown)
   } finally {
@@ -415,7 +428,10 @@ async function settle(
     }
     const reason = failureReasonOf(error)
     const attempts = claim.attempts ?? 1
-    if (reason !== undefined || attempts >= deps.env.INGESTION_MAX_ATTEMPTS) {
+    // A transcribe job's looks at the vendor count as claims, so it gives up only at the table's cap.
+    const maxAttempts =
+      claim.job_kind === 'transcribe' ? CALL_JOB_MAX_ATTEMPTS : deps.env.INGESTION_MAX_ATTEMPTS
+    if (reason !== undefined || attempts >= maxAttempts) {
       const final: CallFailureReason = reason ?? 'processing_failed'
       if (reason === undefined) {
         reportWorkerError(deps, error, { worker: 'calls', organizationId: c.organizationId })
