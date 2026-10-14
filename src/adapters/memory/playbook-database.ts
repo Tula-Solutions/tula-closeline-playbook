@@ -1,4 +1,7 @@
 import {
+  CALL_INSERT,
+  CALL_JOB_MAX_ATTEMPTS,
+  CALL_PURGE_MAX_ATTEMPTS,
   CONSUMED_CLAIM,
   CONSUMED_COMPLETE,
   CONSUMED_LOOKUP,
@@ -69,12 +72,14 @@ import {
 import type { Clock } from 'tula-closeline-kit'
 import type { Discover, InScope, Result, Run } from '~/adapters/postgres/processed-store'
 import { CLEANUP_PENDING_AFTER_MS } from '~/modules/ingestion/runtime'
+import { type MemoryCallJobRow, type MemoryCallRow, runCallStatement } from './calls'
 import {
   type MemoryImportReportRow,
   type MemoryImportRow,
   runImportStatement,
 } from './deal-imports'
 
+export type { MemoryCallJobRow, MemoryCallRow } from './calls'
 export type { MemoryImportReportRow, MemoryImportRow } from './deal-imports'
 
 /** One row of `playbook.documents`, as far as the document routes read or write it. */
@@ -122,6 +127,8 @@ export type MemoryDealRow = {
   amount: string | null
   currency: string | null
   appeared_in_import: boolean
+  /** The Outcome sequence the Deal's Calls are tagged through; the re-tag job moves it. Absent until a Call sets it. */
+  retag_through?: number
   created_at_us: number
   updated_at: number
 }
@@ -193,6 +200,9 @@ type State = {
   imports: MemoryImportRow[]
   /** The import reports. Rows are never edited once written, so a transaction copies only the array. */
   importRows: MemoryImportReportRow[]
+  /** The Calls and their jobs. */
+  calls: MemoryCallRow[]
+  callJobs: MemoryCallJobRow[]
   jobs: MemoryJobRow[]
   keys: KeyRow[]
   settings: MemorySettingsRow[]
@@ -232,6 +242,14 @@ export type MemoryPlaybookDatabase = {
   imports(organizationId: string): MemoryImportRow[]
   /** The committed report rows of one import, in row order. */
   importRows(organizationId: string, importId: string): MemoryImportReportRow[]
+  /** The committed Calls of an Organization, oldest first. */
+  calls(organizationId: string): MemoryCallRow[]
+  /** The committed Call jobs of an Organization. */
+  callJobs(organizationId: string): MemoryCallJobRow[]
+  /** Adds a Call row directly (its Deal must exist), as a test's starting point. */
+  seedCall(
+    row: Partial<MemoryCallRow> & Pick<MemoryCallRow, 'id' | 'organization_id' | 'deal_record_id'>
+  ): void
   /** Adds a committed import directly, for a state the routes cannot reach (a lapsed lease, a spent import). */
   seedImport(row: Partial<MemoryImportRow> & Pick<MemoryImportRow, 'id' | 'organization_id'>): void
   /** Stores a rights confirmation directly, for a state the routes cannot reach (an older wording version). */
@@ -384,6 +402,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     rights: [],
     imports: [],
     importRows: [],
+    calls: [],
+    callJobs: [],
     jobs: [],
     keys: [],
     settings: [],
@@ -871,6 +891,10 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           const doomed = dealsOf(organization)
             .sort((a, b) => (a.id < b.id ? -1 : 1))
             .slice(0, batch(size, PLAYBOOK_MAX_BATCH))
+          if (doomed.some((d) => state.calls.some((c) => c.deal_record_id === d.id))) {
+            // The Call's foreign key to its Deal has no cascade.
+            throw postgresError('23503', 'calls_deal_fkey: a Call still names the Deal')
+          }
           state.deals = state.deals.filter((d) => !doomed.includes(d))
           return rows([{ deleted: doomed.length }])
         }
@@ -903,6 +927,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             !own(organization) ||
             documentsOf(organization).length > 0 ||
             dealsOf(organization).length > 0 ||
+            state.calls.some((c) => c.organization_id === organization) ||
             state.imports.some((i) => i.organization_id === organization)
           ) {
             return rows([{ removed: false }])
@@ -930,6 +955,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           const noDeals = dealsOf(organization).length === 0
           const noRights = rightsOf(organization) === undefined
           const noImports = !state.imports.some((i) => i.organization_id === organization)
+          const noCalls = !state.calls.some((c) => c.organization_id === organization)
           return rows([
             {
               no_documents: noDocuments,
@@ -938,6 +964,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
               no_messages: noMessages,
               no_deals: noDeals,
               no_imports: noImports,
+              no_calls: noCalls,
               no_rights: noRights,
               removed:
                 noDocuments &&
@@ -946,6 +973,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
                 noMessages &&
                 noDeals &&
                 noImports &&
+                noCalls &&
                 noRights,
             },
           ])
@@ -1577,6 +1605,30 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           if (imported !== undefined) {
             return imported
           }
+          const called = runCallStatement(text, params, {
+            calls: state.calls,
+            callJobs: state.callJobs,
+            deals: state.deals,
+            rights: state.rights,
+            own,
+            uploadLockHeld: () => uploadLockHeld,
+            now,
+            nextMicroseconds,
+            rows,
+            none,
+            batch,
+            pgTimestamp,
+            pgTimestampUs,
+            cursorMicroseconds,
+            postgresError,
+          })
+          if (called !== undefined) {
+            if (text === CALL_INSERT && called.rows[0]?.result === 'created') {
+              // The usage trigger creates the Organization's row with its first Call.
+              state.usage.add(String(params[0]))
+            }
+            return called
+          }
           if (text.startsWith('set local lock_timeout')) {
             return none
           }
@@ -1622,6 +1674,47 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         for (const j of committed.jobs) {
           if ((j.state === 'queued' || j.state === 'running') && j.next_attempt_at <= now()) {
             organizations.add(j.organization_id)
+          }
+        }
+        break
+      case 'call_jobs':
+        for (const j of committed.callJobs) {
+          if (
+            (j.state === 'queued' || j.state === 'running') &&
+            j.next_attempt_at <= now() &&
+            j.attempts < CALL_JOB_MAX_ATTEMPTS
+          ) {
+            organizations.add(j.organization_id)
+          }
+        }
+        break
+      case 'call_purge':
+        for (const c of committed.calls) {
+          if (
+            c.state === 'deleted' &&
+            (c.purge_due_at ?? Number.POSITIVE_INFINITY) <= now() &&
+            c.purge_attempts < CALL_PURGE_MAX_ATTEMPTS &&
+            (c.purge_lease_until === null || c.purge_lease_until <= now())
+          ) {
+            organizations.add(c.organization_id)
+          }
+        }
+        break
+      case 'call_cleanup':
+        for (const c of committed.calls) {
+          if (
+            c.state === 'deleted' &&
+            (c.vectors_removed_seq === null || c.vectors_removed_seq < c.deletion_seq) &&
+            (c.deleted_at ?? 0) + CLEANUP_PENDING_AFTER_MS <= now()
+          ) {
+            organizations.add(c.organization_id)
+          }
+        }
+        break
+      case 'call_purge_spent':
+        for (const c of committed.calls) {
+          if (c.state === 'deleted' && c.purge_attempts >= CALL_PURGE_MAX_ATTEMPTS) {
+            organizations.add(c.organization_id)
           }
         }
         break
@@ -1682,6 +1775,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         rights: structuredClone(committed.rights),
         imports: structuredClone(committed.imports),
         importRows: [...committed.importRows],
+        calls: structuredClone(committed.calls),
+        callJobs: structuredClone(committed.callJobs),
         jobs: structuredClone(committed.jobs),
         keys: structuredClone(committed.keys),
         settings: structuredClone(committed.settings),
@@ -1725,6 +1820,51 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     jobs: (organizationId) => committed.jobs.filter((j) => j.organization_id === organizationId),
     deals: (organizationId) => committed.deals.filter((d) => d.organization_id === organizationId),
     rights: (organizationId) => committed.rights.find((r) => r.organization_id === organizationId),
+    calls: (organizationId) =>
+      committed.calls
+        .filter((c) => c.organization_id === organizationId)
+        .sort((a, b) => a.created_at_us - b.created_at_us),
+    callJobs: (organizationId) =>
+      committed.callJobs.filter((j) => j.organization_id === organizationId),
+    seedCall: (row) => {
+      const at = now()
+      committed.calls.push({
+        kind: 'transcript',
+        file_name: 'seed.txt',
+        media_type: 'text/plain',
+        size_bytes: 10,
+        content_hash: HEX(crypto.getRandomValues(new Uint8Array(32))),
+        uploaded_by: `usr_${'0'.repeat(31)}1`,
+        object_key: `calls/${row.id}/original.txt`,
+        transcript_key: null,
+        state: 'ready',
+        failure_reason: null,
+        rep_by: 'speaker',
+        rep_label: 'Rep',
+        rep_channel: null,
+        speaker_labels: ['Rep', 'Prospect'],
+        duration_seconds: null,
+        epoch: 0,
+        rep_seq: 0,
+        deletion_seq: 0,
+        deleted_at: null,
+        deleted_by: null,
+        purge_due_at: null,
+        purge_started_at: null,
+        purge_attempts: 0,
+        purge_lease_until: null,
+        restore_barred_at: null,
+        vectors_removed_seq: null,
+        tagged_outcome_seq: 0,
+        sent_to_vendor_at: null,
+        vendor_send_seq: 0,
+        vendor_removed_at: null,
+        created_at_us: at * 1000,
+        updated_at: at,
+        ...row,
+      })
+      committed.usage.add(row.organization_id)
+    },
     imports: (organizationId) =>
       committed.imports.filter((i) => i.organization_id === organizationId),
     importRows: (organizationId, importId) =>
