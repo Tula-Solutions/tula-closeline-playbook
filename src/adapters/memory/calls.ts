@@ -27,6 +27,7 @@ import {
   CALL_RESTORE,
   CALL_RESTORE_FOR_UPLOAD,
   CALL_RETAGGED,
+  CALL_SEARCH_STATE,
   CALL_SENT_TO_VENDOR,
   CALL_SET_REP,
   CALL_SOFT_DELETE,
@@ -39,6 +40,7 @@ import {
   DEAL_RETAG_DONE,
   DEAL_RETAG_LOCK,
   INGESTION_MAX_RETRY_DELAY_MS,
+  MAX_SEARCH_STATE_IDS,
   PLAYBOOK_MIN_LEASE_MS,
 } from 'tula-closeline-db'
 import type { Result } from '~/adapters/postgres/processed-store'
@@ -537,6 +539,29 @@ export function runCallStatement(
         queueJob(c, processJobId, 'process')
       }
       return rows([{ id: c.id, state: c.state }])
+    }
+    case CALL_SEARCH_STATE: {
+      // As the statement: the first MAX_SEARCH_STATE_IDS ids, each once, only this Organization's Calls, in id order.
+      const [organization, literal] = params as [string, string]
+      const wanted = new Set((parseTextArrayLiteral(literal) ?? []).slice(0, MAX_SEARCH_STATE_IDS))
+      return rows(
+        mine(organization)
+          .filter((c) => wanted.has(c.id))
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .map((c) => {
+            const d = dealOf(c)
+            return {
+              call_id: c.id,
+              in_search:
+                c.state === 'ready' &&
+                d?.outcome === 'won' &&
+                c.tagged_outcome_seq >= (d?.outcome_seq ?? Number.POSITIVE_INFINITY),
+              epoch: c.epoch,
+              rep_seq: c.rep_seq,
+              deal_record_id: c.deal_record_id,
+            }
+          })
+      )
     }
     case CALL_GET: {
       const [organization, id] = params as [string, string]

@@ -227,6 +227,8 @@ const schema = z
     INGESTION_HEARTBEAT_MS: integer(500, 120_000).default(15_000),
     /** The longest one call to the object store, the embedder or the vector store may take, in ms; at most half the lease. */
     INGESTION_IO_TIMEOUT_MS: integer(1_000, 120_000).default(30_000),
+    /** The longest the embedder or the vector store may take to answer one search, in ms each; past it the search is a 504. */
+    SEARCH_STEP_TIMEOUT_MS: integer(100, 10_000).default(1_500),
     /** The longest the parser or OCR may take for one document, in ms (the lease is renewed meanwhile). */
     INGESTION_PARSE_TIMEOUT_MS: integer(1_000, 600_000).default(180_000),
     /** How far the process's resident memory may grow while one document parses, in bytes; past it the parse is ended with `processing_failed`. */

@@ -29,7 +29,7 @@ import {
 import { CallFailure } from './failure'
 import { repLabelOf } from './keys'
 import { writeMomentVectors } from './moment-vectors'
-import { buildMoments } from './moments'
+import { buildMoments, type Moment } from './moments'
 import { runTranscribe } from './transcribe'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
@@ -219,7 +219,7 @@ async function deleteEarlierRepSeqs(c: CallJobContext): Promise<void> {
 /** Embeds the Moments and writes their vectors, renewing the lease before each write and counting writes in flight. */
 async function writeMoments(
   c: CallJobContext,
-  moments: readonly { index: number; text: string }[],
+  moments: readonly Moment[],
   tag: { outcome: string; outcomeSeq: number }
 ): Promise<void> {
   try {

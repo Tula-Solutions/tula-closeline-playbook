@@ -1,6 +1,8 @@
+import { momentSnippet } from 'tula-closeline-contract'
 import { PermanentFailure, type PipelineDeps, within } from '~/modules/ingestion/runtime'
 import { MAX_EMBED_TEXTS } from '~/ports/embedder'
 import { momentVectorId } from './keys'
+import type { Moment } from './moments'
 
 /** What writing one build's Moment vectors needs: the Call's build, a cancel signal and two hooks. */
 export type MomentWriteContext = {
@@ -17,6 +19,14 @@ export type MomentWriteContext = {
   track?: (write: Promise<void>) => void
 }
 
+/** The version of a Moment vector's attributes: 2 carries the snippets a search returns. Search filters on it. */
+export const MOMENT_VECTOR_VERSION = 2
+
+/** The text of the Prospect's turn the Moment ends on (the last context turn). */
+function prospectOf(moment: Moment): string {
+  return moment.context.at(-1)?.text ?? ''
+}
+
 /**
  * Embeds the Moments in batches of {@link MAX_EMBED_TEXTS} and writes each batch's vectors under
  * deterministic ids (`momentVectorId`), tagged with the Outcome and Outcome sequence given. Writing
@@ -26,7 +36,7 @@ export type MomentWriteContext = {
  */
 export async function writeMomentVectors(
   c: MomentWriteContext,
-  moments: readonly { index: number; text: string }[],
+  moments: readonly Moment[],
   tag: { outcome: string; outcomeSeq: number }
 ): Promise<void> {
   const { deps } = c
@@ -66,6 +76,11 @@ export async function writeMomentVectors(
             moment: moment.index,
             outcome: tag.outcome,
             outcome_seq: tag.outcomeSeq,
+            // What a search shows, so a hit needs no Transcript read. Tenant text: never logged.
+            prospect: momentSnippet(prospectOf(moment)),
+            rep_next: momentSnippet(moment.repFollowing.join(' ')),
+            // The attribute layout: search ignores vectors written before the snippets existed.
+            v: MOMENT_VECTOR_VERSION,
           },
         }))
       )
