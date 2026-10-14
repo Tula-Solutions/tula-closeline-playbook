@@ -4642,6 +4642,1578 @@
         }
       }
     },
+    "/v1/playbook/calls": {
+      "post": {
+        "description": "Uploads one Call as a Transcript (txt, vtt, srt or json, up to 5 MB) or a Recording (mp3, m4a, wav, ogg, webm or flac, up to 500 MB, streamed to storage and never held whole), as multipart/form-data with one file part named \"file\" and the text fields \"dealId\" and \"rep\". Owner and Admin only; Managers and Reps get auth.forbidden. A Transcript needs \"rep\", the JSON {\"by\":\"speaker\",\"label\":...}; a per-side Recording takes {\"by\":\"channel\",\"channel\":\"left\"|\"right\"}; a Recording with no \"rep\" waits in state \"awaiting_rep\" after transcription until an Owner or Admin picks one. A Deal that does not exist yet is created \"open\". Refused with rights.confirmation_required (403, its details name the wording version to show) until the Organization has a current rights confirmation. The type and size of the file part are checked before anything is stored: call.unsupported_type (415) and call.too_large (413); a malformed name, an empty file or a bad field is request.invalid, and a Rep choice that does not suit the kind is call.rep_invalid. The common request.too_large and request.unsupported_media_type apply to the whole request instead. Answers 201 with the new Call in state \"uploaded\". If the content matches a Call the Organization already has under the same Deal, answers 200 with that stored Call: a match on a \"deleted\" Call restores it (state \"processing\") and a match on a \"failed\" Call under the same Deal whose failureReason is transcription_failed, transcription_timed_out or processing_failed (reasons that can be transient) re-queues it for processing (state \"uploaded\"); a match on a failed Call with any other reason answers 200 with the failed Call unchanged, because the same file would fail the same way: rep_label_not_found and not_per_side are fixed by changing the Rep, and too_many_speakers, no_turns, too_few_speakers, too_long and unreadable by choosing to delete the Call and upload a corrected file; any other match returns the Call as it is. The same content under another deal id is call.content_in_other_deal. A recording over 3 hours, a Transcript with no turns or fewer than two speakers, or a Rep label not in the file is not checked here: the Call ends in state \"failed\" with a failureReason. Accepts an Idempotency-Key header.",
+        "tags": ["calls"],
+        "summary": "Upload a Call Transcript",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_.:-]+$",
+              "description": "A client-chosen key. The same key with the same file returns the first answer and stores nothing again; the same key with another file is request.idempotency_key_reused (422); the same key while the first request is still running is request.idempotency_in_progress (409, with Retry-After)."
+            },
+            "required": false,
+            "description": "A client-chosen key. The same key with the same file returns the first answer and stores nothing again; the same key with another file is request.idempotency_key_reused (422); the same key while the first request is still running is request.idempotency_in_progress (409, with Retry-After).",
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "The Transcript file."
+                  },
+                  "dealId": {
+                    "type": "string",
+                    "description": "The customer deal id; created open if new."
+                  },
+                  "rep": {
+                    "type": "string",
+                    "description": "JSON text naming the Rep: {\"by\":\"speaker\",\"label\":\"...\"}."
+                  }
+                },
+                "required": ["file", "dealId"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The content matches a Call the Organization has: that Call, as stored (a deleted one restored, a failed one queued again).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^call_[0-9a-f]{32}$"
+                    },
+                    "dealId": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "dealRecordId": {
+                      "type": "string",
+                      "pattern": "^deal_[0-9a-f]{32}$"
+                    },
+                    "dealOutcome": {
+                      "type": "string",
+                      "enum": ["won", "lost", "open"]
+                    },
+                    "inSearch": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["transcript", "recording"]
+                    },
+                    "fileName": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "text/plain",
+                        "text/vtt",
+                        "application/x-subrip",
+                        "application/json",
+                        "audio/mpeg",
+                        "audio/mp4",
+                        "audio/wav",
+                        "audio/ogg",
+                        "audio/webm",
+                        "audio/flac"
+                      ]
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 524288000
+                    },
+                    "durationSeconds": {
+                      "type": ["integer", "null"],
+                      "minimum": 1,
+                      "maximum": 10800
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "uploaded",
+                        "transcribing",
+                        "awaiting_rep",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
+                    "failureReason": {
+                      "type": ["string", "null"],
+                      "enum": [
+                        "no_turns",
+                        "too_few_speakers",
+                        "too_many_speakers",
+                        "rep_label_not_found",
+                        "not_per_side",
+                        "too_long",
+                        "transcription_failed",
+                        "transcription_timed_out",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
+                    },
+                    "rep": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["speaker"]
+                            },
+                            "label": {
+                              "type": "string",
+                              "maxLength": 1000
+                            }
+                          },
+                          "required": ["by", "label"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["channel"]
+                            },
+                            "channel": {
+                              "type": "string",
+                              "enum": ["left", "right"]
+                            }
+                          },
+                          "required": ["by", "channel"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "speakerLabels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "deletedAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "purgeAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "uploadedByUserId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{32}$"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "dealId",
+                    "dealRecordId",
+                    "dealOutcome",
+                    "inSearch",
+                    "kind",
+                    "fileName",
+                    "mediaType",
+                    "sizeBytes",
+                    "durationSeconds",
+                    "state",
+                    "failureReason",
+                    "rep",
+                    "speakerLabels",
+                    "deletedAt",
+                    "purgeAt",
+                    "uploadedByUserId",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The Transcript was stored and queued for processing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^call_[0-9a-f]{32}$"
+                    },
+                    "dealId": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "dealRecordId": {
+                      "type": "string",
+                      "pattern": "^deal_[0-9a-f]{32}$"
+                    },
+                    "dealOutcome": {
+                      "type": "string",
+                      "enum": ["won", "lost", "open"]
+                    },
+                    "inSearch": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["transcript", "recording"]
+                    },
+                    "fileName": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "text/plain",
+                        "text/vtt",
+                        "application/x-subrip",
+                        "application/json",
+                        "audio/mpeg",
+                        "audio/mp4",
+                        "audio/wav",
+                        "audio/ogg",
+                        "audio/webm",
+                        "audio/flac"
+                      ]
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 524288000
+                    },
+                    "durationSeconds": {
+                      "type": ["integer", "null"],
+                      "minimum": 1,
+                      "maximum": 10800
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "uploaded",
+                        "transcribing",
+                        "awaiting_rep",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
+                    "failureReason": {
+                      "type": ["string", "null"],
+                      "enum": [
+                        "no_turns",
+                        "too_few_speakers",
+                        "too_many_speakers",
+                        "rep_label_not_found",
+                        "not_per_side",
+                        "too_long",
+                        "transcription_failed",
+                        "transcription_timed_out",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
+                    },
+                    "rep": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["speaker"]
+                            },
+                            "label": {
+                              "type": "string",
+                              "maxLength": 1000
+                            }
+                          },
+                          "required": ["by", "label"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["channel"]
+                            },
+                            "channel": {
+                              "type": "string",
+                              "enum": ["left", "right"]
+                            }
+                          },
+                          "required": ["by", "channel"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "speakerLabels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "deletedAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "purgeAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "uploadedByUserId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{32}$"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "dealId",
+                    "dealRecordId",
+                    "dealOutcome",
+                    "inSearch",
+                    "kind",
+                    "fileName",
+                    "mediaType",
+                    "sizeBytes",
+                    "durationSeconds",
+                    "state",
+                    "failureReason",
+                    "rep",
+                    "speakerLabels",
+                    "deletedAt",
+                    "purgeAt",
+                    "uploadedByUserId",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden, rights.confirmation_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "call.content_in_other_deal, call.quota_exceeded, request.idempotency_in_progress.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$",
+                  "description": "Whole seconds to wait before trying again."
+                },
+                "required": true,
+                "description": "Whole seconds to wait before trying again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "call.too_large, request.too_large.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "call.unsupported_type, request.unsupported_media_type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "call.rep_invalid, request.idempotency_key_reused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate.limited.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "server.unavailable.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$",
+                  "description": "Whole seconds to wait before trying again."
+                },
+                "required": true,
+                "description": "Whole seconds to wait before trying again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "server.timeout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "description": "Lists the Organization's Calls, newest first (sorted by createdAt, then id, both descending), one cursor-paginated page at a time (at most 100). Owner and Admin only. Deleted Calls are left out unless state=deleted is asked for; state=awaiting_rep lists the Calls waiting for a Rep and dealRecordId (the opaque Deal id) limits the list to one Deal.",
+        "tags": ["calls"],
+        "summary": "List Calls",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\d{1,3}$"
+                }
+              ],
+              "default": 25
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "uploaded",
+                "transcribing",
+                "awaiting_rep",
+                "processing",
+                "ready",
+                "failed",
+                "deleted"
+              ]
+            },
+            "required": false,
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^deal_[0-9a-f]{32}$"
+            },
+            "required": false,
+            "name": "dealRecordId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of Calls, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "pattern": "^call_[0-9a-f]{32}$"
+                          },
+                          "dealId": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "dealRecordId": {
+                            "type": "string",
+                            "pattern": "^deal_[0-9a-f]{32}$"
+                          },
+                          "dealOutcome": {
+                            "type": "string",
+                            "enum": ["won", "lost", "open"]
+                          },
+                          "inSearch": {
+                            "type": "boolean"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": ["transcript", "recording"]
+                          },
+                          "fileName": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "mediaType": {
+                            "type": "string",
+                            "enum": [
+                              "text/plain",
+                              "text/vtt",
+                              "application/x-subrip",
+                              "application/json",
+                              "audio/mpeg",
+                              "audio/mp4",
+                              "audio/wav",
+                              "audio/ogg",
+                              "audio/webm",
+                              "audio/flac"
+                            ]
+                          },
+                          "sizeBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 524288000
+                          },
+                          "durationSeconds": {
+                            "type": ["integer", "null"],
+                            "minimum": 1,
+                            "maximum": 10800
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "uploaded",
+                              "transcribing",
+                              "awaiting_rep",
+                              "processing",
+                              "ready",
+                              "failed",
+                              "deleted"
+                            ]
+                          },
+                          "failureReason": {
+                            "type": ["string", "null"],
+                            "enum": [
+                              "no_turns",
+                              "too_few_speakers",
+                              "too_many_speakers",
+                              "rep_label_not_found",
+                              "not_per_side",
+                              "too_long",
+                              "transcription_failed",
+                              "transcription_timed_out",
+                              "unreadable",
+                              "processing_failed",
+                              null
+                            ]
+                          },
+                          "rep": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "by": {
+                                    "type": "string",
+                                    "enum": ["speaker"]
+                                  },
+                                  "label": {
+                                    "type": "string",
+                                    "maxLength": 1000
+                                  }
+                                },
+                                "required": ["by", "label"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "by": {
+                                    "type": "string",
+                                    "enum": ["channel"]
+                                  },
+                                  "channel": {
+                                    "type": "string",
+                                    "enum": ["left", "right"]
+                                  }
+                                },
+                                "required": ["by", "channel"],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "speakerLabels": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 1000
+                            },
+                            "maxItems": 20
+                          },
+                          "deletedAt": {
+                            "type": ["string", "null"],
+                            "maxLength": 64,
+                            "format": "date-time"
+                          },
+                          "purgeAt": {
+                            "type": ["string", "null"],
+                            "maxLength": 64,
+                            "format": "date-time"
+                          },
+                          "uploadedByUserId": {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{32}$"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "format": "date-time"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "dealId",
+                          "dealRecordId",
+                          "dealOutcome",
+                          "inSearch",
+                          "kind",
+                          "fileName",
+                          "mediaType",
+                          "sizeBytes",
+                          "durationSeconds",
+                          "state",
+                          "failureReason",
+                          "rep",
+                          "speakerLabels",
+                          "deletedAt",
+                          "purgeAt",
+                          "uploadedByUserId",
+                          "createdAt",
+                          "updatedAt"
+                        ]
+                      },
+                      "maxItems": 100
+                    },
+                    "nextCursor": {
+                      "type": ["string", "null"],
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  },
+                  "required": ["items", "nextCursor"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/playbook/calls/{callId}": {
+      "get": {
+        "description": "Reads one Call and its state, with the failure reason when it failed, the speaker labels to pick a Rep from and the purge time when it was deleted. No Transcript text or audio is returned. Owner and Admin only.",
+        "tags": ["calls"],
+        "summary": "Read a Call",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^call_[0-9a-f]{32}$"
+            },
+            "required": true,
+            "name": "callId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Call.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^call_[0-9a-f]{32}$"
+                    },
+                    "dealId": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "dealRecordId": {
+                      "type": "string",
+                      "pattern": "^deal_[0-9a-f]{32}$"
+                    },
+                    "dealOutcome": {
+                      "type": "string",
+                      "enum": ["won", "lost", "open"]
+                    },
+                    "inSearch": {
+                      "type": "boolean"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["transcript", "recording"]
+                    },
+                    "fileName": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "mediaType": {
+                      "type": "string",
+                      "enum": [
+                        "text/plain",
+                        "text/vtt",
+                        "application/x-subrip",
+                        "application/json",
+                        "audio/mpeg",
+                        "audio/mp4",
+                        "audio/wav",
+                        "audio/ogg",
+                        "audio/webm",
+                        "audio/flac"
+                      ]
+                    },
+                    "sizeBytes": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 524288000
+                    },
+                    "durationSeconds": {
+                      "type": ["integer", "null"],
+                      "minimum": 1,
+                      "maximum": 10800
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "uploaded",
+                        "transcribing",
+                        "awaiting_rep",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
+                    },
+                    "failureReason": {
+                      "type": ["string", "null"],
+                      "enum": [
+                        "no_turns",
+                        "too_few_speakers",
+                        "too_many_speakers",
+                        "rep_label_not_found",
+                        "not_per_side",
+                        "too_long",
+                        "transcription_failed",
+                        "transcription_timed_out",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
+                    },
+                    "rep": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["speaker"]
+                            },
+                            "label": {
+                              "type": "string",
+                              "maxLength": 1000
+                            }
+                          },
+                          "required": ["by", "label"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "by": {
+                              "type": "string",
+                              "enum": ["channel"]
+                            },
+                            "channel": {
+                              "type": "string",
+                              "enum": ["left", "right"]
+                            }
+                          },
+                          "required": ["by", "channel"],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "speakerLabels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "deletedAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "purgeAt": {
+                      "type": ["string", "null"],
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "uploadedByUserId": {
+                      "type": "string",
+                      "pattern": "^usr_[0-9a-f]{32}$"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "dealId",
+                    "dealRecordId",
+                    "dealOutcome",
+                    "inSearch",
+                    "kind",
+                    "fileName",
+                    "mediaType",
+                    "sizeBytes",
+                    "durationSeconds",
+                    "state",
+                    "failureReason",
+                    "rep",
+                    "speakerLabels",
+                    "deletedAt",
+                    "purgeAt",
+                    "uploadedByUserId",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "call.not_found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": ["code", "message"]
+                    }
+                  },
+                  "required": ["error"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/playbook/rights-confirmation": {
       "get": {
         "description": "Reads the Organization's recorded confirmation that it may share Recordings and Transcripts, with who confirmed and when, the version of the wording they saw, the current wording version and whether the stored one is current. Owner and Admin only. Without a current confirmation, uploads of Calls are refused; existing Calls are kept and stay searchable.",

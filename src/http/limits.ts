@@ -1,5 +1,6 @@
 import {
   MAX_DEAL_IMPORT_BYTES,
+  MAX_TRANSCRIPT_BYTES,
   PLAYBOOK_ROUTES,
   SALES_HISTORY_ROUTES,
 } from 'tula-closeline-contract'
@@ -29,6 +30,15 @@ export const IMPORT_UPLOAD_ROUTE_KEY = `POST ${PUBLIC_PREFIX}${SALES_HISTORY_ROU
 /** The body limit of the Deal import upload: the contract's CSV limit plus {@link UPLOAD_BODY_OVERHEAD_BYTES}. */
 export const IMPORT_BODY_LIMIT = MAX_DEAL_IMPORT_BYTES + UPLOAD_BODY_OVERHEAD_BYTES
 
+/** The method and path of the Call upload, which has a body limit of its own. */
+export const CALL_UPLOAD_ROUTE_KEY = `POST ${PUBLIC_PREFIX}${SALES_HISTORY_ROUTES.uploadCall.path}`
+
+/**
+ * The body limit of the Call upload: the Transcript limit plus {@link UPLOAD_BODY_OVERHEAD_BYTES}.
+ * Recordings are not accepted yet, so a larger body is `request.too_large`.
+ */
+export const CALL_BODY_LIMIT = MAX_TRANSCRIPT_BYTES + UPLOAD_BODY_OVERHEAD_BYTES
+
 /**
  * The body limit of each route that has one of its own, keyed by `METHOD /path`. Every other route
  * gets `MAX_REQUEST_BODY_BYTES`.
@@ -37,6 +47,7 @@ export function routeBodyLimits(env: Pick<Env, 'MAX_UPLOAD_BYTES'>): ReadonlyMap
   return new Map([
     [UPLOAD_ROUTE_KEY, uploadBodyLimit(env)],
     [IMPORT_UPLOAD_ROUTE_KEY, IMPORT_BODY_LIMIT],
+    [CALL_UPLOAD_ROUTE_KEY, CALL_BODY_LIMIT],
   ])
 }
 

@@ -241,7 +241,7 @@ export async function upload(
 }
 
 /** Removes the object of an upload that left no row, when that is certain; otherwise leaves it and says so. */
-async function settleObject(
+export async function settleObject(
   deps: Pick<DealImportDeps, 'objects' | 'logger'>,
   organizationId: string,
   objectKey: string,
