@@ -300,6 +300,30 @@ describe('remove-all against Postgres, with imports', () => {
     expect(await h.objectKeys()).toEqual([])
   })
 
+  test('removes the file a completed import left behind (recorded removed, still stored)', async () => {
+    const h = await harness()
+    const text = csv([`${deal(8000)},won,,,,`])
+    const id = await upload(h, text)
+    await h.runImports()
+    expect(await h.objectKeys()).toEqual([])
+    // As if the best-effort delete after DEAL_IMPORT_FINISH had failed.
+    await h.deps.objects.put(h.organizationId, importObjectKey(id), new TextEncoder().encode(text))
+
+    let status = 503
+    for (let call = 0; call < 30 && status === 503; call++) {
+      status = (
+        await h.app.request(`/internal/playbook/organizations/${h.organizationId}/remove-all`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${INTERNAL_SECRET}`, 'idempotency-key': newKey() },
+        })
+      ).status
+    }
+
+    expect(status).toBe(200)
+    expect(await h.objectKeys()).toEqual([])
+    expect(await count(h.organizationId, 'deal_imports')).toBe(0)
+  })
+
   describe('an interrupted erasure is finished by the next request', () => {
     /** An Organization with an import whose report takes three purge steps, and a queued one. */
     async function seeded() {

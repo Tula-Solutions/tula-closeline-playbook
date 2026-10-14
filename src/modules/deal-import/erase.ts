@@ -26,8 +26,8 @@ const ERASED_PAGE = 100
 type Erased = { id: string; objectKey: string; objectPending: boolean }
 
 /**
- * Takes an erased import to its end: the CSV removed (when it is not recorded removed), that
- * recorded, then the report purged in steps until the import row is gone. Every step can be run
+ * Takes an erased import to its end: the CSV removed (always, as the delete is idempotent), that
+ * recorded when it was pending, then the report purged in steps until the import row is gone. Every step can be run
  * again after a crash, because `DEAL_IMPORT_LIST_ERASED` shows the import until its row is gone.
  */
 async function finishErased(
@@ -35,8 +35,11 @@ async function finishErased(
   organizationId: string,
   erased: Erased
 ): Promise<void> {
+  // The delete is idempotent and always made: an import that ended records its file as removed
+  // before the service's best-effort delete, so a failed delete there leaves a stored file that is
+  // not pending. Only a pending file still needs the removal recorded.
+  await deps.objects.delete(organizationId, erased.objectKey)
   if (erased.objectPending) {
-    await deps.objects.delete(organizationId, erased.objectKey)
     await transaction(deps, organizationId, (run) =>
       run(DEAL_IMPORT_OBJECT_REMOVED, [organizationId, erased.id])
     )

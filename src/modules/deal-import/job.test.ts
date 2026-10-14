@@ -90,7 +90,9 @@ describe('a file the job cannot read fails the import and applies nothing', () =
     expect(parseImportFile(encode(csv(rows(MAX_DEAL_IMPORT_ROWS)))).records).toHaveLength(
       MAX_DEAL_IMPORT_ROWS
     )
-    expect(() => parseImportFile(encode(csv(rows(MAX_DEAL_IMPORT_ROWS + 1))))).toThrow()
+    expect(() => parseImportFile(encode(csv(rows(MAX_DEAL_IMPORT_ROWS + 1))))).toThrow(
+      'the Deal import failed: too_many_rows'
+    )
   })
 
   test('a row without a stored file is processing_failed', async () => {

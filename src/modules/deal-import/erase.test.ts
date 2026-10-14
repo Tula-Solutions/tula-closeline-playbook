@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'bun:test'
+import { dealImportSchema } from 'tula-closeline-contract'
 import { DEAL_IMPORT_OBJECT_REMOVED, DEAL_IMPORT_PURGE_BATCH } from 'tula-closeline-db'
 import { postgresError } from '~/adapters/memory/playbook-database'
 import { INTERNAL_SECRET, newKey } from '~/modules/document/test-support'
 import { newOrganizationId } from '~/testing'
 import { IMPORT_PURGE_STEP_ROWS, IMPORTS_ERASED_PER_REQUEST } from './erase'
+import { importObjectKey } from './keys'
 import { createImportHarness, csv } from './test-support'
 
 type Harness = Awaited<ReturnType<typeof createImportHarness>>
@@ -205,4 +207,63 @@ describe('an interrupted erasure is finished by the next request', () => {
     expect(h.deps.database.imports(h.organizationId)).toHaveLength(2)
     expect((await removeAll(h, h.organizationId)).status).toBe(200)
   })
+})
+
+describe('a file left behind by an import that ended is removed too', () => {
+  // DEAL_IMPORT_FINISH and DEAL_IMPORT_FAIL record the file as removed before the best-effort delete,
+  // so an import whose delete failed lists as not pending while its CSV is still stored.
+  const ended: [label: string, text: string][] = [
+    ['completed', csv(['A,won,,,,'])],
+    ['failed', 'deal_id,outcome,closed_at,amount,currency\nA,won,,,"open\n'],
+  ]
+
+  async function leftBehind(text: string) {
+    const h = await createImportHarness()
+    const response = await h.uploadCsv(text)
+    const id = dealImportSchema.parse(await response.json()).id
+    await h.runImports()
+    expect(await h.objectKeys()).toEqual([])
+    await h.deps.objects.put(h.organizationId, importObjectKey(id), new TextEncoder().encode(text))
+    expect(h.deps.database.imports(h.organizationId)[0]?.object_removed_at).not.toBeNull()
+    return h
+  }
+
+  test.each(ended)(
+    'a %s import: remove-all answers 200 and the store is empty',
+    async (_label, text) => {
+      const h = await leftBehind(text)
+
+      let status = 503
+      for (let call = 0; call < 10 && status === 503; call++) {
+        status = (await removeAll(h, h.organizationId)).status
+      }
+
+      expect(status).toBe(200)
+      expect(await h.objectKeys()).toEqual([])
+      expect(h.deps.database.imports(h.organizationId)).toEqual([])
+    }
+  )
+
+  test.each(ended)(
+    'a %s import: with the store failing, remove-all does not answer 200',
+    async (_label, text) => {
+      const h = await leftBehind(text)
+      const original = h.deps.objects.delete.bind(h.deps.objects)
+      h.deps.objects.delete = async () => {
+        throw new Error('storage is down')
+      }
+
+      const failed = await removeAll(h, h.organizationId)
+      h.deps.objects.delete = original
+
+      expect(failed.status).not.toBe(200)
+      expect(h.deps.database.imports(h.organizationId)).toHaveLength(1)
+      let status = 503
+      for (let call = 0; call < 10 && status === 503; call++) {
+        status = (await removeAll(h, h.organizationId)).status
+      }
+      expect(status).toBe(200)
+      expect(await h.objectKeys()).toEqual([])
+    }
+  )
 })
