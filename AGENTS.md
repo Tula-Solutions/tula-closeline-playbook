@@ -70,6 +70,8 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   `src/modules/rights/` (rights confirmation), Owner and Admin only, rules in
   `.claude/rules/sales-history.md`. `src/modules/service-kit.ts` holds the shared transaction helper,
   caller context and error lookup. `RIGHTS_WORDING_VERSION` is the current wording version.
+  `src/modules/deal-import/` is the Deal CSV import (upload, read routes, `job.ts`, `erase.ts`); the
+  job shares the `INGESTION_CONCURRENCY` pool, is gated by `IMPORTS_ENABLED`, caps Deals at `MAX_DEALS_PER_ORGANIZATION`.
 - `src/messages.ts` is the registry of the contract messages. `src/consumer.ts` wires the kit's
   `createConsumer` (name `playbook.ingestion`) over the Postgres `ProcessedStore`; handlers go in
   `createHandlers`. `server.ts` starts the consumer and, after it listens, the workers
@@ -125,7 +127,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   behaviour, vector ids, chunk sizes, the sweeps, the orphan rule, the removed-Organization guard)
   are in `.claude/rules/ingestion.md`; they load when you touch `src/modules/ingestion/`,
   `src/modules/maintenance/` or `src/workers/`.
-- The remove-all route does bounded work (5 erase batches of 100 documents, then 5 of 100 Deals, then the cleanup publishes eight
+- The remove-all route does bounded work (5 erase batches of 100 documents, up to 5 imports with their files and reports, then 5 of 100 Deals, then the cleanup publishes eight
   at a time inside a 5 s budget; the rest is left to the `cleanup_pending` sweep) and answers 200
   only when nothing remains. Core must stop the Organization signing in and uploading before it
   calls: this service only detects an upload that lands late (a row left unerased) and answers 503. While documents remain it answers 503 `server.unavailable` with `Retry-After: 30` and
@@ -155,7 +157,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 `QUEUE_URL`, `QUEUE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ENDPOINT`, `MAX_UPLOAD_BYTES`,
 `MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `UPLOAD_BODY_TIMEOUT_MS`, `MAX_DOCUMENTS_PER_ORGANIZATION`,
 `MAX_BYTES_PER_ORGANIZATION`, `INTERNAL_API_TOKENS`, `CONSUMER_CONCURRENCY`,
-`CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED` (job loop; local: true, elsewhere false), `SWEEPS_ENABLED` (true), `WORKERS_STOP_DEADLINE_MS`,
+`CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED` (job loop; local: true, elsewhere false), `IMPORTS_ENABLED` (import job; true), `SWEEPS_ENABLED` (true), `WORKERS_STOP_DEADLINE_MS`,
 `INGESTION_*` (`CONCURRENCY`, `LEASE_MS`, `HEARTBEAT_MS`, `IO_TIMEOUT_MS`, `PARSE_TIMEOUT_MS`,
 `MAX_ATTEMPTS`, `RETRY_BASE_MS`, `POLL_INTERVAL_MS`), `CHUNK_TARGET_CHARS`, `CHUNK_MAX_CHARS`,
 `CHUNK_OVERLAP_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`, `DISCOVERY_BATCH`,
@@ -173,6 +175,7 @@ Each has a benchmark in `bench/` with a budget; a change to one states its compl
   O(1) per message in the store: `bench/consumer.bench.test.ts`. The Postgres store adds one
   statement per step, and the removed-Organization guard one more indexed read per consumed
   message (`ORGANIZATION_REMOVAL_STATUS`); a second bench times it over the database double.
+- **Deal import** (`runImport`): O(rows), 500 rows per apply, 50,000 rows at most; the file is held whole in memory (no streaming port): `bench/deal-import.bench.test.ts`.
 - **Chunking** (`chunkPages`): O(total characters) time, O(input + output) memory, bounded by
   `MAX_CHUNKS_PER_DOCUMENT`: `bench/chunker.bench.test.ts` (the ordinary budget has runner headroom; the hostile-input cases guard against super-linear time). **The claim loop** is O(`INGESTION_CONCURRENCY`)
   per Organization per pass plus O(Organizations with work) discovery, in pages of `DISCOVERY_BATCH`.
