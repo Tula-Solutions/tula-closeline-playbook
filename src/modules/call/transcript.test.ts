@@ -199,14 +199,25 @@ describe('work stays proportional to the file', () => {
       { length: 150_000 },
       (_, i) => `00:00:01.000 --> 00:00:02.000\nA: word${i}\n`
     )
-    const vtt = parse(`WEBVTT\n\nB: x\n\n${cues.join('\n')}`, 'text/vtt')
-    const items = JSON.stringify(
-      Array.from({ length: 150_000 }, () => ({ speaker: 'A', text: 'word' }))
-    )
-    const started = performance.now()
-    const json = parse(items, 'application/json')
-    expect(vtt.ok || !vtt.ok).toBe(true)
-    expect(json.ok || !json.ok).toBe(true)
-    expect(performance.now() - started).toBeLessThan(2000)
+    const vtt = `WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nB: x\n\n${cues.join('\n')}`
+    const json = JSON.stringify([
+      { speaker: 'B', text: 'x' },
+      // The item count is capped at four times the turn limit, so stay under it.
+      ...Array.from({ length: 39_000 }, () => ({ speaker: 'A', text: 'word' })),
+    ])
+    for (const [text, type] of [
+      [vtt, 'text/vtt'],
+      [json, 'application/json'],
+    ] as const) {
+      const started = performance.now()
+      const result = parse(text, type)
+      expect(performance.now() - started).toBeLessThan(2000)
+      expect(`${type} ${JSON.stringify(result.ok ? 'ok' : result)}`).toBe(`${type} "ok"`)
+      if (result.ok) {
+        expect(result.transcript.turns.every((t) => t.text.length <= MAX_TURN_CHARACTERS)).toBe(
+          true
+        )
+      }
+    }
   })
 })
