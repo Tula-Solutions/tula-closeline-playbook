@@ -16,36 +16,19 @@ import {
   DEAL_LIST_BY_OUTCOME,
   DEAL_SET_OUTCOME,
 } from 'tula-closeline-db'
-import { postgresErrorOf } from '~/adapters/postgres/retry'
 import type { Container } from '~/container'
 import { registry } from '~/messages'
-import { assertRole, type CallContext, failure, transaction } from '~/modules/service-kit'
+import {
+  assertRole,
+  type CallContext,
+  failure,
+  mappingBadCursor,
+  transaction,
+} from '~/modules/service-kit'
 import { cursorOf, dealCursorSchema, outcomeSeqSchema, toDeal } from './schema'
 
 /** What the Deal service needs from the container. */
 export type DealDeps = Pick<Container, 'scope' | 'queue' | 'logger'>
-
-/**
- * The SQLSTATE class of data exceptions (22007 invalid syntax, 22008 field overflow, 22003 and so
- * on). A list statement's only caller-chosen input is the cursor text, so any of them means the
- * cursor cannot be read.
- */
-const DATA_EXCEPTION_CLASS = '22'
-
-/**
- * Runs a list statement and maps any data exception from the database to `request.invalid`, with
- * the fixed message of that code, so the cursor text is never echoed or logged.
- */
-async function mappingBadCursor<T>(work: () => Promise<T>): Promise<T> {
-  try {
-    return await work()
-  } catch (error) {
-    if (postgresErrorOf(error)?.code?.startsWith(DATA_EXCEPTION_CLASS) === true) {
-      throw failure('request.invalid')
-    }
-    throw error
-  }
-}
 
 /**
  * One page of the Organization's Deals, newest first. The list statement follows the filter:

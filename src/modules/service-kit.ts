@@ -7,7 +7,7 @@ import {
   type UserId,
 } from 'tula-closeline-contract'
 import type { Run } from '~/adapters/postgres/processed-store'
-import { isLockTimeout, retryTransaction } from '~/adapters/postgres/retry'
+import { isLockTimeout, postgresErrorOf, retryTransaction } from '~/adapters/postgres/retry'
 import type { Container } from '~/container'
 import { domainError, RetryAfterError } from '~/http/domain-error'
 
@@ -70,6 +70,28 @@ export async function transaction<T>(
         raisedBeforeCommit.add(busy)
       }
       throw busy
+    }
+    throw error
+  }
+}
+
+/**
+ * The SQLSTATE class of data exceptions (22007 invalid syntax, 22008 field overflow, 22003 and so
+ * on). A list statement's only caller-chosen input is the cursor text, so any of them means the
+ * cursor cannot be read.
+ */
+const DATA_EXCEPTION_CLASS = '22'
+
+/**
+ * Runs a list statement and maps any data exception from the database to `request.invalid`, with
+ * the fixed message of that code, so the cursor text is never echoed or logged.
+ */
+export async function mappingBadCursor<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work()
+  } catch (error) {
+    if (postgresErrorOf(error)?.code?.startsWith(DATA_EXCEPTION_CLASS) === true) {
+      throw failure('request.invalid')
     }
     throw error
   }

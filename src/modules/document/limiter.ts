@@ -75,3 +75,22 @@ export function createOrganizationShare(places: number): OrganizationShare {
     },
   }
 }
+
+/** The two bounds every upload route of one instance shares: the places and each Organization's share of them. */
+export type UploadGates = { gate: ConcurrencyGate; shares: OrganizationShare }
+
+const sharedGates = new WeakMap<object, UploadGates>()
+
+/**
+ * The upload bounds of `owner` (the container), created on first use. Document uploads and Deal
+ * import uploads take their places from the same ones, because both hold their whole file in memory:
+ * `MAX_CONCURRENT_UPLOADS` is one budget for the instance, not one per route.
+ */
+export function uploadGatesOf(owner: object, max: number): UploadGates {
+  let found = sharedGates.get(owner)
+  if (found === undefined) {
+    found = { gate: createConcurrencyGate(max), shares: createOrganizationShare(max) }
+    sharedGates.set(owner, found)
+  }
+  return found
+}

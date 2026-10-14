@@ -23,7 +23,7 @@ import { uploadBodyLimit } from '~/http/limits'
 import { idempotencyKeyHeader } from '~/http/responses'
 import { createRouter } from '~/http/router'
 import { PUBLIC_SECURITY } from '~/http/security'
-import { createConcurrencyGate, createOrganizationShare } from './limiter'
+import { uploadGatesOf } from './limiter'
 import { contractRoute, failureResponses } from './openapi'
 import * as Documents from './service'
 
@@ -152,10 +152,11 @@ const upload = createRoute({
 })
 
 /** The one `file` part of an upload, from a multipart body capped at the upload limit and `timeoutMs`. */
-async function readFilePart(
+export async function readFilePart(
   c: Context<AuthedEnv>,
   maxBody: number,
-  timeoutMs: number
+  timeoutMs: number,
+  field: string = UPLOAD_FILE_FIELD
 ): Promise<File> {
   const contentType = c.req.header('content-type') ?? ''
   if (!/^multipart\/form-data\s*(;|$)/i.test(contentType)) {
@@ -174,7 +175,7 @@ async function readFilePart(
     throw domainError(capped.exceeded() ? ERRORS['request.too_large'] : ERRORS['request.invalid'])
   }
   const names = Array.from(form.keys())
-  const part: unknown = form.get(UPLOAD_FILE_FIELD)
+  const part: unknown = form.get(field)
   if (names.length !== 1 || !(part instanceof File)) {
     throw domainError(ERRORS['request.invalid'])
   }
@@ -182,7 +183,7 @@ async function readFilePart(
 }
 
 /** The `Idempotency-Key` header, or `undefined`; a malformed one is `request.invalid`. */
-function idempotencyKeyOf(c: Context<AuthedEnv>): string | undefined {
+export function idempotencyKeyOf(c: Context<AuthedEnv>): string | undefined {
   const header = c.req.header('idempotency-key')
   if (header === undefined) {
     return undefined
@@ -206,8 +207,7 @@ function idempotencyKeyOf(c: Context<AuthedEnv>): string | undefined {
  */
 export function createDocumentRouter(container: Container): OpenAPIHono<AuthedEnv> {
   const router = createRouter<AuthedEnv>()
-  const gate = createConcurrencyGate(container.env.MAX_CONCURRENT_UPLOADS)
-  const shares = createOrganizationShare(container.env.MAX_CONCURRENT_UPLOADS)
+  const { gate, shares } = uploadGatesOf(container, container.env.MAX_CONCURRENT_UPLOADS)
   const maxBody = uploadBodyLimit(container.env)
 
   router.openAPIRegistry.registerPath(upload)

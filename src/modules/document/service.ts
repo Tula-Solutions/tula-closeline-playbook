@@ -173,7 +173,8 @@ async function publishAfterCommit(
 }
 
 /** Thrown inside the upload transaction when it would insert a document but the file is not in the object store yet. */
-class ObjectRequired extends Error {}
+/** Raised inside an upload transaction that needs its object stored first; the transaction rolls back and runs again. */
+export class ObjectRequired extends Error {}
 
 /** What the upload transaction decided. */
 type UploadOutcome =
@@ -212,7 +213,7 @@ function storedDeclaredType(declared: string | null): string {
  * violation (class 23). Any other error at or after the commit (a shutdown code such as 57P01, a
  * connection error of class 08, a socket error such as EPIPE) leaves the outcome unknown.
  */
-function rolledBack(error: unknown): boolean {
+export function rolledBack(error: unknown): boolean {
   if (typeof error === 'object' && error !== null && raisedBeforeCommit.has(error)) {
     return true
   }
@@ -223,7 +224,7 @@ function rolledBack(error: unknown): boolean {
 }
 
 /** Maps what the object store can fail with to the contract: unavailable is retryable, anything else is ours. */
-function asStorageFailure(error: unknown): unknown {
+export function asStorageFailure(error: unknown): unknown {
   if (error instanceof StorageError && error.code === 'storage.unavailable') {
     return new RetryAfterError(ERRORS['server.unavailable'], RETRY_AFTER_SECONDS)
   }
@@ -375,7 +376,7 @@ export const UPLOAD_ATTEMPT_ROUTE = 'documents.upload_attempt'
  * cannot be recorded the upload fails before anything is stored. Cost: one short transaction and
  * one row per upload that writes an object.
  */
-async function recordUploadAttempt(
+export async function recordUploadAttempt(
   deps: Pick<DocumentDeps, 'scope'>,
   context: CallContext
 ): Promise<void> {

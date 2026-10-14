@@ -1,4 +1,8 @@
-import { PLAYBOOK_ROUTES } from 'tula-closeline-contract'
+import {
+  MAX_DEAL_IMPORT_BYTES,
+  PLAYBOOK_ROUTES,
+  SALES_HISTORY_ROUTES,
+} from 'tula-closeline-contract'
 import type { Env } from '~/env'
 
 /** The prefix of every public route, which sits behind the access-token middleware. */
@@ -19,12 +23,21 @@ export function uploadBodyLimit(env: Pick<Env, 'MAX_UPLOAD_BYTES'>): number {
   return env.MAX_UPLOAD_BYTES + UPLOAD_BODY_OVERHEAD_BYTES
 }
 
+/** The method and path of the Deal import upload, which has a body limit of its own. */
+export const IMPORT_UPLOAD_ROUTE_KEY = `POST ${PUBLIC_PREFIX}${SALES_HISTORY_ROUTES.uploadDealImport.path}`
+
+/** The body limit of the Deal import upload: the contract's CSV limit plus {@link UPLOAD_BODY_OVERHEAD_BYTES}. */
+export const IMPORT_BODY_LIMIT = MAX_DEAL_IMPORT_BYTES + UPLOAD_BODY_OVERHEAD_BYTES
+
 /**
  * The body limit of each route that has one of its own, keyed by `METHOD /path`. Every other route
  * gets `MAX_REQUEST_BODY_BYTES`.
  */
 export function routeBodyLimits(env: Pick<Env, 'MAX_UPLOAD_BYTES'>): ReadonlyMap<string, number> {
-  return new Map([[UPLOAD_ROUTE_KEY, uploadBodyLimit(env)]])
+  return new Map([
+    [UPLOAD_ROUTE_KEY, uploadBodyLimit(env)],
+    [IMPORT_UPLOAD_ROUTE_KEY, IMPORT_BODY_LIMIT],
+  ])
 }
 
 /**
