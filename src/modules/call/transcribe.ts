@@ -67,11 +67,11 @@ const VENDOR_FAILURE: Readonly<Record<TranscriptionFailure, CallFailureReason>> 
   timed_out: 'transcription_timed_out',
 }
 
-/** The newest copy the vendor holds for this Call, whatever its state: a failed one is read for its failure, not sent again. */
+/** The newest copy the vendor holds for this Call that has not failed: a failed send is never read again, a new counted send replaces it. */
 type VendorCopy = { reference: string; seq: number; vendorId: string }
 
 /**
- * Finds the copy of the newest send of this Call, by listing the vendor's jobs for the Call's
+ * Finds the copy of the newest send of this Call that has not failed, by listing the vendor's jobs for the Call's
  * reference prefix (a background job may; the prefix ends with the separator). A retry or a later
  * poll then reads that copy instead of paying for a second transcription.
  */
@@ -93,7 +93,7 @@ async function findNewestCopy(c: TranscribeContext): Promise<VendorCopy | undefi
     )
     for (const item of listed.items) {
       const seq = sendOfReference(c.callId, item.clientReference)
-      if (seq !== undefined && (best === undefined || seq > best.seq)) {
+      if (seq !== undefined && item.status !== 'failed' && (best === undefined || seq > best.seq)) {
         best = { reference: item.clientReference, seq, vendorId: item.vendorId }
       }
     }
@@ -160,8 +160,14 @@ function pollDelayMs(c: TranscribeContext, claim: ClaimedCallJob, startedMs: num
   if (remaining <= 0) {
     throw new CallFailure('transcription_timed_out')
   }
-  if ((claim.attempts ?? 1) >= CALL_JOB_MAX_ATTEMPTS - 2) {
-    // The last claims: one look at the deadline, so the job is not given up as spent before it.
+  const attempts = claim.attempts ?? 1
+  if (attempts >= CALL_JOB_MAX_ATTEMPTS - 1) {
+    // The last claim the table allows: another release would leave the job spent as
+    // `processing_failed`, whatever the clocks say about the time left (the database's and ours differ).
+    throw new CallFailure('transcription_timed_out')
+  }
+  if (attempts >= CALL_JOB_MAX_ATTEMPTS - 2) {
+    // The one before: look at the deadline.
     return Math.ceil(remaining)
   }
   const base = Math.max(deps.env.TRANSCRIBE_POLL_INTERVAL_MS, elapsed)

@@ -222,6 +222,31 @@ describe('uploading a Recording', () => {
     expect(h.deps.database.calls(h.organizationId)).toHaveLength(0)
   }, 10_000)
 
+  test('a store that stalls longer than the window does not cut off a fast sender', async () => {
+    const h = await createCallHarness({
+      env: { RECORDING_MIN_BYTES_PER_SECOND: '100000', RECORDING_RATE_WINDOW_MS: '200' },
+    })
+    // The sender is instant; the store takes 500 ms (more than two windows) after its first chunk.
+    spyOn(h.deps.objects, 'putStream').mockImplementation(async (_org, _key, body, options) => {
+      let total = 0
+      let first = true
+      for await (const chunk of body as AsyncIterable<Uint8Array>) {
+        total += chunk.byteLength
+        if (first) {
+          first = false
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          // A real store stops when the request's deadline fires.
+          options.signal?.throwIfAborted()
+        }
+      }
+      return { size: total, sha256: 'a'.repeat(64) }
+    })
+
+    const response = await h.uploadRecording('stall')
+
+    expect(response.status).toBe(201)
+  })
+
   test('a sender at the minimum rate is not cut off', async () => {
     const h = await createCallHarness({
       env: { RECORDING_MIN_BYTES_PER_SECOND: '1000', RECORDING_RATE_WINDOW_MS: '200' },

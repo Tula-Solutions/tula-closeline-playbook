@@ -1,6 +1,12 @@
 import { describe, expect, spyOn, test } from 'bun:test'
 import { type Call, callSchema } from 'tula-closeline-contract'
-import { CALL_JOB_RECORD, CALL_JOB_TRANSCRIBED, CALL_VENDOR_ID_RECORD } from 'tula-closeline-db'
+import {
+  CALL_JOB_FAIL,
+  CALL_JOB_MAX_ATTEMPTS,
+  CALL_JOB_RECORD,
+  CALL_JOB_TRANSCRIBED,
+  CALL_VENDOR_ID_RECORD,
+} from 'tula-closeline-db'
 import { logged } from '~/modules/ingestion/test-support'
 import { CALLS, type CallHarness, channelRep, createCallHarness } from './test-support'
 
@@ -371,6 +377,79 @@ describe('transcribing a Recording', () => {
     })
     expect(h.deps.database.callJobs(h.organizationId)[0]?.state).toBe('failed')
     expect(row?.vendor_send_seq).toBe(20)
+  })
+
+  test('a Call requeued after the vendor failed it makes a new counted send and goes on', async () => {
+    const h = await createCallHarness()
+    const call = await uploadRecording(h, 'requeue-failed', { dealId: 'D-1' })
+    h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
+      pendingReads: 0,
+      result: { status: 'failed', reason: 'audio_unreachable' },
+    })
+    await h.runCalls()
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'transcription_failed',
+    })
+
+    // The same file again under the same Deal requeues the failed Call.
+    const again = await h.uploadRecording('requeue-failed', { dealId: 'D-1' })
+    expect(again.status).toBe(200)
+    await h.runCalls()
+
+    expect(vendorSendsOf(h).map((send) => send.seq)).toEqual([1, 2])
+    expect((await h.readCall(call.id)).state).toBe('awaiting_rep')
+  })
+
+  test('a crash after a failed fallback send stays bounded by the 20 sends', async () => {
+    const h = await createCallHarness()
+    const call = await uploadRecording(h, 'fallback-loop', { rep: channelRep('left') })
+    h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
+      pendingReads: 0,
+      result: {
+        status: 'done',
+        durationMs: 20_000,
+        turns: turns([{ speaker: 'ch0', channel: 0 }]),
+      },
+    })
+    for (let seq = 2; seq <= 25; seq++) {
+      h.deps.transcriber.script(h.organizationId, `${call.id}:${seq}`, {
+        pendingReads: 0,
+        result: { status: 'failed', reason: 'vendor_failed' },
+      })
+    }
+    // The database cannot be told how the job ended, again and again.
+    for (let i = 0; i < 30; i++) {
+      h.deps.database.failNext(CALL_JOB_FAIL, new Error('connection lost'))
+    }
+
+    for (let i = 0; i < 30; i++) {
+      await h.runCalls()
+      await h.deps.time.advance(20 * 60 * 1000)
+    }
+
+    expect(vendorSendsOf(h).length).toBeLessThanOrEqual(20)
+    expect(h.deps.transcriber.copies(h.organizationId).length).toBeLessThanOrEqual(20)
+  })
+
+  test('the last claim fails a Call that is still pending as transcription_timed_out, whatever time remains', async () => {
+    const h = await createCallHarness()
+    const call = await uploadRecording(h, 'last-claim')
+    h.deps.transcriber.script(h.organizationId, `${call.id}:1`, {
+      pendingReads: 1000,
+      result: { status: 'failed', reason: 'timed_out' },
+    })
+    await h.runCalls()
+    // One claim short of the cap, with the wait far from over (the clocks may disagree).
+    const job = h.deps.database.callJobs(h.organizationId).at(-1)
+    Object.assign(job ?? {}, { attempts: CALL_JOB_MAX_ATTEMPTS - 2, next_attempt_at: 0 })
+
+    await h.runCalls()
+
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'transcription_timed_out',
+    })
   })
 
   test('a vendor outage is retried with a new counted send; a refusal for good is not', async () => {

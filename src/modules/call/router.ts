@@ -293,20 +293,43 @@ async function readAndStoreUpload(
       clearTimeout(timer)
       timer = setTimeout(() => deadline.abort(), container.env.RECORDING_BODY_TIMEOUT_MS)
       const file = part
-      // A sender that trickles is cut off: each window must carry the minimum rate's worth of bytes.
+      // A sender that trickles is cut off. Only the time spent waiting for the sender counts: a
+      // store that is slow to take the bytes must not make a fast sender look slow.
       let windowBytes = 0
+      let waited = 0
+      let waitingSince: number | undefined
       const windowMs = container.env.RECORDING_RATE_WINDOW_MS
-      const minPerWindow = (container.env.RECORDING_MIN_BYTES_PER_SECOND * windowMs) / 1000
+      const minPerSecond = container.env.RECORDING_MIN_BYTES_PER_SECOND
       rate = setInterval(() => {
-        if (windowBytes < minPerWindow) {
+        const now = Date.now()
+        const waitedMs = waited + (waitingSince === undefined ? 0 : now - waitingSince)
+        // Judged once the sender held things up for at least half the window.
+        if (waitedMs >= windowMs / 2 && windowBytes < (minPerSecond * waitedMs) / 1000) {
           deadline.abort()
         }
         windowBytes = 0
+        waited = 0
+        if (waitingSince !== undefined) {
+          waitingSince = now
+        }
       }, windowMs)
       const body = (async function* () {
-        for await (const chunk of file.body) {
-          windowBytes += chunk.byteLength
-          yield chunk
+        const source = file.body[Symbol.asyncIterator]()
+        try {
+          for (;;) {
+            waitingSince = Date.now()
+            const next = await source.next()
+            waited += Date.now() - waitingSince
+            waitingSince = undefined
+            if (next.done === true) {
+              break
+            }
+            windowBytes += next.value.byteLength
+            yield next.value
+          }
+        } finally {
+          waitingSince = undefined
+          await source.return?.()
         }
         clearInterval(rate)
         if ((await parts.next()) !== undefined) {
