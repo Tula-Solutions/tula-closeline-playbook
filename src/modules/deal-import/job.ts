@@ -161,34 +161,22 @@ function yieldToEventLoop(): Promise<void> {
 }
 
 /** The CSV, parsed: the records after the header with trailing blank records dropped, and whether the header has `name`. */
-type ParsedFile = { records: string[][]; hasName: boolean }
+export type ParsedFile = { records: string[][]; hasName: boolean }
 
 /**
- * Reads the object and parses it with the contract's bounded reader. The reader needs the whole
- * text (at most 10 MB), so this holds the file and its records once; they are released as batches
- * are applied. A file that is not UTF-8, has a quoting error or a cell over the limit is
- * `unreadable`; more records than the limit is `too_many_rows`; a header that is wrong (which the
- * upload route checks on a prefix, and a deferred one only here) is `unreadable`.
+ * Parses the CSV's bytes with the contract's bounded reader. The reader needs the whole text (at
+ * most 10 MB), so this holds the file and its records once; they are released as batches are
+ * applied. A file that is not UTF-8, has a quoting error or a cell over the limit is `unreadable`;
+ * more records than the limit is `too_many_rows`; a header that is wrong (which the upload route
+ * checks on a prefix, and a deferred one only here) is `unreadable`.
  */
-async function readFile(c: ImportContext, objectKey: string): Promise<ParsedFile> {
-  const { deps } = c
-  const object = await within(
-    deps,
-    'object store',
-    deps.env.INGESTION_IO_TIMEOUT_MS,
-    c.signal,
-    () => deps.objects.get(c.organizationId, objectKey)
-  )
-  if (object === undefined) {
-    // The upload stores the file before it inserts the row, so a row without a file is a loss.
-    throw new ImportFailure('processing_failed')
-  }
-  if (object.body.byteLength > MAX_DEAL_IMPORT_BYTES) {
+export function parseImportFile(body: Uint8Array): ParsedFile {
+  if (body.byteLength > MAX_DEAL_IMPORT_BYTES) {
     throw new ImportFailure('unreadable')
   }
   let text: string
   try {
-    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(object.body)
+    text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body)
   } catch {
     throw new ImportFailure('unreadable')
   }
@@ -209,8 +197,25 @@ async function readFile(c: ImportContext, objectKey: string): Promise<ParsedFile
   return { records, hasName: checked.hasName }
 }
 
+/** Reads the claimed import's object and parses it. */
+async function readFile(c: ImportContext, objectKey: string): Promise<ParsedFile> {
+  const { deps } = c
+  const object = await within(
+    deps,
+    'object store',
+    deps.env.INGESTION_IO_TIMEOUT_MS,
+    c.signal,
+    () => deps.objects.get(c.organizationId, objectKey)
+  )
+  if (object === undefined) {
+    // The upload stores the file before it inserts the row, so a row without a file is a loss.
+    throw new ImportFailure('processing_failed')
+  }
+  return parseImportFile(object.body)
+}
+
 /** One row as the apply statement reads it (`jsonb_to_recordset`). */
-type SentRow = {
+export type SentRow = {
   row_number: number
   deal_id: string | null
   reason: string | null
@@ -231,7 +236,7 @@ function dealIdOfRejected(cells: readonly string[], reason: string): string | nu
 }
 
 /** Judges one record with the contract's row check; the result carries the deal id and the parsed cells, never the raw record. */
-function judge(rowNumber: number, cells: readonly string[], hasName: boolean): SentRow {
+export function judge(rowNumber: number, cells: readonly string[], hasName: boolean): SentRow {
   if (isBlankCsvRecord(cells)) {
     return blank(rowNumber, 'wrong_column_count', null)
   }
