@@ -69,6 +69,13 @@ import {
 import type { Clock } from 'tula-closeline-kit'
 import type { Discover, InScope, Result, Run } from '~/adapters/postgres/processed-store'
 import { CLEANUP_PENDING_AFTER_MS } from '~/modules/ingestion/runtime'
+import {
+  type MemoryImportReportRow,
+  type MemoryImportRow,
+  runImportStatement,
+} from './deal-imports'
+
+export type { MemoryImportReportRow, MemoryImportRow } from './deal-imports'
 
 /** One row of `playbook.documents`, as far as the document routes read or write it. */
 export type MemoryDocumentRow = {
@@ -183,6 +190,9 @@ type State = {
   documents: MemoryDocumentRow[]
   deals: MemoryDealRow[]
   rights: MemoryRightsRow[]
+  imports: MemoryImportRow[]
+  /** The import reports. Rows are never edited once written, so a transaction copies only the array. */
+  importRows: MemoryImportReportRow[]
   jobs: MemoryJobRow[]
   keys: KeyRow[]
   settings: MemorySettingsRow[]
@@ -218,6 +228,12 @@ export type MemoryPlaybookDatabase = {
   seedDeal(
     row: Partial<MemoryDealRow> & Pick<MemoryDealRow, 'id' | 'organization_id' | 'deal_id'>
   ): void
+  /** The committed Deal imports of an Organization, oldest first. */
+  imports(organizationId: string): MemoryImportRow[]
+  /** The committed report rows of one import, in row order. */
+  importRows(organizationId: string, importId: string): MemoryImportReportRow[]
+  /** Adds a committed import directly, for a state the routes cannot reach (a lapsed lease, a spent import). */
+  seedImport(row: Partial<MemoryImportRow> & Pick<MemoryImportRow, 'id' | 'organization_id'>): void
   /** Stores a rights confirmation directly, for a state the routes cannot reach (an older wording version). */
   seedRights(row: MemoryRightsRow): void
   /** The Organization's index settings row, if one exists. */
@@ -366,6 +382,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     documents: [],
     deals: [],
     rights: [],
+    imports: [],
+    importRows: [],
     jobs: [],
     keys: [],
     settings: [],
@@ -381,6 +399,12 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
   const statements: string[] = []
   let queue: Promise<unknown> = Promise.resolve()
   const now = () => options.clock.now().getTime()
+  let lastMicroseconds = 0
+  /** A strictly increasing microsecond clock, so two rows made in one millisecond still order. */
+  const nextMicroseconds = () => {
+    lastMicroseconds = Math.max(lastMicroseconds + 1, now() * 1000)
+    return lastMicroseconds
+  }
 
   const rows = (list: readonly unknown[]): Result => ({
     rows: list as Record<string, unknown>[],
@@ -875,7 +899,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           if (
             !own(organization) ||
             documentsOf(organization).length > 0 ||
-            dealsOf(organization).length > 0
+            dealsOf(organization).length > 0 ||
+            state.imports.some((i) => i.organization_id === organization)
           ) {
             return rows([{ removed: false }])
           }
@@ -901,6 +926,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           const noMessages = !state.consumed.some((x) => x.organization_id === organization)
           const noDeals = dealsOf(organization).length === 0
           const noRights = rightsOf(organization) === undefined
+          const noImports = !state.imports.some((i) => i.organization_id === organization)
           return rows([
             {
               no_documents: noDocuments,
@@ -908,9 +934,16 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
               no_usage: noUsage,
               no_messages: noMessages,
               no_deals: noDeals,
-              no_imports: true,
+              no_imports: noImports,
               no_rights: noRights,
-              removed: noDocuments && noSettings && noUsage && noMessages && noDeals && noRights,
+              removed:
+                noDocuments &&
+                noSettings &&
+                noUsage &&
+                noMessages &&
+                noDeals &&
+                noImports &&
+                noRights,
             },
           ])
         }
@@ -1521,11 +1554,30 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             '42501',
             'organizations_with_work cannot run inside an Organization scope'
           )
-        default:
+        default: {
+          const imported = runImportStatement(text, params, {
+            imports: state.imports,
+            importRows: state.importRows,
+            deals: state.deals,
+            own,
+            now,
+            nextMicroseconds,
+            rows,
+            none,
+            batch,
+            pgTimestamp,
+            pgTimestampUs,
+            cursorMicroseconds,
+            postgresError,
+          })
+          if (imported !== undefined) {
+            return imported
+          }
           if (text.startsWith('set local lock_timeout')) {
             return none
           }
           throw new Error(`the database double does not model this statement: ${text.slice(0, 60)}`)
+        }
       }
     }
   }
@@ -1566,6 +1618,17 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         for (const j of committed.jobs) {
           if ((j.state === 'queued' || j.state === 'running') && j.next_attempt_at <= now()) {
             organizations.add(j.organization_id)
+          }
+        }
+        break
+      case 'import_apply':
+        for (const i of committed.imports) {
+          if (
+            (i.state === 'uploaded' || i.state === 'processing') &&
+            i.erased_at === null &&
+            i.next_attempt_at <= now()
+          ) {
+            organizations.add(i.organization_id)
           }
         }
         break
@@ -1613,6 +1676,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         documents: structuredClone(committed.documents),
         deals: structuredClone(committed.deals),
         rights: structuredClone(committed.rights),
+        imports: structuredClone(committed.imports),
+        importRows: [...committed.importRows],
         jobs: structuredClone(committed.jobs),
         keys: structuredClone(committed.keys),
         settings: structuredClone(committed.settings),
@@ -1656,6 +1721,36 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     jobs: (organizationId) => committed.jobs.filter((j) => j.organization_id === organizationId),
     deals: (organizationId) => committed.deals.filter((d) => d.organization_id === organizationId),
     rights: (organizationId) => committed.rights.find((r) => r.organization_id === organizationId),
+    imports: (organizationId) =>
+      committed.imports.filter((i) => i.organization_id === organizationId),
+    importRows: (organizationId, importId) =>
+      committed.importRows
+        .filter((r) => r.organization_id === organizationId && r.import_id === importId)
+        .sort((a, b) => a.row_number - b.row_number),
+    seedImport: (row) => {
+      const at = now()
+      committed.imports.push({
+        uploaded_by: `usr_${'0'.repeat(31)}1`,
+        object_key: `deal-imports/${row.id}/original.csv`,
+        size_bytes: 10,
+        state: 'uploaded',
+        failure_reason: null,
+        attempts: 0,
+        next_attempt_at: at,
+        claim_token: null,
+        report_through: 1,
+        applied_count: 0,
+        rejected_count: 0,
+        row_count: null,
+        object_removed_at: null,
+        erased_at: null,
+        finished_at: null,
+        created_at_us: at * 1000,
+        updated_at: at,
+        ...row,
+      })
+      committed.usage.add(row.organization_id)
+    },
     seedRights: (row) => {
       committed.rights = [
         ...committed.rights.filter((r) => r.organization_id !== row.organization_id),
