@@ -321,6 +321,29 @@ describe('processing a Transcript', () => {
     expect(await countOf(stranger)).toBe(1)
   })
 
+  test('a Transcript the store reports over the cap fails unreadable without being read', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText('big'), { dealId: 'D-9' })
+    const head = h.deps.objects.head.bind(h.deps.objects)
+    h.deps.objects.head = async (organizationId, key) => {
+      const info = await head(organizationId, key)
+      return info === undefined ? info : { ...info, size: 6 * 1024 * 1024 }
+    }
+    let reads = 0
+    h.deps.objects.get = async () => {
+      reads++
+      throw new Error('get must not be called')
+    }
+
+    await h.runCalls()
+
+    expect(await h.readCall(call.id)).toMatchObject({
+      state: 'failed',
+      failureReason: 'unreadable',
+    })
+    expect(reads).toBe(0)
+  })
+
   test('each pass claims one job per Organization', async () => {
     const h = await createCallHarness()
     await upload(h, transcriptText('a'), { dealId: 'D-1' })

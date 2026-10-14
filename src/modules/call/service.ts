@@ -20,6 +20,7 @@ import {
   PLAYBOOK_WRITE_ROLES,
   parseRepField,
   type RepChoice,
+  repChangeAllowed,
   repChoiceSuits,
   SALES_HISTORY_READ_ROLES,
   type SetCallRepRequest,
@@ -401,7 +402,13 @@ export async function get(deps: CallDeps, context: CallContext, callId: string):
     throw failure('call.not_found')
   }
   const call = toCall(row)
-  if (call.kind !== 'recording' || call.speakerLabels.length === 0) {
+  // Only where the contract lets a Rep be picked or corrected (`awaiting_rep`, `ready`, and `failed`
+  // for the reasons a different Rep can fix); any other state does no object read.
+  if (
+    call.kind !== 'recording' ||
+    call.speakerLabels.length === 0 ||
+    !repChangeAllowed(call.state, call.failureReason)
+  ) {
     return call
   }
   const speakers = await speakersOf(deps, organizationId, call.id)
@@ -421,8 +428,16 @@ async function speakersOf(
   callId: string
 ): Promise<{ label: string; excerpt: string }[] | undefined> {
   try {
+    const key = recordingTranscriptKey(callId)
+    // The size first, so an object over the cap is never buffered.
+    const info = await withTimeout(deps.env.INGESTION_IO_TIMEOUT_MS, () =>
+      deps.objects.head(organizationId, key)
+    )
+    if (info === undefined || info.size > MAX_TRANSCRIPT_BYTES) {
+      return undefined
+    }
     const stored = await withTimeout(deps.env.INGESTION_IO_TIMEOUT_MS, () =>
-      deps.objects.get(organizationId, recordingTranscriptKey(callId))
+      deps.objects.get(organizationId, key)
     )
     if (stored === undefined || stored.body.byteLength > MAX_TRANSCRIPT_BYTES) {
       return undefined

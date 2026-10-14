@@ -133,9 +133,22 @@ function startHeartbeat(c: CallJobContext): { stop: () => Promise<void> } {
   }
 }
 
-/** Reads the Transcript's object (at most the Transcript limit); a missing object is a loss, not a fault of the file. */
+/**
+ * Reads the Transcript's object, at most the Transcript limit: its size is read first (`head`), so
+ * an object over the limit is never pulled into memory. A missing object is a loss, not a fault of the file.
+ */
 async function readTranscript(c: CallJobContext, objectKey: string): Promise<Uint8Array> {
   const { deps } = c
+  const info = await within(deps, 'object store', deps.env.INGESTION_IO_TIMEOUT_MS, c.signal, () =>
+    deps.objects.head(c.organizationId, objectKey)
+  )
+  if (info === undefined) {
+    // The upload stores the file before it inserts the row, so a row without a file is a loss.
+    throw new CallFailure('processing_failed')
+  }
+  if (info.size > MAX_TRANSCRIPT_BYTES) {
+    throw new CallFailure('unreadable')
+  }
   const object = await within(
     deps,
     'object store',
@@ -144,10 +157,10 @@ async function readTranscript(c: CallJobContext, objectKey: string): Promise<Uin
     () => deps.objects.get(c.organizationId, objectKey)
   )
   if (object === undefined) {
-    // The upload stores the file before it inserts the row, so a row without a file is a loss.
     throw new CallFailure('processing_failed')
   }
   if (object.body.byteLength > MAX_TRANSCRIPT_BYTES) {
+    // The object grew between the size check and the read.
     throw new CallFailure('unreadable')
   }
   return object.body
