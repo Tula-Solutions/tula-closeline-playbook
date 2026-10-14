@@ -148,9 +148,9 @@ describe('the database double sets an Outcome as DEAL_SET_OUTCOME does', () => {
     const set = (closed: string | null, setClosed: boolean) =>
       db.scope(ORG, (run) => run(DEAL_SET_OUTCOME, [ORG, deal(1), 'open', closed, setClosed]))
 
-    const ignored = await set('2026-02-01T00:00:00+00:00', false)
-    const dated = await set('2026-02-01T00:00:00+00:00', true)
-    const same = await set('2026-02-01T00:00:00+00:00', true)
+    const ignored = await set('2026-02-01', false)
+    const dated = await set('2026-02-01', true)
+    const same = await set('2026-02-01', true)
     const cleared = await set(null, true)
 
     expect(ignored.rows[0]).toMatchObject({ changed: false, closed_at: null })

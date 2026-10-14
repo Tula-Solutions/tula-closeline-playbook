@@ -127,7 +127,8 @@ export type MemoryDealRow = {
   name: string | null
   outcome: 'won' | 'lost' | 'open'
   outcome_seq: number
-  closed_at: number | null
+  /** The calendar date as Postgres prints a `date`: `YYYY-MM-DD`, or null. */
+  closed_at: string | null
   /** The decimal as `numeric(17,2)` prints it, for example `10.00`. */
   amount: string | null
   currency: string | null
@@ -462,7 +463,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       name: d.name,
       outcome: d.outcome,
       outcome_seq: d.outcome_seq,
-      closed_at: d.closed_at === null ? null : pgTimestamp(d.closed_at),
+      closed_at: d.closed_at,
       amount: d.amount,
       currency: d.currency,
       appeared_in_import: d.appeared_in_import,
@@ -885,8 +886,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           if (d === undefined) {
             return none
           }
-          const closed =
-            setClosed && closedAt !== null ? Math.floor(cursorMicroseconds(closedAt) / 1000) : null
+          // The statement casts `$4::date`: a full timestamp is cut to its date text.
+          const closed = setClosed && closedAt !== null ? closedAt.slice(0, 10) : null
           const closedChanges = setClosed && d.closed_at !== closed
           if (d.outcome === outcome && !closedChanges) {
             return rows([{ ...dealView(d), changed: false }])

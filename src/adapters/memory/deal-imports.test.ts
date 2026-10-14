@@ -293,7 +293,7 @@ describe('applying a batch', () => {
 
     const { summary, changed } = await apply(db, token, [
       { row_number: 2, deal_id: 'WON', outcome: 'won' },
-      { row_number: 3, deal_id: 'OPEN', outcome: 'lost', closed_at: '2026-01-01T00:00:00.000Z' },
+      { row_number: 3, deal_id: 'OPEN', outcome: 'lost', closed_at: '2026-01-01' },
     ])
 
     expect(summary).toMatchObject({ applied: 1, rejected: 1 })

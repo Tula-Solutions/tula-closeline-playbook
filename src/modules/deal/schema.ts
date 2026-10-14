@@ -31,7 +31,7 @@ const dealRowSchema = z.object({
   deal_id: dealIdSchema,
   name: z.string().nullable(),
   outcome: outcomeSchema,
-  closed_at: optionalTimestamp,
+  closed_at: z.string().nullable(),
   amount: z.string().nullable(),
   currency: z.string().nullable(),
   appeared_in_import: z.boolean(),

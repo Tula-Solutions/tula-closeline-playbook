@@ -102,10 +102,22 @@ describe('bad requests are refused with request.invalid', () => {
     ['a lookup with control characters', 'POST', `${DEALS}/lookup`, { dealId: 'a\u0000b' }],
     ['an Outcome that is not one', 'PUT', `${DEALS}/${deal(1)}/outcome`, { outcome: 'pending' }],
     [
-      'a closing time that is not a time',
+      'a closing date that is not a date',
       'PUT',
       `${DEALS}/${deal(1)}/outcome`,
       { outcome: 'won', closedAt: 'yesterday' },
+    ],
+    [
+      'a closing date with a time',
+      'PUT',
+      `${DEALS}/${deal(1)}/outcome`,
+      { outcome: 'won', closedAt: '2026-03-01T00:00:00Z' },
+    ],
+    [
+      'a closing date that is not a real day',
+      'PUT',
+      `${DEALS}/${deal(1)}/outcome`,
+      { outcome: 'won', closedAt: '2026-02-30' },
     ],
     [
       'an extra key in an Outcome request',
@@ -337,16 +349,16 @@ describe('setting an Outcome', () => {
     seed(1)
 
     const first = await send('PUT', `${DEALS}/${deal(1)}/outcome`, {
-      body: { outcome: 'won', closedAt: '2026-03-01T00:00:00Z' },
+      body: { outcome: 'won', closedAt: '2026-03-01' },
     })
     const again = await send('PUT', `${DEALS}/${deal(1)}/outcome`, {
-      body: { outcome: 'won', closedAt: '2026-03-01T00:00:00Z' },
+      body: { outcome: 'won', closedAt: '2026-03-01' },
     })
 
     expect(first.status).toBe(200)
     expect(dealSchema.parse(await first.json())).toMatchObject({
       outcome: 'won',
-      closedAt: '2026-03-01T00:00:00.000Z',
+      closedAt: '2026-03-01',
     })
     expect(again.status).toBe(200)
     expect(h.deps.database.deals(h.organizationId)[0]?.outcome_seq).toBe(1)
@@ -358,9 +370,31 @@ describe('setting an Outcome', () => {
     })
   })
 
+  test('a date reads back as the same date in a time zone behind UTC', async () => {
+    const { send, seed } = await harness()
+    seed(1)
+    const zone = process.env.TZ
+    process.env.TZ = 'America/Chicago'
+    try {
+      const set = await send('PUT', `${DEALS}/${deal(1)}/outcome`, {
+        body: { outcome: 'won', closedAt: '2026-01-31' },
+      })
+      const read = await send('GET', `${DEALS}/${deal(1)}`)
+
+      expect(dealSchema.parse(await set.json()).closedAt).toBe('2026-01-31')
+      expect(dealSchema.parse(await read.json()).closedAt).toBe('2026-01-31')
+    } finally {
+      if (zone === undefined) {
+        delete process.env.TZ
+      } else {
+        process.env.TZ = zone
+      }
+    }
+  })
+
   test('a closing time alone counts as a change, and null clears it', async () => {
     const { h, send, seed } = await harness()
-    seed(1, { outcome: 'won', closed_at: Date.parse('2026-01-01T00:00:00Z'), outcome_seq: 1 })
+    seed(1, { outcome: 'won', closed_at: '2026-01-01', outcome_seq: 1 })
 
     await send('PUT', `${DEALS}/${deal(1)}/outcome`, { body: { outcome: 'won', closedAt: null } })
 
@@ -373,7 +407,7 @@ describe('setting an Outcome', () => {
 
   test('an Outcome request without a closing time leaves the closing time alone', async () => {
     const { h, send, seed } = await harness()
-    const closed = Date.parse('2026-01-01T00:00:00Z')
+    const closed = '2026-01-01'
     seed(1, { outcome: 'open', closed_at: closed })
 
     await send('PUT', `${DEALS}/${deal(1)}/outcome`, { body: { outcome: 'lost' } })

@@ -199,6 +199,29 @@ describe('applying a file', () => {
     ])
   })
 
+  test('closed_at takes a plain date only: a time or an offset is invalid_closed_at', async () => {
+    const h = await createImportHarness()
+    const id = await upload(
+      h,
+      csv([
+        'A,won,2026-01-31,,,',
+        'B,won,2026-01-31T10:00:00,,,',
+        'C,won,2026-01-31T10:00:00Z,,,',
+        'D,won,2026-01-31+02:00,,,',
+      ])
+    )
+
+    await h.runImports()
+
+    expect((await h.report(id)).map((r) => r.reason)).toEqual([
+      null,
+      'invalid_closed_at',
+      'invalid_closed_at',
+      'invalid_closed_at',
+    ])
+    expect(h.deps.database.deals(h.organizationId)[0]?.closed_at).toBe('2026-01-31')
+  })
+
   test('an empty data section completes with zero rows', async () => {
     const h = await createImportHarness()
     const id = await upload(h, `${HEADER}\n`)

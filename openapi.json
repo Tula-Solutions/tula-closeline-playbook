@@ -2353,8 +2353,7 @@
                           },
                           "closedAt": {
                             "type": ["string", "null"],
-                            "maxLength": 64,
-                            "format": "date-time"
+                            "format": "date"
                           },
                           "amount": {
                             "type": ["string", "null"],
@@ -2598,8 +2597,7 @@
                     },
                     "closedAt": {
                       "type": ["string", "null"],
-                      "maxLength": 64,
-                      "format": "date-time"
+                      "format": "date"
                     },
                     "amount": {
                       "type": ["string", "null"],
@@ -2859,8 +2857,7 @@
                     },
                     "closedAt": {
                       "type": ["string", "null"],
-                      "maxLength": 64,
-                      "format": "date-time"
+                      "format": "date"
                     },
                     "amount": {
                       "type": ["string", "null"],
@@ -3107,8 +3104,7 @@
                   },
                   "closedAt": {
                     "type": ["string", "null"],
-                    "maxLength": 64,
-                    "format": "date-time"
+                    "format": "date"
                   }
                 },
                 "required": ["outcome"],
@@ -3143,8 +3139,7 @@
                     },
                     "closedAt": {
                       "type": ["string", "null"],
-                      "maxLength": 64,
-                      "format": "date-time"
+                      "format": "date"
                     },
                     "amount": {
                       "type": ["string", "null"],
@@ -3359,7 +3354,7 @@
     },
     "/v1/playbook/deal-imports": {
       "post": {
-        "description": "Uploads the fixed CSV template (columns deal_id, outcome, closed_at, amount, currency and optionally name; up to 10 MB and 50,000 rows) as multipart/form-data with one file part named \"file\". Owner and Admin only. The type, size and first row are checked before anything is stored: deal_import.unsupported_type (415), deal_import.too_large (413) and deal_import.header_invalid (422). An Organization with MAX_QUEUED_DEAL_IMPORTS (5) imports not yet finished (state uploaded or processing) is refused with deal_import.busy (429) and nothing is stored; the count is checked before the file is stored, so a refused upload leaves no import. The header is read with checkDealImportHeaderText (the same reader and limits as parseCsv) on the first 8192 characters of the file (a header still unfinished there is deferred to the job, not refused), and the job re-checks the header of its full parse with the same verdict. The rest of the file is parsed in the background job, never on the request path, under strict RFC 4180 quoting: a stray quote fails the file, and a cell over 1000 characters fails the whole file too (a cell up to 1000 characters is checked row by row, and a bad one is a rejected row); blank lines at the end of the file are ignored, and an interior blank line is a rejected row with the reason blank_row, so the report has no gap, and it still counts in the row numbers, and rowNumber is the record number with the header as record 1. Answers 202 with the import in state \"uploaded\"; it is processed in the background. Imports are not deduplicated by content: each upload is a new import, and only the Idempotency-Key makes a retry of the same request answer with the stored import. Valid rows are applied and bad rows are reported, never dropped: a deal id already won or lost, or repeated within the file, is a rejected row in the report, not an HTTP error. A file with more rows than the limit, a cell over the length limit or a quoting error ends in state \"failed\" with failureReason \"too_many_rows\" or \"unreadable\". Accepts an Idempotency-Key header.",
+        "description": "Uploads the fixed CSV template (columns deal_id, outcome, closed_at, amount, currency and optionally name; closed_at is a plain YYYY-MM-DD date, kept as written, and a value with a time or an offset is a rejected row with the reason invalid_closed_at; up to 10 MB and 50,000 rows) as multipart/form-data with one file part named \"file\". Owner and Admin only. The type, size and first row are checked before anything is stored: deal_import.unsupported_type (415), deal_import.too_large (413) and deal_import.header_invalid (422). An Organization with MAX_QUEUED_DEAL_IMPORTS (5) imports not yet finished (state uploaded or processing) is refused with deal_import.busy (429) and nothing is stored; the count is checked before the file is stored, so a refused upload leaves no import. The header is read with checkDealImportHeaderText (the same reader and limits as parseCsv) on the first 8192 characters of the file (a header still unfinished there is deferred to the job, not refused), and the job re-checks the header of its full parse with the same verdict. The rest of the file is parsed in the background job, never on the request path, under strict RFC 4180 quoting: a stray quote fails the file, and a cell over 1000 characters fails the whole file too (a cell up to 1000 characters is checked row by row, and a bad one is a rejected row); blank lines at the end of the file are ignored, and an interior blank line is a rejected row with the reason blank_row, so the report has no gap, and it still counts in the row numbers, and rowNumber is the record number with the header as record 1. Answers 202 with the import in state \"uploaded\"; it is processed in the background. Imports are not deduplicated by content: each upload is a new import, and only the Idempotency-Key makes a retry of the same request answer with the stored import. Valid rows are applied and bad rows are reported, never dropped: a deal id already won or lost, or repeated within the file, is a rejected row in the report, not an HTTP error. A file with more rows than the limit, a cell over the length limit or a quoting error ends in state \"failed\" with failureReason \"too_many_rows\" or \"unreadable\". Accepts an Idempotency-Key header.",
         "tags": ["deal-imports"],
         "summary": "Upload a Deal import CSV",
         "security": [
@@ -4827,6 +4822,26 @@
                       },
                       "maxItems": 20
                     },
+                    "speakers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 480
+                          }
+                        },
+                        "required": ["label", "excerpt"],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 20
+                    },
                     "deletedAt": {
                       "type": ["string", "null"],
                       "maxLength": 64,
@@ -5006,6 +5021,26 @@
                       "items": {
                         "type": "string",
                         "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "speakers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 480
+                          }
+                        },
+                        "required": ["label", "excerpt"],
+                        "additionalProperties": false
                       },
                       "maxItems": 20
                     },
@@ -5447,7 +5482,7 @@
         }
       },
       "get": {
-        "description": "Lists the Organization's Calls, newest first (sorted by createdAt, then id, both descending), one cursor-paginated page at a time (at most 100). Owner and Admin only. Deleted Calls are left out unless state=deleted is asked for; state=awaiting_rep lists the Calls waiting for a Rep and dealRecordId (the opaque Deal id) limits the list to one Deal.",
+        "description": "Lists the Organization's Calls, newest first (sorted by createdAt, then id, both descending), one cursor-paginated page at a time (at most 100). Owner and Admin only. Deleted Calls are left out unless state=deleted is asked for; state=awaiting_rep lists the Calls waiting for a Rep and dealRecordId (the opaque Deal id) limits the list to one Deal. A list item never carries speakers: only the single-Call read returns speaker excerpts.",
         "tags": ["calls"],
         "summary": "List Calls",
         "security": [
@@ -5693,7 +5728,8 @@
                           "uploadedByUserId",
                           "createdAt",
                           "updatedAt"
-                        ]
+                        ],
+                        "additionalProperties": false
                       },
                       "maxItems": 100
                     },
@@ -5845,7 +5881,7 @@
     },
     "/v1/playbook/calls/{callId}": {
       "get": {
-        "description": "Reads one Call and its state, with the failure reason when it failed, the speaker labels to pick a Rep from and the purge time when it was deleted. No Transcript text or audio is returned. Owner and Admin only.",
+        "description": "Reads one Call and its state, with the failure reason when it failed, the speaker labels to pick a Rep from and the purge time when it was deleted. For a Recording with speaker labels, above all one awaiting its Rep, it also returns speakers: a short excerpt per label (the first turns of the speaker, at most 240 characters, cut at a word boundary with an ellipsis; at most 20 speakers) so a person can tell who is the Rep. The excerpts are tenant Transcript text: returned only to the Owner and Admin of the owning Organization and never logged. No other Transcript text or audio is returned. Owner and Admin only.",
         "tags": ["calls"],
         "summary": "Read a Call",
         "security": [
@@ -5994,6 +6030,26 @@
                       "items": {
                         "type": "string",
                         "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "speakers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 480
+                          }
+                        },
+                        "required": ["label", "excerpt"],
+                        "additionalProperties": false
                       },
                       "maxItems": 20
                     },
@@ -6367,6 +6423,26 @@
                       },
                       "maxItems": 20
                     },
+                    "speakers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 480
+                          }
+                        },
+                        "required": ["label", "excerpt"],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 20
+                    },
                     "deletedAt": {
                       "type": ["string", "null"],
                       "maxLength": 64,
@@ -6736,6 +6812,26 @@
                       "items": {
                         "type": "string",
                         "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "speakers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 480
+                          }
+                        },
+                        "required": ["label", "excerpt"],
+                        "additionalProperties": false
                       },
                       "maxItems": 20
                     },
@@ -7189,6 +7285,26 @@
                       "items": {
                         "type": "string",
                         "maxLength": 1000
+                      },
+                      "maxItems": 20
+                    },
+                    "speakers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "excerpt": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 480
+                          }
+                        },
+                        "required": ["label", "excerpt"],
+                        "additionalProperties": false
                       },
                       "maxItems": 20
                     },
