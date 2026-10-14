@@ -1,25 +1,24 @@
 import {
+  ALL_PLAYBOOK_ERRORS,
+  ALL_PLAYBOOK_ROUTES,
+  type AllPlaybookRouteName,
   ERRORS,
-  PLAYBOOK_ERRORS,
-  PLAYBOOK_ROUTES,
-  type PlaybookRoute,
-  type PlaybookRouteName,
 } from 'tula-closeline-contract'
 import { errorResponse, errorResponseWithRetryAfter } from '~/http/responses'
 
 const ALL_ERRORS: Record<string, { code: string; status: number }> = {
   ...ERRORS,
-  ...PLAYBOOK_ERRORS,
+  ...ALL_PLAYBOOK_ERRORS,
 }
 
 /** The codes every public route may answer with besides its own, whatever it does. */
 const ALWAYS = ['auth.unauthenticated', 'server.internal'] as const
 
 /** The method, path and description a route has in the contract, in the form `createRoute` takes. */
-export function contractRoute(name: PlaybookRouteName) {
-  const route = PLAYBOOK_ROUTES[name]
+export function contractRoute(name: AllPlaybookRouteName) {
+  const route = ALL_PLAYBOOK_ROUTES[name]
   return {
-    method: route.method.toLowerCase() as 'get' | 'post' | 'delete',
+    method: route.method.toLowerCase() as 'get' | 'post' | 'put' | 'delete',
     path: route.path,
     description: route.description,
   }
@@ -31,8 +30,8 @@ export function contractRoute(name: PlaybookRouteName) {
  * busy, and the authentication and server codes every route has. Codes that share a status share
  * a response, so the document says which ones in its description.
  */
-export function failureResponses(name: PlaybookRouteName, extra: readonly string[] = []) {
-  const route: PlaybookRoute = PLAYBOOK_ROUTES[name]
+export function failureResponses(name: AllPlaybookRouteName, extra: readonly string[] = []) {
+  const route = ALL_PLAYBOOK_ROUTES[name]
   const codes = new Set<string>([
     ...route.errors,
     ...route.commonErrors,

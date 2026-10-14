@@ -12,15 +12,13 @@ import {
   MEDIA_TYPE_BY_EXTENSION,
   normaliseMediaType,
   type OrganizationId,
-  PLAYBOOK_ERRORS,
   PLAYBOOK_READ_ROLES,
   PLAYBOOK_WRITE_ROLES,
   type PlaybookDocument,
   type RequestId,
-  type Role,
-  type UserId,
 } from 'tula-closeline-contract'
 import {
+  DEAL_ERASE_BATCH,
   DOCUMENT_BY_HASH,
   DOCUMENT_ERASE_BATCH,
   DOCUMENT_GET,
@@ -42,14 +40,19 @@ import { StorageError } from 'tula-closeline-kit'
 import type { Run } from '~/adapters/postgres/processed-store'
 import {
   DEADLOCK_DETECTED,
-  isLockTimeout,
   postgresErrorOf,
-  retryTransaction,
   SERIALIZATION_FAILURE,
 } from '~/adapters/postgres/retry'
 import type { Container } from '~/container'
-import { domainError, RetryAfterError } from '~/http/domain-error'
+import { RetryAfterError } from '~/http/domain-error'
 import { registry } from '~/messages'
+import {
+  assertRole,
+  type CallContext,
+  failure,
+  raisedBeforeCommit,
+  transaction,
+} from '~/modules/service-kit'
 import { detectDocumentType } from './detect'
 import {
   completeKey,
@@ -71,13 +74,7 @@ import {
 /** What the document service needs from the container. */
 export type DocumentDeps = Pick<Container, 'scope' | 'objects' | 'queue' | 'logger' | 'env'>
 
-/** Who is calling and which request it is: the Organization and role come from the verified token only. */
-export type CallContext = {
-  userId: UserId
-  organizationId: OrganizationId
-  role: Role
-  requestId: RequestId
-}
+export type { CallContext }
 
 /** The route name a keyed upload stores its key under. */
 export const UPLOAD_IDEMPOTENCY_ROUTE = 'documents.upload'
@@ -94,19 +91,10 @@ export const ERASE_BATCH_SIZE = 100
 /** The erase batches one remove-all request runs: a constant, so the request is bounded whatever the Organization holds. */
 export const ERASE_BATCHES_PER_REQUEST = 5
 
-const ALL_ERRORS = { ...ERRORS, ...PLAYBOOK_ERRORS }
+/** How many Deals one remove-all batch erases; the database clamps it, and a request runs at most {@link ERASE_BATCHES_PER_REQUEST} batches. */
+export const DEAL_ERASE_BATCH_SIZE = 100
 
-/** The AppError for a code the contract's checks or the database's answers can name. */
-function failure(code: keyof typeof ALL_ERRORS) {
-  return domainError(ALL_ERRORS[code])
-}
-
-/** Refuses a caller whose role is not in `roles` with the common `auth.forbidden`. */
-export function assertRole(context: Pick<CallContext, 'role'>, roles: readonly Role[]): void {
-  if (!roles.includes(context.role)) {
-    throw domainError(ERRORS['auth.forbidden'])
-  }
-}
+export { assertRole }
 
 /**
  * Refuses a file part that is too large, of an unsupported type or malformed, from what is known
@@ -155,45 +143,6 @@ async function readDocument(
     document: toDocument(row),
     deletionSeq: Number(row.deletion_seq),
     notRestorable: row.not_restorable === true,
-  }
-}
-
-/**
- * The errors raised while a transaction's work was running, before its commit was sent. Such an
- * error means the transaction did not commit, whatever it was (a statement the server refused, a
- * dropped connection, a bug), because the commit is only sent after the work returns. An error
- * that is not in this set came from before the work or from the commit or release, where the
- * server may or may not have applied the change.
- */
-const raisedBeforeCommit = new WeakSet<object>()
-
-/** Makes a transaction that can run again after a deadlock or a serialization failure, then maps a lock timeout to a retryable 503. */
-async function transaction<T>(
-  deps: Pick<DocumentDeps, 'scope'>,
-  organizationId: string,
-  work: (run: Run) => Promise<T>
-): Promise<T> {
-  const marked = async (run: Run): Promise<T> => {
-    try {
-      return await work(run)
-    } catch (error) {
-      if (typeof error === 'object' && error !== null) {
-        raisedBeforeCommit.add(error)
-      }
-      throw error
-    }
-  }
-  try {
-    return await retryTransaction(() => deps.scope(organizationId, marked))
-  } catch (error) {
-    if (isLockTimeout(error)) {
-      const busy = new RetryAfterError(ERRORS['server.unavailable'], RETRY_AFTER_SECONDS)
-      if (typeof error === 'object' && error !== null && raisedBeforeCommit.has(error)) {
-        raisedBeforeCommit.add(busy)
-      }
-      throw busy
-    }
-    throw error
   }
 }
 
@@ -717,7 +666,8 @@ export type RemoveAllResult = { organizationId: OrganizationId; status: 'removed
  * {@link ERASE_BATCH_SIZE} documents are barred from restore and made due for purge, the vector
  * cleanup of each document that changed is published, and then the Organization's end state is
  * read. It answers `removed` only when nothing remains, as the contract defines it: no document
- * row (the purge sweep removes the file and the row of the barred ones) and the rest removed. When
+ * row (the purge sweep removes the file and the row of the barred ones), no Deal (erased here, in
+ * batches of {@link DEAL_ERASE_BATCH_SIZE}) and the rest removed. When
  * documents remain it answers `server.unavailable` (503) with `Retry-After`, and the caller
  * repeats the call until it answers 200; each repeat erases more and re-reads the end state. The
  * idempotency key is stored only with the final answer, so a repeat after 503 is a new attempt.
@@ -766,11 +716,20 @@ export async function removeAll(
     }
   }
   await publishCleanups(deps, context, cleanups, options.publishBudgetMs ?? PUBLISH_BUDGET_MS)
+  for (let batch = 0; batch < ERASE_BATCHES_PER_REQUEST; batch++) {
+    const deleted = await transaction(deps, organizationId, async (run) => {
+      await run(LOCK_TIMEOUT_SQL, [])
+      return (await run(DEAL_ERASE_BATCH, [organizationId, DEAL_ERASE_BATCH_SIZE])).rows[0]?.deleted
+    })
+    if (Number(deleted ?? 0) === 0) {
+      break
+    }
+  }
 
   const finished = await transaction(deps, organizationId, async (run) => {
     await run(LOCK_TIMEOUT_SQL, [])
     const status = (await run(ORGANIZATION_REMOVAL_STATUS, [organizationId])).rows[0]
-    if (status?.no_documents !== true) {
+    if (status?.no_documents !== true || status.no_deals !== true || status.no_imports !== true) {
       // Nothing is written, so no key row is left in flight.
       return false
     }

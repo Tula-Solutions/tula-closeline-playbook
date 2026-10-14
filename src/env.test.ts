@@ -365,3 +365,15 @@ describe('PARSER_MEMORY_LIMIT_BYTES', () => {
     ).toThrow()
   })
 })
+
+describe('RIGHTS_WORDING_VERSION', () => {
+  test('defaults to 1, is a positive integer and stays within the contract maximum', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).RIGHTS_WORDING_VERSION).toBe(1)
+    expect(
+      loadEnv({ ENVIRONMENT: 'local', RIGHTS_WORDING_VERSION: '4' }).RIGHTS_WORDING_VERSION
+    ).toBe(4)
+    for (const bad of ['0', '-1', '1.5', 'two', '1000001', '']) {
+      expect(() => loadEnv({ ENVIRONMENT: 'local', RIGHTS_WORDING_VERSION: bad })).toThrow()
+    }
+  })
+})

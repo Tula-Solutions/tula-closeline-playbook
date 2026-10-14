@@ -6,6 +6,13 @@ import {
   CONSUMED_PURGE_AGE_MS,
   CONSUMED_RELEASE,
   CONSUMED_RENEW,
+  DEAL_BY_DEAL_ID,
+  DEAL_ERASE_BATCH,
+  DEAL_GET,
+  DEAL_LIST,
+  DEAL_LIST_BY_IMPORT_FLAG,
+  DEAL_LIST_BY_OUTCOME,
+  DEAL_SET_OUTCOME,
   DOCUMENT_BY_HASH,
   DOCUMENT_CLEANUP_BEGIN,
   DOCUMENT_CLEANUP_DONE,
@@ -48,6 +55,8 @@ import {
   PLAYBOOK_MIN_LEASE_MS,
   QUOTA_LOCK,
   QUOTA_USAGE,
+  RIGHTS_CONFIRM,
+  RIGHTS_GET,
 } from 'tula-closeline-db'
 import {
   DOCUMENT_FAILURE_REASONS,
@@ -92,6 +101,34 @@ export type MemoryDocumentRow = {
   created_at: number
   updated_at: number
 }
+
+/** One row of `playbook.deals`. Times are microseconds since the epoch, so a test can make two rows share a millisecond. */
+export type MemoryDealRow = {
+  id: string
+  organization_id: string
+  deal_id: string
+  name: string | null
+  outcome: 'won' | 'lost' | 'open'
+  outcome_seq: number
+  closed_at: number | null
+  /** The decimal as `numeric(17,2)` prints it, for example `10.00`. */
+  amount: string | null
+  currency: string | null
+  appeared_in_import: boolean
+  created_at_us: number
+  updated_at: number
+}
+
+/** One row of `playbook.rights_confirmations`. */
+export type MemoryRightsRow = {
+  organization_id: string
+  confirmed_by: string
+  confirmed_at: number
+  wording_version: number
+}
+
+/** The largest `outcome_seq` a Deal can hold (a Postgres integer), which the table's trigger caps. */
+export const MEMORY_DEAL_MAX_SEQ = 2_147_483_647
 
 /** One row of `playbook.ingestion_jobs`. */
 export type MemoryJobRow = {
@@ -144,6 +181,8 @@ type KeyRow = {
 
 type State = {
   documents: MemoryDocumentRow[]
+  deals: MemoryDealRow[]
+  rights: MemoryRightsRow[]
   jobs: MemoryJobRow[]
   keys: KeyRow[]
   settings: MemorySettingsRow[]
@@ -171,6 +210,16 @@ export type MemoryPlaybookDatabase = {
   documents(organizationId: string): MemoryDocumentRow[]
   /** The committed jobs of an Organization. */
   jobs(organizationId: string): MemoryJobRow[]
+  /** The committed Deals of an Organization, oldest first. */
+  deals(organizationId: string): MemoryDealRow[]
+  /** The Organization's rights confirmation, if one exists. */
+  rights(organizationId: string): MemoryRightsRow | undefined
+  /** Adds a committed Deal directly, for a state the routes cannot reach (an old Deal, a Deal at the sequence ceiling). */
+  seedDeal(
+    row: Partial<MemoryDealRow> & Pick<MemoryDealRow, 'id' | 'organization_id' | 'deal_id'>
+  ): void
+  /** Stores a rights confirmation directly, for a state the routes cannot reach (an older wording version). */
+  seedRights(row: MemoryRightsRow): void
   /** The Organization's index settings row, if one exists. */
   settings(organizationId: string): MemorySettingsRow | undefined
   /** The committed consumed-message records of an Organization (or the global scope). */
@@ -222,6 +271,43 @@ function pgTimestamp(ms: number): string {
 }
 
 const infinity = 'infinity'
+
+/** Postgres's text form of a timestamptz at the given microsecond. */
+function pgTimestampUs(us: number): string {
+  const ms = Math.floor(us / 1000)
+  const micro = String(us - ms * 1000).padStart(3, '0')
+  return `${new Date(ms).toISOString().slice(0, 23).replace('T', ' ').replace('Z', '')}${micro}+00`
+}
+
+/** A cursor text a list statement accepts: `infinity`, or a timestamp in Postgres's or ISO form, else SQLSTATE 22007. */
+function cursorMicroseconds(text: unknown): number {
+  if (text === infinity) {
+    return Number.POSITIVE_INFINITY
+  }
+  const match =
+    typeof text === 'string'
+      ? /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?(Z|[+-]\d{2}(?::?\d{2})?)$/.exec(
+          text
+        )
+      : null
+  if (match === null) {
+    throw postgresError('22007', 'invalid input syntax for type timestamp with time zone')
+  }
+  const [, day, time, fraction = '', zone = 'Z'] = match
+  const offset =
+    zone === 'Z'
+      ? 'Z'
+      : zone.length === 3
+        ? `${zone}:00`
+        : zone.replace(/^([+-]\d{2})(\d{2})$/, '$1:$2')
+  const ms = Date.parse(`${day}T${time}.${fraction.padEnd(3, '0').slice(0, 3)}${offset}`)
+  // Postgres reads the shape but refuses a value that is no date (month 13, day 30 of February,
+  // hour 25) and year 0000, with 22008; this is the code the service must also map.
+  if (Number.isNaN(ms) || day?.startsWith('0000') === true) {
+    throw postgresError('22008', 'date/time field value out of range')
+  }
+  return ms * 1000 + Number(fraction.padEnd(6, '0').slice(3, 6))
+}
 
 /** How long after a delete the `cleanup_pending` hint is due (the db library's rule: five minutes). */
 
@@ -278,6 +364,8 @@ function pendingAttempts(state: State, organization: string): number[] {
 export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryPlaybookDatabase {
   let committed: State = {
     documents: [],
+    deals: [],
+    rights: [],
     jobs: [],
     keys: [],
     settings: [],
@@ -308,6 +396,28 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       state.documents.filter((d) => own(organization) && d.organization_id === organization)
     const find = (organization: unknown, id: unknown) =>
       documentsOf(organization).find((d) => d.id === id)
+    const dealsOf = (organization: unknown) =>
+      state.deals.filter((d) => own(organization) && d.organization_id === organization)
+    const rightsOf = (organization: unknown) =>
+      state.rights.find((r) => own(organization) && r.organization_id === organization)
+    const dealView = (d: MemoryDealRow) => ({
+      id: d.id,
+      deal_id: d.deal_id,
+      name: d.name,
+      outcome: d.outcome,
+      outcome_seq: d.outcome_seq,
+      closed_at: d.closed_at === null ? null : pgTimestamp(d.closed_at),
+      amount: d.amount,
+      currency: d.currency,
+      appeared_in_import: d.appeared_in_import,
+      created_at: pgTimestampUs(d.created_at_us),
+      updated_at: pgTimestamp(d.updated_at),
+    })
+    const rightsView = (r: MemoryRightsRow) => ({
+      confirmed_by: r.confirmed_by,
+      confirmed_at: pgTimestamp(r.confirmed_at),
+      wording_version: r.wording_version,
+    })
     const touch = (d: MemoryDocumentRow) => {
       d.updated_at = now()
     }
@@ -651,11 +761,125 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
             })
           )
         }
+        case DEAL_GET: {
+          const [organization, id] = params as [string, string]
+          const d = dealsOf(organization).find((x) => x.id === id)
+          return d === undefined ? none : rows([dealView(d)])
+        }
+        case DEAL_BY_DEAL_ID: {
+          const [organization, dealId] = params as [string, string]
+          const d = dealsOf(organization).find((x) => x.deal_id === dealId)
+          return d === undefined ? none : rows([dealView(d)])
+        }
+        case DEAL_LIST:
+        case DEAL_LIST_BY_OUTCOME:
+        case DEAL_LIST_BY_IMPORT_FLAG: {
+          const [organization, createdAfter, idAfter, size, filter] = params as [
+            string,
+            string,
+            string,
+            number | null,
+            unknown,
+          ]
+          const after = cursorMicroseconds(createdAfter)
+          const page = dealsOf(organization)
+            .filter((d) =>
+              text === DEAL_LIST
+                ? true
+                : text === DEAL_LIST_BY_OUTCOME
+                  ? d.outcome === filter
+                  : d.appeared_in_import === filter
+            )
+            .filter(
+              (d) =>
+                after === Number.POSITIVE_INFINITY ||
+                d.created_at_us < after ||
+                (d.created_at_us === after && d.id < idAfter)
+            )
+            .sort((a, b) =>
+              a.created_at_us === b.created_at_us
+                ? a.id < b.id
+                  ? 1
+                  : -1
+                : a.created_at_us < b.created_at_us
+                  ? 1
+                  : -1
+            )
+            .slice(0, batch(size, 100))
+          return rows(
+            page.map((d) => ({ ...dealView(d), cursor_at: pgTimestampUs(d.created_at_us) }))
+          )
+        }
+        case DEAL_SET_OUTCOME: {
+          const [organization, id, outcome, closedAt, setClosed] = params as [
+            string,
+            string,
+            'won' | 'lost' | 'open',
+            string | null,
+            boolean,
+          ]
+          const d = dealsOf(organization).find((x) => x.id === id)
+          if (d === undefined) {
+            return none
+          }
+          const closed =
+            setClosed && closedAt !== null ? Math.floor(cursorMicroseconds(closedAt) / 1000) : null
+          const closedChanges = setClosed && d.closed_at !== closed
+          if (d.outcome === outcome && !closedChanges) {
+            return rows([{ ...dealView(d), changed: false }])
+          }
+          if (d.outcome_seq >= MEMORY_DEAL_MAX_SEQ) {
+            throw postgresError('23514', 'deals_outcome_seq_ceiling')
+          }
+          d.outcome = outcome
+          if (setClosed) {
+            d.closed_at = closed
+          }
+          d.outcome_seq += 1
+          d.updated_at = now()
+          return rows([{ ...dealView(d), changed: true }])
+        }
+        case DEAL_ERASE_BATCH: {
+          const [organization, size] = params as [string, number]
+          const doomed = dealsOf(organization)
+            .sort((a, b) => (a.id < b.id ? -1 : 1))
+            .slice(0, batch(size, PLAYBOOK_MAX_BATCH))
+          state.deals = state.deals.filter((d) => !doomed.includes(d))
+          return rows([{ deleted: doomed.length }])
+        }
+        case RIGHTS_GET: {
+          const [organization] = params as [string]
+          const r = rightsOf(organization)
+          return r === undefined ? none : rows([rightsView(r)])
+        }
+        case RIGHTS_CONFIRM: {
+          const [organization, by, version] = params as [string, string, number]
+          if (!own(organization)) {
+            return none
+          }
+          const r = rightsOf(organization)
+          if (r === undefined || r.wording_version < version) {
+            const next = {
+              organization_id: organization,
+              confirmed_by: by,
+              confirmed_at: now(),
+              wording_version: version,
+            }
+            state.rights = [...state.rights.filter((x) => x !== r), next]
+            return rows([{ ...rightsView(next), recorded: true }])
+          }
+          return rows([{ ...rightsView(r), recorded: false }])
+        }
         case ORGANIZATION_REMOVE_REST: {
           const [organization, keepRoute] = params as [string, string]
-          if (!own(organization) || documentsOf(organization).length > 0) {
+          if (
+            !own(organization) ||
+            documentsOf(organization).length > 0 ||
+            dealsOf(organization).length > 0
+          ) {
             return rows([{ removed: false }])
           }
+          state.rights = state.rights.filter((r) => r.organization_id !== organization)
           state.usage.delete(organization)
           state.settings = state.settings.filter((x) => x.organization_id !== organization)
           state.consumed = state.consumed.filter((x) => x.organization_id !== organization)
@@ -675,13 +899,18 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           const noUsage = !state.usage.has(organization)
           const noSettings = !state.settings.some((x) => x.organization_id === organization)
           const noMessages = !state.consumed.some((x) => x.organization_id === organization)
+          const noDeals = dealsOf(organization).length === 0
+          const noRights = rightsOf(organization) === undefined
           return rows([
             {
               no_documents: noDocuments,
               no_settings: noSettings,
               no_usage: noUsage,
               no_messages: noMessages,
-              removed: noDocuments && noSettings && noUsage && noMessages,
+              no_deals: noDeals,
+              no_imports: true,
+              no_rights: noRights,
+              removed: noDocuments && noSettings && noUsage && noMessages && noDeals && noRights,
             },
           ])
         }
@@ -1382,6 +1611,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
       transactions.push(organizationId)
       const draft: State = {
         documents: structuredClone(committed.documents),
+        deals: structuredClone(committed.deals),
+        rights: structuredClone(committed.rights),
         jobs: structuredClone(committed.jobs),
         keys: structuredClone(committed.keys),
         settings: structuredClone(committed.settings),
@@ -1423,6 +1654,30 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     documents: (organizationId) =>
       committed.documents.filter((d) => d.organization_id === organizationId),
     jobs: (organizationId) => committed.jobs.filter((j) => j.organization_id === organizationId),
+    deals: (organizationId) => committed.deals.filter((d) => d.organization_id === organizationId),
+    rights: (organizationId) => committed.rights.find((r) => r.organization_id === organizationId),
+    seedRights: (row) => {
+      committed.rights = [
+        ...committed.rights.filter((r) => r.organization_id !== row.organization_id),
+        row,
+      ]
+    },
+    seedDeal: (row) => {
+      const at = now()
+      committed.deals.push({
+        name: null,
+        outcome: 'open',
+        outcome_seq: 0,
+        closed_at: null,
+        amount: null,
+        currency: null,
+        appeared_in_import: false,
+        created_at_us: at * 1000,
+        updated_at: at,
+        ...row,
+      })
+      committed.usage.add(row.organization_id)
+    },
     keys: (organizationId) => committed.keys.filter((k) => k.organization_id === organizationId),
     seed: (row) => {
       const at = now()

@@ -7,7 +7,7 @@ import {
 } from 'tula-closeline-contract'
 import { newOrganizationId } from '~/testing'
 import * as Documents from './service'
-import { ERASE_BATCH_SIZE, ERASE_BATCHES_PER_REQUEST } from './service'
+import { DEAL_ERASE_BATCH_SIZE, ERASE_BATCH_SIZE, ERASE_BATCHES_PER_REQUEST } from './service'
 import {
   createDocumentHarness,
   DOCUMENTS,
@@ -129,6 +129,59 @@ describe('the internal remove-all route: who may call', () => {
 })
 
 describe('the internal remove-all route: what it removes', () => {
+  test('erases the Deals and the rights confirmation of the named Organization only, in bounded batches', async () => {
+    const h = await createDocumentHarness()
+    const other = newOrganizationId()
+    for (let i = 1; i <= 3; i++) {
+      h.deps.database.seedDeal({
+        id: `deal_${i.toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        deal_id: `D-${i}`,
+      })
+    }
+    h.deps.database.seedDeal({
+      id: `deal_${'f'.repeat(32)}`,
+      organization_id: other,
+      deal_id: 'D-1',
+    })
+    for (const organizationId of [h.organizationId, other]) {
+      h.deps.database.seedRights({
+        organization_id: organizationId,
+        confirmed_by: 'usr_x',
+        confirmed_at: Date.now(),
+        wording_version: 1,
+      })
+    }
+
+    const response = await removeAll(h, h.organizationId)
+
+    expect(response.status).toBe(200)
+    expect(h.deps.database.deals(h.organizationId)).toEqual([])
+    expect(h.deps.database.rights(h.organizationId)).toBeUndefined()
+    expect(h.deps.database.deals(other)).toHaveLength(1)
+    expect(h.deps.database.rights(other)).toBeDefined()
+  })
+
+  test('answers 503 while Deals remain after the batches of one request, and 200 once a repeat has erased them', async () => {
+    const h = await createDocumentHarness()
+    const count = ERASE_BATCHES_PER_REQUEST * DEAL_ERASE_BATCH_SIZE + 1
+    for (let i = 1; i <= count; i++) {
+      h.deps.database.seedDeal({
+        id: `deal_${i.toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        deal_id: `D-${i}`,
+      })
+    }
+
+    const first = await removeAll(h, h.organizationId)
+
+    expect(first.status).toBe(503)
+    expect(h.deps.database.deals(h.organizationId)).toHaveLength(1)
+    expect(h.deps.database.keys(h.organizationId)).toEqual([])
+    expect((await removeAll(h, h.organizationId)).status).toBe(200)
+    expect(h.deps.database.deals(h.organizationId)).toEqual([])
+  })
+
   test('an Organization with nothing is removed at once: 200 removed', async () => {
     const h = await createDocumentHarness()
 

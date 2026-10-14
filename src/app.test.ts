@@ -42,9 +42,14 @@ describe('the booted app', () => {
       '/healthz',
       '/internal/playbook/organizations/{organizationId}/remove-all',
       '/readyz',
+      '/v1/playbook/deals',
+      '/v1/playbook/deals/lookup',
+      '/v1/playbook/deals/{dealRecordId}',
+      '/v1/playbook/deals/{dealRecordId}/outcome',
       '/v1/playbook/documents',
       '/v1/playbook/documents/{documentId}',
       '/v1/playbook/documents/{documentId}/restore',
+      '/v1/playbook/rights-confirmation',
     ])
     expect(document.paths['/healthz']?.get.responses['500']).toBeDefined()
     expect(document.paths['/readyz']?.get.responses['503']).toBeDefined()

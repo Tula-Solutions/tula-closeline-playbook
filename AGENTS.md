@@ -66,7 +66,11 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   `PLAYBOOK_ROUTES`. Unit tests run on `src/adapters/memory/playbook-database.ts`, a double that runs
   the db library's statements by their text; `document.integration.ts` runs the real ones. It is a required CI check that `bun run verify` does not
   run locally; run it with the compose Postgres up before relying on a change to a statement's use.
-- `src/messages.ts` is the registry of the two contract messages. `src/consumer.ts` wires the kit's
+- Sales history (ADR 0018, hub issue 69): `src/modules/deal/` (Deal routes) and
+  `src/modules/rights/` (rights confirmation), Owner and Admin only, rules in
+  `.claude/rules/sales-history.md`. `src/modules/service-kit.ts` holds the shared transaction helper,
+  caller context and error lookup. `RIGHTS_WORDING_VERSION` is the current wording version.
+- `src/messages.ts` is the registry of the contract messages. `src/consumer.ts` wires the kit's
   `createConsumer` (name `playbook.ingestion`) over the Postgres `ProcessedStore`; handlers go in
   `createHandlers`. `server.ts` starts the consumer and, after it listens, the workers
   (`WORKERS_ENABLED` for the job loop, `SWEEPS_ENABLED` for the sweeps); shutdown stops both (`stoppableWith`).
@@ -121,7 +125,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   behaviour, vector ids, chunk sizes, the sweeps, the orphan rule, the removed-Organization guard)
   are in `.claude/rules/ingestion.md`; they load when you touch `src/modules/ingestion/`,
   `src/modules/maintenance/` or `src/workers/`.
-- The remove-all route does bounded work (5 erase batches of 100, then the cleanup publishes eight
+- The remove-all route does bounded work (5 erase batches of 100 documents, then 5 of 100 Deals, then the cleanup publishes eight
   at a time inside a 5 s budget; the rest is left to the `cleanup_pending` sweep) and answers 200
   only when nothing remains. Core must stop the Organization signing in and uploading before it
   calls: this service only detects an upload that lands late (a row left unerased) and answers 503. While documents remain it answers 503 `server.unavailable` with `Retry-After: 30` and

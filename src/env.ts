@@ -3,6 +3,7 @@ import {
   DEFAULT_MAX_DOCUMENTS,
   MAX_DOCUMENT_BYTES,
   MAX_DOCUMENT_PAGES,
+  MAX_RIGHTS_WORDING_VERSION,
   regionSchema,
 } from 'tula-closeline-contract'
 import { PLAYBOOK_MAX_BATCH } from 'tula-closeline-db'
@@ -140,6 +141,11 @@ const schema = z
     ),
     /** The most pages a document may have. May lower the contract's limit, never raise it. */
     MAX_PAGES_PER_DOCUMENT: integer(1, MAX_DOCUMENT_PAGES).optional(),
+    /**
+     * The version of the rights confirmation wording the portal shows now (ADR 0018). Raising it
+     * asks every Organization to confirm again before its next Recording or Transcript upload.
+     */
+    RIGHTS_WORDING_VERSION: integer(1, MAX_RIGHTS_WORDING_VERSION).default(1),
     /**
      * The most uploads one instance handles at once. Each is held whole in memory (ADR 0016), so
      * this times `MAX_UPLOAD_BYTES` is the upload memory an instance may need.
