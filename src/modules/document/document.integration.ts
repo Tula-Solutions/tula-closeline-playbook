@@ -12,8 +12,9 @@ import {
   type PlaybookDocument,
 } from 'tula-closeline-contract'
 import { createDb, IDEMPOTENCY_BEGIN, withOrganization } from 'tula-closeline-db'
-import { scopeOver } from '~/adapters/postgres/processed-store'
+import { scopeOver, statementOf } from '~/adapters/postgres/processed-store'
 import { integrationUrls } from '~/integration-support'
+import { resetSpentPurge } from '~/modules/maintenance/reset-purge'
 import { newOrganizationId } from '~/testing'
 import { UPLOAD_IDEMPOTENCY_ROUTE } from './service'
 import {
@@ -324,5 +325,44 @@ describe('the internal remove-all route against Postgres', () => {
       await (await h.call('GET', DOCUMENTS, { as: other })).json()
     )
     expect(theirs.items).toHaveLength(1)
+  })
+})
+
+describe('a spent purge against Postgres', () => {
+  test('is reset for one deleted document only, and nothing else changes', async () => {
+    const h = await harness()
+    const spent = await documentOf(await h.upload('a.pdf', pdfBytes('spent-a')))
+    const live = await documentOf(await h.upload('b.pdf', pdfBytes('spent-b')))
+    await h.call('DELETE', `${DOCUMENTS}/${spent.id}`)
+    await asOwner(
+      h.organizationId,
+      sql`update playbook.documents set purge_attempts = 20, purge_started_at = now() - interval '1 hour', purge_lease_until = now() - interval '30 minutes' where id = ${spent.id}`
+    )
+    const run = (id: string) =>
+      withOrganization(service.db, h.organizationId, (tx) =>
+        resetSpentPurge(
+          async (text, params) => {
+            const result = await tx.execute(statementOf(text, params))
+            return {
+              rows: result.rows as Record<string, unknown>[],
+              rowCount: result.rowCount ?? 0,
+            }
+          },
+          h.organizationId,
+          { kind: 'document', id }
+        )
+      )
+
+    expect(await run(live.id)).toBe(false)
+    expect(await run(spent.id)).toBe(true)
+    expect(await run(spent.id)).toBe(false)
+    const rows = await withOrganization(service.db, h.organizationId, (tx) =>
+      tx.execute(sql`select id, purge_attempts, state from playbook.documents order by id`)
+    )
+    const attempts = Object.fromEntries(
+      (rows.rows as { id: string; purge_attempts: number }[]).map((r) => [r.id, r.purge_attempts])
+    )
+    expect(attempts[spent.id]).toBe(0)
+    expect(attempts[live.id]).toBe(0)
   })
 })

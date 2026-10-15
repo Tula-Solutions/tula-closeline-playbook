@@ -17,6 +17,7 @@ import {
 import { type Discover, scopeOver, statementOf } from '~/adapters/postgres/processed-store'
 import { integrationUrls } from '~/integration-support'
 import { errorCode, INTERNAL_SECRET, newKey, personIn } from '~/modules/document/test-support'
+import { resetSpentPurge } from '~/modules/maintenance/reset-purge'
 import { purgeCalls } from './purge'
 import {
   CALLS,
@@ -161,6 +162,45 @@ describe('a Call against Postgres', () => {
     await h.runCalls()
 
     expect((await h.readCall(call.id)).state).toBe('processing')
+  })
+
+  test('a spent purge is named by remove-all, ignored by the sweep, and purged again after the reset', async () => {
+    const h = await harness()
+    const a = await uploadOk(h, 'a', 'DEAL-A')
+    await h.runCalls()
+    await withOrganization(owner.db, h.organizationId, (tx) =>
+      tx.execute(
+        sql`update playbook.calls set state = 'deleted', deleted_at = now(), deletion_seq = deletion_seq + 1, epoch = epoch + 1, purge_due_at = now(), purge_attempts = 20, purge_started_at = now() - interval '1 hour', purge_lease_until = now() - interval '30 minutes' where id = ${a.id}`
+      )
+    )
+    const removeAll = () =>
+      h.app.request(`/internal/playbook/organizations/${h.organizationId}/remove-all`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${INTERNAL_SECRET}`, 'idempotency-key': newKey() },
+      })
+
+    expect((await removeAll()).status).toBe(503)
+    expect(
+      h.deps.logLines.some(
+        (l) => l.includes('remove-all is waiting on spent purges') && l.includes(a.id)
+      )
+    ).toBe(true)
+    await purgeCalls(h.deps, h.organizationId, new AbortController().signal)
+    expect(await count(h.organizationId, 'calls')).toBe(1)
+
+    const unrelated = await h.deps.scope(h.organizationId, (run) =>
+      resetSpentPurge(run, h.organizationId, { kind: 'call', id: `call_${'0'.repeat(32)}` })
+    )
+    const reset = await h.deps.scope(h.organizationId, (run) =>
+      resetSpentPurge(run, h.organizationId, { kind: 'call', id: a.id })
+    )
+    const again = await h.deps.scope(h.organizationId, (run) =>
+      resetSpentPurge(run, h.organizationId, { kind: 'call', id: a.id })
+    )
+
+    expect([unrelated, reset, again]).toEqual([false, true, false])
+    await purgeCalls(h.deps, h.organizationId, new AbortController().signal)
+    expect(await count(h.organizationId, 'calls')).toBe(0)
   })
 
   test('purge removes the row and its jobs, and remove-all erases Calls before Deals', async () => {

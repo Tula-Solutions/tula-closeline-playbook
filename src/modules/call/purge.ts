@@ -367,8 +367,8 @@ const SPENT_PAGE = 50
 
 /**
  * Lists the Organization's Calls whose purge gave up (it reached the attempt bound) and logs them
- * at error level, ids and counts only. A person fixes what blocked the purge; this service never
- * resets it. Returns how many were listed.
+ * at error level, ids and counts only. A person fixes what blocked the purge and resets it with
+ * `scripts/reset-spent-purge.ts`; this service never resets it. Returns how many were listed.
  */
 export async function logSpentCallPurges(
   deps: CallPurgeDeps,

@@ -168,6 +168,42 @@ describe('purging Calls', () => {
 })
 
 describe('remove-all with Calls', () => {
+  test('while a Call and a Document have spent purges, the 503 is logged naming both, ids only', async () => {
+    const h = await createCallHarness()
+    const callId = await readyCall(h, 'a', 'DEAL-A')
+    deleteNow(h, callId)
+    firstCall(h).purge_attempts = 99
+    const documentId = `doc_${'c'.repeat(32)}`
+    h.deps.database.seed({
+      id: documentId,
+      organization_id: h.organizationId,
+      state: 'deleted',
+      deleted_at: Date.now(),
+      purge_due_at: Date.now(),
+      deletion_seq: 1,
+      purge_attempts: 20,
+    })
+
+    const response = await h.app.request(
+      `/internal/playbook/organizations/${h.organizationId}/remove-all`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${INTERNAL_SECRET}`, 'idempotency-key': newKey() },
+      }
+    )
+
+    expect(response.status).toBe(503)
+    const line = h.deps.logLines.find((l) =>
+      l.includes('remove-all is waiting on spent purges that need a person')
+    )
+    expect(line).toBeDefined()
+    expect(JSON.parse(line ?? '{}')).toMatchObject({
+      organizationId: h.organizationId,
+      calls: [callId],
+      documents: [documentId],
+    })
+  })
+
   test('erases Calls before Deals and ends in 200, with no vector, object or row left', async () => {
     const h = await createCallHarness()
     const a = await readyCall(h, 'a', 'DEAL-A')

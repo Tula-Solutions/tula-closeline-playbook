@@ -78,7 +78,7 @@ export async function purgeConsumedMessages(
 /**
  * Lists the Organization's documents whose purge gave up (it reached the attempt bound) and logs
  * them at error level, ids and counts only. A person fixes what blocked the purge and resets it
- * (`DOCUMENT_PURGE_RESET`); this service never does. Returns how many were listed.
+ * (`scripts/reset-spent-purge.ts`, which runs `DOCUMENT_PURGE_RESET`); this service never does. Returns how many were listed.
  */
 export async function logSpentPurges(deps: PipelineDeps, organizationId: string): Promise<number> {
   const result = await inTransaction(deps, organizationId, (run) =>
