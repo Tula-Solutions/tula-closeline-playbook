@@ -83,7 +83,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   loops (`ingestion.ts`, `sweeps.ts`, `discovery.ts`). Tests use `createPipelineHarness`.
 - Public routes mount on `publicRoutes` in `src/app.ts` under `/v1`, behind `authenticate`. Read the
   caller with `callerOf(c)`: the Organization comes from the verified token and nowhere else.
-- Errors: `reportError` is the one seam; call `reportSafely`. Log errors with `describeError`.
+- Errors: `reportError` is the one seam; call `reportSafely`. Log errors with `describeError`. The
+  container's tracker reporter is wrapped by `trackerSafe` (`src/tracker-safe.ts`): a Postgres error
+  reaches the tracker with its SQLSTATE, table and constraint but never `detail`, `where`, parameters or SQL.
 - `openapi.json` is generated: `bun run openapi`; `verify` fails if it is stale.
 
 ## Rules for this service

@@ -53,6 +53,7 @@ import { type PlaybookEnvelope, registry } from '~/messages'
 import type { Embedder } from '~/ports/embedder'
 import type { OcrReader } from '~/ports/ocr'
 import type { DocumentParser } from '~/ports/parser'
+import { trackerSafe } from '~/tracker-safe'
 import { createWorkers, type Workers } from '~/workers'
 
 /** One dependency probe for `/readyz`: resolve when healthy, reject or stall when not. */
@@ -211,14 +212,17 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     level: env.LOG_LEVEL,
     ...(options.logDestination ? { destination: options.logDestination } : {}),
   })
-  const errors = createErrorReporter({
-    dsn: env.SENTRY_DSN,
-    service: SERVICE,
-    environment: env.ENVIRONMENT,
-    region: env.REGION,
-    release: env.GIT_SHA,
-    logger,
-  })
+  // Every error passes through the scrub: a Postgres error's detail can hold a row (issue 76).
+  const errors = trackerSafe(
+    createErrorReporter({
+      dsn: env.SENTRY_DSN,
+      service: SERVICE,
+      environment: env.ENVIRONMENT,
+      region: env.REGION,
+      release: env.GIT_SHA,
+      logger,
+    })
+  )
 
   const database = createDb(env.DATABASE_URL)
   const keys = createRemoteKeySet({
