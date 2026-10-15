@@ -251,8 +251,9 @@ async function insertOutcome(
  * 1. Check the file, the fields, the Rep and the content. Nothing is stored yet.
  * 2. One transaction: claim the idempotency key, then the Organization's upload lock, then
  *    `CALL_INSERT`, which checks the rights confirmation at the current wording version, the
- *    duplicate rule and the quota in one statement. When the insert is the next step and the file is
- *    not stored, the transaction rolls back with `ObjectRequired`.
+ *    duplicate rule and the quota in one statement. When it would create the Call and the file is
+ *    not stored, the transaction rolls back with `ObjectRequired`; a refusal (rights, quota, other
+ *    deal) or a duplicate is answered at this first look, before any object is written.
  * 3. An upload-attempt record is committed, so the orphan sweep can find an object whose outcome is
  *    unknown, then the file is written under a key made from the new Call id, then the transaction
  *    runs again.
@@ -303,9 +304,6 @@ export async function upload(
     if (reservation.kind === 'replay') {
       return reservation
     }
-    if (!stored) {
-      throw new ObjectRequired()
-    }
     // The upload lock before the insert: the statement fails without it.
     await run(QUOTA_LOCK, [organizationId])
     const answer = (
@@ -331,6 +329,11 @@ export async function upload(
         CURRENT_RIGHTS_WORDING_VERSION,
       ])
     ).rows[0]
+    if (answer?.result === 'created' && !stored) {
+      // The first look only learns that the file is wanted: rights, duplicate and quota all passed.
+      // Roll the insert back; the file is written next and the insert runs again.
+      throw new ObjectRequired()
+    }
     return insertOutcome(run, organizationId, keyed, answer)
   }
 

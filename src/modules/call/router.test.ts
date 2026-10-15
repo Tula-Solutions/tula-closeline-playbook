@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import {
   CURRENT_RIGHTS_WORDING_VERSION,
   callSchema,
@@ -157,6 +157,64 @@ describe('Call upload against stored Calls', () => {
     expect(response.status).toBe(409)
     expect(await errorCode(response)).toBe('call.quota_exceeded')
     expect(await h.objectKeys()).toHaveLength(0)
+  })
+
+  test('a refused upload (quota) never writes its object', async () => {
+    const h = await createCallHarness()
+    h.deps.database.seedDeal({
+      id: `deal_${'a'.repeat(32)}`,
+      organization_id: h.organizationId,
+      deal_id: 'SEED',
+    })
+    for (let i = 0; i < DEFAULT_MAX_CALLS; i++) {
+      h.deps.database.seedCall({
+        id: `call_${i.toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        deal_record_id: `deal_${'a'.repeat(32)}`,
+      })
+    }
+    const put = spyOn(h.deps.objects, 'put')
+    const remove = spyOn(h.deps.objects, 'delete')
+    const response = await h.uploadCall(transcriptText())
+    expect(await errorCode(response)).toBe('call.quota_exceeded')
+    expect(put).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  test('a refused upload (rights) never writes its object', async () => {
+    const h = await createCallHarness()
+    h.deps.database.seedRights({
+      organization_id: h.organizationId,
+      confirmed_by: h.people.owner.userId,
+      confirmed_at: 0,
+      wording_version: CURRENT_RIGHTS_WORDING_VERSION + 1,
+    })
+    const put = spyOn(h.deps.objects, 'put')
+    const response = await h.uploadCall(transcriptText())
+    expect(await errorCode(response)).toBe('rights.confirmation_required')
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  test('the same file again at the Call limit is still the stored Call (200), with no second write', async () => {
+    const h = await createCallHarness()
+    const first = callSchema.parse(await (await h.uploadCall(transcriptText())).json())
+    h.deps.database.seedDeal({
+      id: `deal_${'b'.repeat(32)}`,
+      organization_id: h.organizationId,
+      deal_id: 'SEED',
+    })
+    for (let i = 0; i < DEFAULT_MAX_CALLS; i++) {
+      h.deps.database.seedCall({
+        id: `call_${i.toString(16).padStart(32, '0')}`,
+        organization_id: h.organizationId,
+        deal_record_id: `deal_${'b'.repeat(32)}`,
+      })
+    }
+    const put = spyOn(h.deps.objects, 'put')
+    const again = await h.uploadCall(transcriptText())
+    expect(again.status).toBe(200)
+    expect(callSchema.parse(await again.json()).id).toBe(first.id)
+    expect(put).not.toHaveBeenCalled()
   })
 
   test('the same file again restores a deleted Call and queues it', async () => {
