@@ -18,12 +18,14 @@ import {
   type RequestId,
 } from 'tula-closeline-contract'
 import {
+  CALL_LIST_SPENT_PURGES,
   DEAL_ERASE_BATCH,
   DOCUMENT_BY_HASH,
   DOCUMENT_ERASE_BATCH,
   DOCUMENT_GET,
   DOCUMENT_INSERT,
   DOCUMENT_LIST_FILTERED,
+  DOCUMENT_LIST_SPENT_PURGES,
   DOCUMENT_REQUEUE,
   DOCUMENT_RESTORE,
   DOCUMENT_RESTORE_FOR_UPLOAD,
@@ -808,9 +810,43 @@ async function removeAllOnce(
     throw error
   })
   if (!finished) {
+    await logSpentPurges(deps, organizationId, requestId)
     throw new RetryAfterError(ERRORS['server.unavailable'], REMOVAL_RETRY_AFTER_SECONDS)
   }
   return answer
+}
+
+/** The most spent purges one remove-all names in its log line. */
+const SPENT_NAMED = 20
+
+/**
+ * Says which Calls and Documents are stuck when a remove-all cannot finish: a purge that used all
+ * its attempts is never claimed again, so repeating the call cannot help until a person resets it
+ * (`scripts/reset-spent-purge.ts`). Ids only, at most {@link SPENT_NAMED} of each. It never throws:
+ * the caller's answer is the 503 whatever this finds.
+ */
+async function logSpentPurges(
+  deps: Pick<DocumentDeps, 'scope' | 'logger'>,
+  organizationId: OrganizationId,
+  requestId: RequestId
+): Promise<void> {
+  try {
+    const spent = await transaction(deps, organizationId, async (run) => ({
+      documents: (await run(DOCUMENT_LIST_SPENT_PURGES, [organizationId, '', SPENT_NAMED])).rows,
+      calls: (await run(CALL_LIST_SPENT_PURGES, [organizationId, '', SPENT_NAMED])).rows,
+    }))
+    if (spent.documents.length > 0 || spent.calls.length > 0) {
+      deps.logger.error('remove-all is waiting on spent purges that need a person', {
+        organizationId,
+        requestId,
+        documents: spent.documents.map((row) => String(row.id)),
+        calls: spent.calls.map((row) => String(row.id)),
+        listedAtMost: SPENT_NAMED,
+      })
+    }
+  } catch {
+    // The 503 is the answer; a failed look at the stuck items only loses the hint.
+  }
 }
 
 /** How many cleanup messages a remove-all publishes at once. */

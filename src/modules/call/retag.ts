@@ -19,7 +19,7 @@ import {
 } from '~/modules/ingestion/runtime'
 import { callObjectKey, momentVectorId, recordingTranscriptKey, repLabelOf } from './keys'
 import { writeMomentVectors } from './moment-vectors'
-import { buildMoments } from './moments'
+import { buildMoments, capMoments } from './moments'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
 /** The most Deals a pass examines, completed or not, so a run of stuck Deals ends the pass. */
@@ -165,7 +165,11 @@ async function retagCall(
       return 'skipped'
     }
     // The patch needs only the ids, so no embedder call: the Moments are rebuilt to name their vectors.
-    const moments = buildMoments(parsed.transcript.turns, repLabel)
+    // The same cap as the parse job, so the Moments it left out are not reported as missing.
+    const moments = capMoments(
+      buildMoments(parsed.transcript.turns, repLabel),
+      deps.env.MAX_MOMENTS_PER_CALL
+    )
     const ids = moments.map((moment) => momentVectorId(callId, epoch, repSeq, moment.index))
     const missing = await patchTags(deps, organizationId, ids, tag, signal)
     if (missing > 0) {

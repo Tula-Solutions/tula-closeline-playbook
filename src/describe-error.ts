@@ -18,7 +18,7 @@ const FRAME = /^\s*at\s.*:\d+(?::\d+)?\)?$/
  * (counted from the message), then only lines shaped like a frame are kept, so message text can
  * never come through, and each frame and the frame count are bounded.
  */
-function frames(error: Error): string[] {
+export function frames(error: Error): string[] {
   const lines = error.stack?.split('\n') ?? []
   const first = lines[0] ?? ''
   const messageLines = FRAME.test(first) ? 0 : error.message.split('\n').length

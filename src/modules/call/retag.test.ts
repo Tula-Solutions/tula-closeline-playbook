@@ -84,6 +84,22 @@ describe('the Outcome re-tag is found by discovery, not by a message', () => {
   })
 })
 
+describe('the re-tag respects the Moment cap', () => {
+  test('a Call cut at the cap is re-tagged without reporting the skipped Moments as missing', async () => {
+    const h = await createCallHarness({ env: { MAX_MOMENTS_PER_CALL: '2' } })
+    const response = await h.uploadCall(transcriptText('cut', 5), { dealId: 'DEAL-1' })
+    const call = callSchema.parse(await response.json())
+    await h.runCalls()
+    expect(await h.moments(call.id)).toMatchObject({ total: 2 })
+
+    await h.setOutcome(dealOf(h).id, 'won')
+    await pass(h)
+
+    expect(await h.moments(call.id)).toMatchObject({ total: 2, returnable: 2, outcomes: ['won'] })
+    expect(logged(h.deps, 'a Call has Moment vectors missing; it is rebuilt')).toHaveLength(0)
+  })
+})
+
 describe('search eligibility follows real state through open, won, lost and won again', () => {
   test('a Moment is never returnable while the Deal is open or lost, even before the re-tag, and only once the tag is current when won', async () => {
     const h = await createCallHarness()

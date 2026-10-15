@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import {
   type Call,
   callSchema,
@@ -38,6 +38,53 @@ async function vectorsOf(h: CallHarness, callId: string, org: string = h.organiz
 }
 
 describe('processing a Transcript', () => {
+  test('a Transcript over the Moment cap embeds the first and the last Moments, ends ready, and records the count skipped', async () => {
+    const h = await createCallHarness({ env: { MAX_MOMENTS_PER_CALL: '2' } })
+    const call = await upload(h, transcriptText('cap', 5))
+    const embed = spyOn(h.deps.embedder, 'embed')
+
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    const hits = await vectorsOf(h, call.id)
+    expect(hits.map((hit) => hit.attributes?.moment).sort()).toEqual([0, 4])
+    expect(embed.mock.calls.flatMap(([texts]) => texts)).toHaveLength(2)
+    const lines = logged(
+      h.deps,
+      'a Call has more Moments than the cap; the middle ones are not searchable'
+    )
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({
+      organizationId: h.organizationId,
+      callId: call.id,
+      moments: 5,
+      cap: 2,
+      skipped: 3,
+    })
+  })
+
+  test('the close of a long Transcript survives the cap: the last Moments are kept', async () => {
+    const h = await createCallHarness({ env: { MAX_MOMENTS_PER_CALL: '4' } })
+    const call = await upload(h, transcriptText('long', 10))
+
+    await h.runCalls()
+
+    const kept = (await vectorsOf(h, call.id)).map((hit) => hit.attributes?.moment).sort()
+    expect(kept).toEqual([0, 1, 8, 9])
+  })
+
+  test('a Transcript at the cap skips nothing and logs nothing about it', async () => {
+    const h = await createCallHarness({ env: { MAX_MOMENTS_PER_CALL: '3' } })
+    const call = await upload(h, transcriptText('exact', 3))
+
+    await h.runCalls()
+
+    expect(await vectorsOf(h, call.id)).toHaveLength(3)
+    expect(
+      logged(h.deps, 'a Call has more Moments than the cap; the middle ones are not searchable')
+    ).toHaveLength(0)
+  })
+
   test('makes the Call ready with its speakers and one tagged vector per Prospect turn', async () => {
     const h = await createCallHarness()
     const call = await upload(h, transcriptText('x', 3))

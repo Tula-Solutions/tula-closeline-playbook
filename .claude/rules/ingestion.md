@@ -49,6 +49,10 @@ paths:
   the count); a failing document is reported once per 30 min window (in-process map, 1000 entries,
   deduplication only) and repeats log a warning with ids. A delete message whose cleanup waits on a lease is
   acknowledged (the kit cannot retry without an error report) and that sweep finishes it.
+- A spent purge (all attempts used) is logged for a person and never claimed; remove-all names the stuck
+  Calls and Documents in its 503 log line. `scripts/reset-spent-purge.ts --organization org_.. (--call|--document id)`
+  resets one after the cause is fixed; outside `local` it needs `--confirm <ENVIRONMENT>` and `--confirm-host <host>` (the playbook schema has no
+  environment marker, so the command line names the database).
 - A message for a removed Organization (no documents, settings or usage left) is acknowledged and
   not recorded (`withoutRemovedOrganizations`), so the remove-all can reach `removed`.
 - Two switches: `WORKERS_ENABLED` is the job loop only (refused outside `local` while the ports are
@@ -102,7 +106,11 @@ paths:
 - Known gaps (parser): a PDF with some text pages and some scanned pages ends `ready` with only
   the text pages until real OCR lands; PDFs that rely on predefined CJK CMaps may extract little
   text because no CMap source is configured; a hostile page that spins the CPU is stopped only by
-  the host's time limit; job slots are shared across Organizations with no per-Organization share.
+  the host's time limit.
+- Job slots: one pool per instance (`INGESTION_CONCURRENCY`); one Organization holds at most
+  `INGESTION_ORGANIZATION_CONCURRENCY` of it (document and Call jobs and imports are limited by it; a re-tag is counted but never held back; default pool
+  minus one, at least 1). The count is in process memory and per instance, so it is a fairness bound, not
+  a quota: a claim at the share is skipped and made on a later pass.
 - Known gap (parser memory): measured with the stand-in runaway Worker, the 50 ms poll lags a fast
   allocator by hundreds of megabytes (a kill at about 765 MB of growth for a 256 MB limit), and a
   killed Worker's memory stays resident. With the default 1 GiB limit the process can reach roughly

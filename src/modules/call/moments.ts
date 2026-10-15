@@ -121,3 +121,17 @@ export function buildMoments(turns: readonly Turn[], repLabel: string): Moment[]
   }
   return moments
 }
+
+/**
+ * At most `max` Moments: the first half of the cap and the last half, so the close of a long call
+ * (the next steps, the objections left standing) stays searchable. The Moments keep their indexes
+ * (a vector id is made from the index), so a cap changes which vectors exist and never what an
+ * existing one means. The middle is not embedded and not searchable.
+ */
+export function capMoments(moments: Moment[], max: number): Moment[] {
+  if (moments.length <= max) {
+    return moments
+  }
+  const tail = Math.floor(max / 2)
+  return [...moments.slice(0, max - tail), ...moments.slice(moments.length - tail)]
+}

@@ -83,7 +83,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   loops (`ingestion.ts`, `sweeps.ts`, `discovery.ts`). Tests use `createPipelineHarness`.
 - Public routes mount on `publicRoutes` in `src/app.ts` under `/v1`, behind `authenticate`. Read the
   caller with `callerOf(c)`: the Organization comes from the verified token and nowhere else.
-- Errors: `reportError` is the one seam; call `reportSafely`. Log errors with `describeError`.
+- Errors: `reportError` is the one seam; call `reportSafely`. Log errors with `describeError`. The
+  container's tracker reporter is wrapped by `trackerSafe` (`src/tracker-safe.ts`): a Postgres error
+  reaches the tracker with its SQLSTATE, table and constraint but never `detail`, `where`, parameters or SQL.
 - `openapi.json` is generated: `bun run openapi`; `verify` fails if it is stale.
 
 ## Rules for this service
@@ -125,6 +127,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   other error at or after the commit leaves the file and logs "unknown outcome"); after it the document is `uploaded` with a queued job, which the job loop
   finds without the message (`jobs_due`). A failed delete or restore publish is recovered by the
   `cleanup_pending` sweep. A publish failure never fails a request that has committed.
+- `INGESTION_ORGANIZATION_CONCURRENCY` is a share of one instance's pool, counted in that process's
+  memory: with N instances one Organization can run N times the share. A re-tag is counted but not held
+  back, so an Organization can briefly exceed its share by one.
 - The pipeline's rules (the job's steps and what each records, the heartbeat, lease and shutdown
   behaviour, vector ids, chunk sizes, the sweeps, the orphan rule, the removed-Organization guard)
   are in `.claude/rules/ingestion.md`; they load when you touch `src/modules/ingestion/`,
@@ -160,9 +165,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 `MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `UPLOAD_BODY_TIMEOUT_MS`, `MAX_DOCUMENTS_PER_ORGANIZATION`,
 `MAX_BYTES_PER_ORGANIZATION`, `INTERNAL_API_TOKENS`, `CONSUMER_CONCURRENCY`,
 `CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED` (job loop; local: true, elsewhere false), `IMPORTS_ENABLED` (import job; true), `SWEEPS_ENABLED` (true), `WORKERS_STOP_DEADLINE_MS`,
-`INGESTION_*` (`CONCURRENCY`, `LEASE_MS`, `HEARTBEAT_MS`, `IO_TIMEOUT_MS`, `PARSE_TIMEOUT_MS`,
+`INGESTION_*` (`CONCURRENCY`, `ORGANIZATION_CONCURRENCY`, `LEASE_MS`, `HEARTBEAT_MS`, `IO_TIMEOUT_MS`, `PARSE_TIMEOUT_MS`,
 `MAX_ATTEMPTS`, `RETRY_BASE_MS`, `POLL_INTERVAL_MS`), `CHUNK_TARGET_CHARS`, `CHUNK_MAX_CHARS`,
-`CHUNK_OVERLAP_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_TEXT_CHARS_PER_DOCUMENT`, `DISCOVERY_BATCH`,
+`CHUNK_OVERLAP_CHARS`, `MAX_CHUNKS_PER_DOCUMENT`, `MAX_MOMENTS_PER_CALL`, `MAX_TEXT_CHARS_PER_DOCUMENT`, `DISCOVERY_BATCH`,
 `SWEEP_BATCH`, `HOUSEKEEPING_BATCH`, `SWEEP_INTERVAL_MS`, `HOUSEKEEPING_INTERVAL_MS`,
 `PURGE_LEASE_MS`, `ORPHAN_*`. Outside `local`, `REGION`, `SENTRY_DSN`, `DATABASE_URL`, the `AUTH_*`
 keys, `AWS_REGION`, `QUEUE_URL`, `STORAGE_BUCKET` and `INTERNAL_API_TOKENS` are required (the
