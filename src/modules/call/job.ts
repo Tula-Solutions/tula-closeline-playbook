@@ -313,8 +313,8 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<numbe
   const cap = deps.env.MAX_MOMENTS_PER_CALL
   const moments = capMoments(built, cap)
   if (moments.length < built.length) {
-    // A recorded count, not a failure: the first Moments are searchable and the rest are not embedded.
-    deps.logger.warn('a Call has more Moments than the cap; the rest are not searchable', {
+    // A recorded count, not a failure: the first and last Moments are searchable, the middle ones are not embedded.
+    deps.logger.warn('a Call has more Moments than the cap; the middle ones are not searchable', {
       organizationId: c.organizationId,
       callId: c.callId,
       moments: built.length,

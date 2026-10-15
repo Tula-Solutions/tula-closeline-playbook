@@ -127,6 +127,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   other error at or after the commit leaves the file and logs "unknown outcome"); after it the document is `uploaded` with a queued job, which the job loop
   finds without the message (`jobs_due`). A failed delete or restore publish is recovered by the
   `cleanup_pending` sweep. A publish failure never fails a request that has committed.
+- `INGESTION_ORGANIZATION_CONCURRENCY` is a share of one instance's pool, counted in that process's
+  memory: with N instances one Organization can run N times the share. A re-tag is counted but not held
+  back, so an Organization can briefly exceed its share by one.
 - The pipeline's rules (the job's steps and what each records, the heartbeat, lease and shutdown
   behaviour, vector ids, chunk sizes, the sweeps, the orphan rule, the removed-Organization guard)
   are in `.claude/rules/ingestion.md`; they load when you touch `src/modules/ingestion/`,

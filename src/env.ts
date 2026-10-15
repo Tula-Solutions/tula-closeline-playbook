@@ -259,7 +259,7 @@ const schema = z
     MAX_CHUNKS_PER_DOCUMENT: integer(1, 100_000).default(5_000),
     /**
      * The most Moments one Call embeds (hub issue 76): a 5 MB Transcript can hold 10,000, and the
-     * quota counts Calls, not embeds. The first ones are kept and the rest are logged as skipped,
+     * quota counts Calls, not embeds. The first and the last half of the cap are kept and the middle count is logged as skipped,
      * so the Call still ends `ready`.
      */
     MAX_MOMENTS_PER_CALL: integer(1, 10_000).default(2_000),

@@ -90,7 +90,7 @@ paths:
   per Organization per pass. It parses (`transcript.ts`), records speakers, builds Moments (`moments.ts`),
   embeds and writes vectors, then `CALL_JOB_COMPLETE` in its own short transaction. Vector ids are
   deterministic (`momentVectorId`), so a retry overwrites. Moments are embedded by role, never by label. At most `MAX_MOMENTS_PER_CALL`
-  (2,000) are embedded, the first ones; the Call still ends `ready` and the count skipped is logged. The re-tag
+  (2,000) are embedded, the first half and the last half of the cap (the close of a long call is kept); the Call still ends `ready` and the count skipped is logged. The re-tag
   applies the same cap; change the cap only upward together with a re-embed, or the re-tag reports the Moments it
   did not find as missing (raised) or leaves vectors past the new cap on an old tag (lowered). There is no per-Organization daily embed budget yet (it needs a db counter).
 - Every Moment vector carries `outcome` and `outcome_seq`, whatever the Deal's Outcome. Whether a Moment
