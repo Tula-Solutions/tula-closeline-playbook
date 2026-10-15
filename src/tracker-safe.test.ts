@@ -86,6 +86,32 @@ describe('what the error tracker receives from a Postgres error', () => {
     }
   })
 
+  test('a database error deeper than the cause bound leaves no row text', () => {
+    const row = new Error('Key (name)=(SECRET ROW)')
+    Object.assign(row, { code: '23505', severity: 'ERROR', detail: 'Key (name)=(SECRET ROW)' })
+    let error: Error = row
+    for (let level = 0; level < 7; level++) {
+      error = new Error(`wrapper ${level}`, { cause: error })
+    }
+
+    const scrubbed = scrubForTracker(error)
+
+    expect(everythingReadable(scrubbed, -20)).not.toContain('SECRET ROW')
+    expect(JSON.stringify(scrubbed, Object.getOwnPropertyNames(scrubbed))).not.toContain(
+      'SECRET ROW'
+    )
+  })
+
+  test('a non-Error cause of a database error is dropped', () => {
+    const database = postgresError()
+    database.cause = { detail: 'SECRET ROW' }
+
+    const scrubbed = scrubForTracker(database) as Error
+
+    expect(scrubbed.cause).toBeUndefined()
+    expect(everythingReadable(scrubbed)).not.toContain('SECRET ROW')
+  })
+
   test('the code, table and constraint stay, so the report still says what failed', () => {
     const scrubbed = scrubForTracker(drizzleError()) as Error
     const inner = scrubbed.cause as Error & Record<string, unknown>

@@ -21,6 +21,9 @@ const KEPT_FIELDS = [
   'routine',
 ] as const
 
+/** The stand-in for a cause past the depth bound, which is not read. */
+const TOO_DEEP = () => new Error('the cause chain goes deeper than the tracker report follows')
+
 /** A five-character SQLSTATE. */
 const SQLSTATE = /^[0-9A-Z]{5}$/
 
@@ -64,8 +67,9 @@ function scrubDatabaseError(error: Error, depth: number): Error {
     }
   }
   const cause = causeOf(error)
-  if (cause !== undefined && depth < MAX_CAUSE_DEPTH) {
-    clean.cause = scrub(cause, depth + 1)
+  // Only an Error cause is followed; anything else (a plain object with a `detail`) is dropped.
+  if (cause instanceof Error) {
+    clean.cause = depth < MAX_CAUSE_DEPTH ? scrub(cause, depth + 1) : TOO_DEEP()
   }
   return clean
 }
@@ -80,11 +84,16 @@ function scrub(error: unknown, depth: number): unknown {
   }
   const cause = causeOf(error)
   const members = error instanceof AggregateError ? error.errors : undefined
+  // Past the bound the rest of the chain is not read, so it is replaced, never passed on raw.
   const cleanCause =
-    cause instanceof Error && depth < MAX_CAUSE_DEPTH ? scrub(cause, depth + 1) : cause
+    cause instanceof Error
+      ? depth < MAX_CAUSE_DEPTH
+        ? scrub(cause, depth + 1)
+        : TOO_DEEP()
+      : cause
   // An AggregateError's members are children like a cause is: scrubbed with the same depth bound.
   const cleanMembers = members?.map((member) =>
-    depth < MAX_CAUSE_DEPTH ? scrub(member, depth + 1) : new Error('too deep')
+    depth < MAX_CAUSE_DEPTH ? scrub(member, depth + 1) : TOO_DEEP()
   )
   const causeChanged = cause instanceof Error && cleanCause !== cause
   const membersChanged = cleanMembers?.some((member, at) => member !== members?.[at]) === true
