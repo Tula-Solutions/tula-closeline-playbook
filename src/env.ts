@@ -222,8 +222,8 @@ const schema = z
     /** Ingestion jobs one instance runs at once; it claims no more than this per round. */
     INGESTION_CONCURRENCY: integer(1, 16).default(2),
     /**
-     * The most of the pool's slots one Organization may hold at once on an instance (jobs, imports
-     * and re-tags together), so one Organization's slow files cannot delay everyone else. Default:
+     * The most of the pool's slots one Organization may hold at once on an instance (Call jobs, document jobs
+     * and imports are limited by it; a re-tag is counted but never held back), so one Organization's slow files cannot delay everyone else. Default:
      * one less than `INGESTION_CONCURRENCY`, at least 1; a value above the pool is the pool.
      */
     INGESTION_ORGANIZATION_CONCURRENCY: integer(1, 16).optional(),

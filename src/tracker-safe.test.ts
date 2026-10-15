@@ -69,6 +69,23 @@ describe('what the error tracker receives from a Postgres error', () => {
     }
   })
 
+  test('a Postgres error inside an AggregateError is scrubbed too', () => {
+    const memory = createMemoryErrorReporter()
+    trackerSafe(memory).capture(
+      new AggregateError([drizzleError(), postgresError()], 'both failed'),
+      {}
+    )
+
+    const [captured] = memory.captured
+    const inner = ((captured?.error ?? new AggregateError([])) as AggregateError).errors as Error[]
+    expect(inner).toHaveLength(2)
+    for (const error of inner) {
+      for (const secret of SECRETS) {
+        expect(everythingReadable(error)).not.toContain(secret)
+      }
+    }
+  })
+
   test('the code, table and constraint stay, so the report still says what failed', () => {
     const scrubbed = scrubForTracker(drizzleError()) as Error
     const inner = scrubbed.cause as Error & Record<string, unknown>
@@ -87,7 +104,9 @@ describe('what the error tracker receives from a Postgres error', () => {
     const a = new Error('a')
     const b = new Error('b', { cause: a })
     a.cause = b
-    expect(() => scrubForTracker(a)).not.toThrow()
+    expect(() => {
+      scrubForTracker(a)
+    }).not.toThrow()
   })
 
   test('the original error is not changed', () => {

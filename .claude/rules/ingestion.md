@@ -107,8 +107,8 @@ paths:
   text because no CMap source is configured; a hostile page that spins the CPU is stopped only by
   the host's time limit.
 - Job slots: one pool per instance (`INGESTION_CONCURRENCY`); one Organization holds at most
-  `INGESTION_ORGANIZATION_CONCURRENCY` of it (jobs, imports and re-tags together; default pool minus
-  one, at least 1). The count is in process memory and per instance, so it is a fairness bound, not
+  `INGESTION_ORGANIZATION_CONCURRENCY` of it (document and Call jobs and imports are limited by it; a re-tag is counted but never held back; default pool
+  minus one, at least 1). The count is in process memory and per instance, so it is a fairness bound, not
   a quota: a claim at the share is skipped and made on a later pass.
 - Known gap (parser memory): measured with the stand-in runaway Worker, the 50 ms poll lags a fast
   allocator by hundreds of megabytes (a kill at about 765 MB of growth for a 256 MB limit), and a

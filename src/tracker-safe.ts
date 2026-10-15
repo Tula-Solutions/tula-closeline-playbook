@@ -79,22 +79,37 @@ function scrub(error: unknown, depth: number): unknown {
     return scrubDatabaseError(error, depth)
   }
   const cause = causeOf(error)
-  if (!(cause instanceof Error)) {
+  const members = error instanceof AggregateError ? error.errors : undefined
+  const cleanCause =
+    cause instanceof Error && depth < MAX_CAUSE_DEPTH ? scrub(cause, depth + 1) : cause
+  // An AggregateError's members are children like a cause is: scrubbed with the same depth bound.
+  const cleanMembers = members?.map((member) =>
+    depth < MAX_CAUSE_DEPTH ? scrub(member, depth + 1) : new Error('too deep')
+  )
+  const causeChanged = cause instanceof Error && cleanCause !== cause
+  const membersChanged = cleanMembers?.some((member, at) => member !== members?.[at]) === true
+  if (!causeChanged && !membersChanged) {
     return error
   }
-  // Not a database error itself, but it may wrap one: copy it with the cause scrubbed.
-  const cleanCause = depth < MAX_CAUSE_DEPTH ? scrub(cause, depth + 1) : undefined
-  if (cleanCause === cause) {
-    return error
-  }
+  // Not a database error itself, but it wraps one: copy it with the children scrubbed.
   const copy = Object.create(Object.getPrototypeOf(error)) as Error
   Object.defineProperties(copy, Object.getOwnPropertyDescriptors(error))
-  Object.defineProperty(copy, 'cause', {
-    value: cleanCause,
-    enumerable: false,
-    writable: true,
-    configurable: true,
-  })
+  if (causeChanged) {
+    Object.defineProperty(copy, 'cause', {
+      value: cleanCause,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    })
+  }
+  if (membersChanged) {
+    Object.defineProperty(copy, 'errors', {
+      value: cleanMembers,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    })
+  }
   return copy
 }
 
@@ -102,7 +117,9 @@ function scrub(error: unknown, depth: number): unknown {
  * What the error tracker may receive for an error (issue 76): a Postgres error, alone or as the
  * cause of another error, is replaced by a copy that keeps what failed (SQLSTATE, table,
  * constraint, stack frames) and drops everything that can carry a row, a parameter or a quoted
- * value. Any other error is returned as it is; the argument is never changed.
+ * value. Errors inside an `AggregateError` are covered as well. Any other error is returned as it
+ * is; the argument is never changed. A wrapper that copies a database error's message into its own
+ * text is not caught: wrap with `cause`.
  */
 export function scrubForTracker(error: unknown): unknown {
   try {
