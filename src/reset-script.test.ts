@@ -40,6 +40,36 @@ describe('the spent-purge reset script', () => {
     }
   )
 
+  test.each(['prod', 'staging', 'dev'])(
+    'outside local %s also needs --confirm-host equal to the database host',
+    (environment) => {
+      const confirmed = [...BASE, '--confirm', environment]
+      const without = run({ ENVIRONMENT: environment }, confirmed)
+      const wrong = run({ ENVIRONMENT: environment }, [
+        ...confirmed,
+        '--confirm-host',
+        'other.example',
+      ])
+
+      for (const result of [without, wrong]) {
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr.toString()).toContain('--confirm-host 127.0.0.1')
+      }
+    }
+  )
+
+  test('outside local, matching --confirm and --confirm-host get past the guards', () => {
+    const result = run({ ENVIRONMENT: 'prod' }, [
+      ...BASE,
+      '--confirm',
+      'prod',
+      '--confirm-host',
+      '127.0.0.1',
+    ])
+
+    expect(result.stderr.toString()).not.toContain('--confirm')
+  })
+
   test('with ENVIRONMENT=local a database that is not on loopback is refused', () => {
     const result = run(
       { ENVIRONMENT: 'local', DATABASE_URL: 'postgres://u:p@db.example/closeline' },

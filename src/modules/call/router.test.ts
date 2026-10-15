@@ -181,6 +181,37 @@ describe('Call upload against stored Calls', () => {
     expect(remove).not.toHaveBeenCalled()
   })
 
+  test('quota taken between the look and the real insert is refused and the object is removed', async () => {
+    const h = await createCallHarness()
+    h.deps.database.seedDeal({
+      id: `deal_${'a'.repeat(32)}`,
+      organization_id: h.organizationId,
+      deal_id: 'SEED',
+    })
+    const put = h.deps.objects.put.bind(h.deps.objects)
+    spyOn(h.deps.objects, 'put').mockImplementation(async (...args) => {
+      // Another upload fills the Organization's quota while this file is being written.
+      for (let i = 0; i < DEFAULT_MAX_CALLS; i++) {
+        h.deps.database.seedCall({
+          id: `call_${i.toString(16).padStart(32, '0')}`,
+          organization_id: h.organizationId,
+          deal_record_id: `deal_${'a'.repeat(32)}`,
+        })
+      }
+      return put(...args)
+    })
+
+    const response = await h.uploadCall(transcriptText())
+
+    // The contract maps call.quota_exceeded to 409 (the other quota tests assert the same).
+    expect(response.status).toBe(409)
+    expect(await errorCode(response)).toBe('call.quota_exceeded')
+    expect(await h.objectKeys()).toHaveLength(0)
+    expect(
+      h.deps.database.calls(h.organizationId).filter((c) => c.kind === 'transcript')
+    ).toHaveLength(DEFAULT_MAX_CALLS)
+  })
+
   test('a refused upload (rights) never writes its object', async () => {
     const h = await createCallHarness()
     h.deps.database.seedRights({

@@ -5,10 +5,14 @@
 //
 //   ENVIRONMENT=<env> DATABASE_URL=postgres://...closeline_playbook@host/closeline \
 //     bun scripts/reset-spent-purge.ts --organization org_<hex> (--call call_<hex> | --document doc_<hex>) \
-//     [--confirm <env>]
+//     [--confirm <env> --confirm-host <host>]
 //
-// Outside `local` the guard asks for `--confirm <env>` naming the same environment as ENVIRONMENT,
-// so a database URL pasted from one environment cannot be reset while the shell says another.
+// What is guarded, exactly: the playbook schema keeps no marker of which environment a database
+// belongs to, so the script cannot check that itself. With ENVIRONMENT=local the database host must
+// be a loopback address. Outside local you must pass `--confirm <env>` naming the same environment as
+// ENVIRONMENT and `--confirm-host <host>` equal to the host in DATABASE_URL, so the command line
+// states which database is written to. That catches a typo or a stale URL, not a person who types
+// the right words for the wrong database. DATABASE_URL may carry no query parameters.
 import { callIdSchema, documentIdSchema, organizationIdSchema } from 'tula-closeline-contract'
 import { createDb, withOrganization } from 'tula-closeline-db'
 import { environmentSchema } from 'tula-closeline-kit'
@@ -37,6 +41,11 @@ if (environment.data !== 'local' && option('confirm') !== environment.data) {
 const url = process.env.DATABASE_URL
 if (url === undefined) {
   refuse('DATABASE_URL must be set')
+}
+if (environment.data !== 'local' && option('confirm-host') !== new URL(url).hostname) {
+  refuse(
+    `outside local, pass --confirm-host ${new URL(url).hostname} (the host in DATABASE_URL) to reset there`
+  )
 }
 // No query string: a `?host=` parameter could send the connection somewhere the host name does not say.
 if (new URL(url).search !== '') {

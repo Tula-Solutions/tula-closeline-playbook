@@ -51,7 +51,8 @@ paths:
   acknowledged (the kit cannot retry without an error report) and that sweep finishes it.
 - A spent purge (all attempts used) is logged for a person and never claimed; remove-all names the stuck
   Calls and Documents in its 503 log line. `scripts/reset-spent-purge.ts --organization org_.. (--call|--document id)`
-  resets one after the cause is fixed; outside `local` it needs `--confirm <ENVIRONMENT>`.
+  resets one after the cause is fixed; outside `local` it needs `--confirm <ENVIRONMENT>` and `--confirm-host <host>` (the playbook schema has no
+  environment marker, so the command line names the database).
 - A message for a removed Organization (no documents, settings or usage left) is acknowledged and
   not recorded (`withoutRemovedOrganizations`), so the remove-all can reach `removed`.
 - Two switches: `WORKERS_ENABLED` is the job loop only (refused outside `local` while the ports are
