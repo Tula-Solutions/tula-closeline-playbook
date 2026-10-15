@@ -29,7 +29,7 @@ import {
 import { CallFailure } from './failure'
 import { repLabelOf } from './keys'
 import { writeMomentVectors } from './moment-vectors'
-import { buildMoments, type Moment } from './moments'
+import { buildMoments, capMoments, type Moment } from './moments'
 import { runTranscribe } from './transcribe'
 import { parseTranscript, type TranscriptMediaType } from './transcript'
 
@@ -309,7 +309,19 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<numbe
     // A channel that did not speak in the kept Transcript means the file is not per-side.
     throw new CallFailure(claim.rep_by === 'channel' ? 'not_per_side' : 'rep_label_not_found')
   }
-  const moments = buildMoments(turns, repLabel)
+  const built = buildMoments(turns, repLabel)
+  const cap = deps.env.MAX_MOMENTS_PER_CALL
+  const moments = capMoments(built, cap)
+  if (moments.length < built.length) {
+    // A recorded count, not a failure: the first Moments are searchable and the rest are not embedded.
+    deps.logger.warn('a Call has more Moments than the cap; the rest are not searchable', {
+      organizationId: c.organizationId,
+      callId: c.callId,
+      moments: built.length,
+      cap,
+      skipped: built.length - moments.length,
+    })
+  }
   const tag = await readDealOutcome(c)
   if (moments.length > 0) {
     await ensureIndexSettings(deps, c.organizationId)

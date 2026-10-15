@@ -257,6 +257,12 @@ const schema = z
     CHUNK_OVERLAP_CHARS: integer(0, 2_000).default(150),
     /** The most chunks one document may produce; more fails the document with `processing_failed`. */
     MAX_CHUNKS_PER_DOCUMENT: integer(1, 100_000).default(5_000),
+    /**
+     * The most Moments one Call embeds (hub issue 76): a 5 MB Transcript can hold 10,000, and the
+     * quota counts Calls, not embeds. The first ones are kept and the rest are logged as skipped,
+     * so the Call still ends `ready`.
+     */
+    MAX_MOMENTS_PER_CALL: integer(1, 10_000).default(2_000),
     /** The most text characters one document may hold after parsing; more fails it with `processing_failed`. */
     MAX_TEXT_CHARS_PER_DOCUMENT: integer(1_000, 20_000_000).default(5_000_000),
     /** Organizations one work-discovery page returns (1 to the database's batch maximum). */

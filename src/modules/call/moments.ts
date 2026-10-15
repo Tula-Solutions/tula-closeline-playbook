@@ -121,3 +121,12 @@ export function buildMoments(turns: readonly Turn[], repLabel: string): Moment[]
   }
   return moments
 }
+
+/**
+ * The first `max` Moments, which keep their indexes (a Moment's vector id is made from its index,
+ * so a cap changes which vectors exist and never what an existing one means). The Moments after
+ * the cap are not embedded and not searchable.
+ */
+export function capMoments(moments: Moment[], max: number): Moment[] {
+  return moments.length > max ? moments.slice(0, max) : moments
+}
