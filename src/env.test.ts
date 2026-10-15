@@ -302,6 +302,18 @@ describe('worker settings', () => {
     expect(env.CHUNK_TARGET_CHARS).toBeLessThanOrEqual(env.CHUNK_MAX_CHARS)
   })
 
+  test('an Organization may hold one slot less than the pool unless set, and never more than the pool', () => {
+    expect(loadEnv({ ENVIRONMENT: 'local' }).INGESTION_ORGANIZATION_CONCURRENCY).toBe(1)
+    expect(
+      loadEnv({ ENVIRONMENT: 'local', INGESTION_CONCURRENCY: '8' })
+        .INGESTION_ORGANIZATION_CONCURRENCY
+    ).toBe(7)
+    expect(
+      loadEnv({ ENVIRONMENT: 'local', INGESTION_ORGANIZATION_CONCURRENCY: '3' })
+        .INGESTION_ORGANIZATION_CONCURRENCY
+    ).toBe(2)
+  })
+
   test.each([
     ['a heartbeat too slow for the lease', { INGESTION_HEARTBEAT_MS: '40000' }],
     ['an I/O timeout too long for the lease', { INGESTION_IO_TIMEOUT_MS: '60000' }],
@@ -310,6 +322,7 @@ describe('worker settings', () => {
     ['no room for target plus overlap', { CHUNK_TARGET_CHARS: '1600', CHUNK_OVERLAP_CHARS: '100' }],
     ['a worker stop deadline past the shutdown timeout', { WORKERS_STOP_DEADLINE_MS: '600000' }],
     ['a concurrency of zero', { INGESTION_CONCURRENCY: '0' }],
+    ['a share of zero', { INGESTION_ORGANIZATION_CONCURRENCY: '0' }],
   ])('refuses %s', (_label, overrides) => {
     expect(() => loadEnv({ ENVIRONMENT: 'local', ...overrides })).toThrow()
   })

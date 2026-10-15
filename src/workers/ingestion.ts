@@ -69,6 +69,14 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
   /** The jobs running now, across every Organization: one pool bounded by `INGESTION_CONCURRENCY`. */
   const active = new Set<Promise<void>>()
 
+  /** Slots each Organization holds now on this instance (`INGESTION_ORGANIZATION_CONCURRENCY` bounds it). */
+  const held = new Map<string, number>()
+
+  /** The slots the Organization may still take: its share less what it holds. */
+  function room(organizationId: string): number {
+    return env.INGESTION_ORGANIZATION_CONCURRENCY - (held.get(organizationId) ?? 0)
+  }
+
   /** Starts a task in the pool without waiting for it; a failing task reports and frees its slot. */
   function launchTask(
     worker: string,
@@ -76,6 +84,7 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     work: () => Promise<unknown>,
     mine: Set<Promise<void>>
   ): void {
+    held.set(organizationId, (held.get(organizationId) ?? 0) + 1)
     const task: Promise<void> = work()
       .then(
         () => undefined,
@@ -87,6 +96,12 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
       })
       .finally(() => {
         active.delete(task)
+        const left = (held.get(organizationId) ?? 1) - 1
+        if (left > 0) {
+          held.set(organizationId, left)
+        } else {
+          held.delete(organizationId)
+        }
       })
     active.add(task)
     mine.add(task)
@@ -120,7 +135,12 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
       if (shutdown.signal.aborted) {
         break
       }
-      const free = env.INGESTION_CONCURRENCY - active.size
+      // Waiting for a slot may have changed what the Organization holds; the share is read after.
+      const free = Math.min(env.INGESTION_CONCURRENCY - active.size, room(organizationId))
+      if (free <= 0) {
+        // At its share: its other jobs are claimed on a later pass, when one of its jobs has ended.
+        break
+      }
       let rows: readonly IngestionJobClaimRow[]
       try {
         rows = (
@@ -180,19 +200,21 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     // One import per Organization per pass: an import runs for minutes, so an Organization with many
     // queued would otherwise take every free slot. The loop passes again while slots are free, which
     // spreads them across the Organizations that have work.
-    const free = Math.min(1, env.INGESTION_CONCURRENCY - active.size)
+    const free = Math.min(1, env.INGESTION_CONCURRENCY - active.size, room(organizationId))
     let claimed: ReturnType<typeof claimedImports> = []
-    try {
-      const result = await inTransaction(deps, organizationId, async (run) => {
-        await run(CLAIM_LOCK_TIMEOUT_SQL, [])
-        return run(DEAL_IMPORT_CLAIM, [organizationId, free, env.INGESTION_LEASE_MS])
-      })
-      claimed = claimedImports(result.rows)
-    } catch (error) {
-      if (!isLockTimeout(error)) {
-        throw error
+    if (free > 0) {
+      try {
+        const result = await inTransaction(deps, organizationId, async (run) => {
+          await run(CLAIM_LOCK_TIMEOUT_SQL, [])
+          return run(DEAL_IMPORT_CLAIM, [organizationId, free, env.INGESTION_LEASE_MS])
+        })
+        claimed = claimedImports(result.rows)
+      } catch (error) {
+        if (!isLockTimeout(error)) {
+          throw error
+        }
+        deps.logger.debug('an import claim waited too long for a lock', { organizationId })
       }
-      deps.logger.debug('an import claim waited too long for a lock', { organizationId })
     }
     for (const claim of claimed) {
       launchTask(
@@ -230,6 +252,10 @@ export function createIngestion(deps: PipelineDeps): Ingestion {
     for (let round = 0; round < MAX_EMPTY_ROUNDS && !shutdown.signal.aborted; round++) {
       await freeSlot()
       if (shutdown.signal.aborted) {
+        break
+      }
+      if (room(organizationId) <= 0) {
+        // At its share: the Organization's other Call jobs wait for a later pass.
         break
       }
       let rows: readonly CallJobClaimRow[]

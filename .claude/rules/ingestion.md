@@ -102,7 +102,11 @@ paths:
 - Known gaps (parser): a PDF with some text pages and some scanned pages ends `ready` with only
   the text pages until real OCR lands; PDFs that rely on predefined CJK CMaps may extract little
   text because no CMap source is configured; a hostile page that spins the CPU is stopped only by
-  the host's time limit; job slots are shared across Organizations with no per-Organization share.
+  the host's time limit.
+- Job slots: one pool per instance (`INGESTION_CONCURRENCY`); one Organization holds at most
+  `INGESTION_ORGANIZATION_CONCURRENCY` of it (jobs, imports and re-tags together; default pool minus
+  one, at least 1). The count is in process memory and per instance, so it is a fairness bound, not
+  a quota: a claim at the share is skipped and made on a later pass.
 - Known gap (parser memory): measured with the stand-in runaway Worker, the 50 ms poll lags a fast
   allocator by hundreds of megabytes (a kill at about 765 MB of growth for a 256 MB limit), and a
   killed Worker's memory stays resident. With the default 1 GiB limit the process can reach roughly

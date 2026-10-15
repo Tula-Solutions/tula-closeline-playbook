@@ -717,7 +717,9 @@ describe('shutdown and instances', () => {
   })
 
   test('the loop does not wait for a long job: a document uploaded later reaches ready while it is still hung', async () => {
-    const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
+    const h = createPipelineHarness({
+      env: { INGESTION_CONCURRENCY: '2', INGESTION_ORGANIZATION_CONCURRENCY: '2' },
+    })
     const hang = gate()
     const parse = h.deps.parser.parse.bind(h.deps.parser)
     spyOn(h.deps.parser, 'parse').mockImplementation(async (doc, options) => {
@@ -809,8 +811,68 @@ describe('shutdown and instances', () => {
     expect(peak).toBe(2)
   })
 
+  test("one Organization never holds more slots than its share, and another's job runs meanwhile", async () => {
+    const h = createPipelineHarness({
+      env: { INGESTION_CONCURRENCY: '3', INGESTION_ORGANIZATION_CONCURRENCY: '1' },
+    })
+    const running = new Map<string, number>()
+    let peakOfFirst = 0
+    const parse = h.deps.parser.parse.bind(h.deps.parser)
+    spyOn(h.deps.parser, 'parse').mockImplementation(async (doc, options) => {
+      const text = new TextDecoder().decode(doc.bytes)
+      const owner = text.includes('first') ? 'first' : 'second'
+      running.set(owner, (running.get(owner) ?? 0) + 1)
+      if (owner === 'first') {
+        peakOfFirst = Math.max(peakOfFirst, running.get(owner) ?? 0)
+      }
+      await h.deps.sleep(500)
+      running.set(owner, (running.get(owner) ?? 0) - 1)
+      return parse(doc, options)
+    })
+    for (let i = 0; i < 3; i++) {
+      await h.upload(`first${i}.txt`, paragraphs(2, `first${i}`))
+    }
+    const other = h.other()
+    const second = (
+      await Documents.upload(h.deps, other, {
+        fileName: 'second.txt',
+        declaredMediaType: null,
+        bytes: new TextEncoder().encode(paragraphs(2, 'second')),
+        idempotencyKey: undefined,
+      })
+    ).document.id
+
+    const pass = h.deps.workers.ingestion.runPass()
+    await h.deps.time.advance(100)
+    // The second Organization is already running although the first has two more waiting.
+    expect(running.get('second')).toBe(1)
+    await h.deps.time.advance(5_000)
+    await pass
+
+    expect(peakOfFirst).toBe(1)
+    expect(
+      h.deps.database.documents(other.organizationId).find((d) => d.id === second)?.state
+    ).toBe('ready')
+  })
+
+  test('jobs left waiting by the share are claimed on a later pass', async () => {
+    const h = createPipelineHarness({
+      env: { INGESTION_CONCURRENCY: '3', INGESTION_ORGANIZATION_CONCURRENCY: '1' },
+    })
+    const ids: string[] = []
+    for (let i = 0; i < 3; i++) {
+      ids.push(await h.upload(`n${i}.txt`, paragraphs(2, `d${i}`)))
+    }
+    await h.pass()
+    await h.pass()
+    await h.pass()
+    expect(ids.every((id) => h.document(id)?.state === 'ready')).toBe(true)
+  })
+
   test('two instances running the loop at once process each job once', async () => {
-    const h = createPipelineHarness({ env: { INGESTION_CONCURRENCY: '2' } })
+    const h = createPipelineHarness({
+      env: { INGESTION_CONCURRENCY: '2', INGESTION_ORGANIZATION_CONCURRENCY: '2' },
+    })
     const parse = spyOn(h.deps.parser, 'parse')
     const ids: string[] = []
     for (let i = 0; i < 6; i++) {

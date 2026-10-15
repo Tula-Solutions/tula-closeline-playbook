@@ -221,6 +221,12 @@ const schema = z
       .transform((value) => value === 'true'),
     /** Ingestion jobs one instance runs at once; it claims no more than this per round. */
     INGESTION_CONCURRENCY: integer(1, 16).default(2),
+    /**
+     * The most of the pool's slots one Organization may hold at once on an instance (jobs, imports
+     * and re-tags together), so one Organization's slow files cannot delay everyone else. Default:
+     * one less than `INGESTION_CONCURRENCY`, at least 1; a value above the pool is the pool.
+     */
+    INGESTION_ORGANIZATION_CONCURRENCY: integer(1, 16).optional(),
     /** How long a claimed job is safe from another instance, in ms; a heartbeat renews it. */
     INGESTION_LEASE_MS: integer(5_000, 600_000).default(90_000),
     /** How often a running job renews its lease, in ms; at most a third of the lease. */
@@ -385,6 +391,10 @@ const schema = z
   .transform((env) => ({
     ...env,
     WORKERS_ENABLED: env.WORKERS_ENABLED ?? env.ENVIRONMENT === 'local',
+    INGESTION_ORGANIZATION_CONCURRENCY: Math.min(
+      env.INGESTION_CONCURRENCY,
+      env.INGESTION_ORGANIZATION_CONCURRENCY ?? Math.max(1, env.INGESTION_CONCURRENCY - 1)
+    ),
     REGION: env.REGION ?? regionSchema.parse('us'),
     DATABASE_URL: env.DATABASE_URL ?? LOCAL_DATABASE_URL,
     AUTH_JWKS_URL: env.AUTH_JWKS_URL ?? `${LOCAL_AUTH_ORIGIN}/.well-known/jwks.json`,
