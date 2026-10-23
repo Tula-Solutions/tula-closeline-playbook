@@ -7,8 +7,12 @@ import {
   CALL_JOB_MAX_ATTEMPTS,
   CALL_JOB_RECORD,
   CALL_JOB_RETRY,
+  CALL_MOMENTS_RECORD,
   type ClaimedCallJob,
   DEAL_GET,
+  EMBED_USAGE_ADD,
+  EMBED_USAGE_PURGE,
+  INGESTION_MAX_RETRY_DELAY_MS,
 } from 'tula-closeline-db'
 import { TranscriberError } from 'tula-closeline-kit'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
@@ -247,6 +251,65 @@ async function writeMoments(
   }
 }
 
+/** The most days of embed counts one job's opportunistic purge removes. */
+const EMBED_PURGE_BATCH = 10
+
+/**
+ * Checks that `count` more Moments fit today's embed budget for the Organization, or says how long to wait.
+ * The day is the database's UTC day. A Call that would take the day past
+ * `EMBED_DAILY_MOMENTS_PER_ORGANIZATION` reserves nothing and is given back until the next UTC
+ * midnight (the database caps one wait at an hour, so it wakes and asks again). Two jobs may both
+ * pass the check at once, so the budget can be passed by at most one Call per concurrent worker.
+ * Returns undefined when the Moments may be embedded.
+ */
+async function checkEmbedBudget(c: CallJobContext, count: number): Promise<number | undefined> {
+  const { deps } = c
+  const budget = deps.env.EMBED_DAILY_MOMENTS_PER_ORGANIZATION
+  const today = await inTransaction(deps, c.organizationId, (run) =>
+    run(EMBED_USAGE_ADD, [c.organizationId, 0])
+  )
+  const used = Number(today.rows[0]?.moments ?? 0)
+  if (used + count > budget) {
+    const nowMs = deps.clock.now().getTime()
+    const untilMidnight = 86_400_000 - (nowMs % 86_400_000)
+    const wait = Math.min(untilMidnight, INGESTION_MAX_RETRY_DELAY_MS)
+    deps.logger.info('a Call waits for the next day of the embed budget', {
+      organizationId: c.organizationId,
+      callId: c.callId,
+      moments: count,
+      budget,
+      waitMs: wait,
+    })
+    return wait
+  }
+  return undefined
+}
+
+/** Counts the Moments against today once their vectors are written, so a retry before that counts nothing twice. */
+async function countEmbedded(c: CallJobContext, count: number): Promise<void> {
+  await inTransaction(c.deps, c.organizationId, (run) =>
+    run(EMBED_USAGE_ADD, [c.organizationId, count])
+  )
+}
+
+/** Removes a bounded batch of old embed counts; a failure is logged, never fatal to the job. */
+async function purgeEmbedUsage(c: CallJobContext): Promise<void> {
+  try {
+    await inTransaction(c.deps, c.organizationId, (run) =>
+      run(EMBED_USAGE_PURGE, [
+        c.organizationId,
+        c.deps.env.EMBED_USAGE_KEEP_DAYS,
+        EMBED_PURGE_BATCH,
+      ])
+    )
+  } catch (error) {
+    if (isCancellation(error)) {
+      throw error
+    }
+    c.deps.logger.warn('old embed counts could not be purged', { organizationId: c.organizationId })
+  }
+}
+
 /**
  * Parses, records the speakers, builds and writes the Moments, and completes the Call. Returns how
  * long to give the job back for when a transcription is still pending (the job is released, not held).
@@ -324,8 +387,14 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<numbe
   }
   const tag = await readDealOutcome(c)
   if (moments.length > 0) {
+    const wait = await checkEmbedBudget(c, moments.length)
+    if (wait !== undefined) {
+      return wait
+    }
+    await purgeEmbedUsage(c)
     await ensureIndexSettings(deps, c.organizationId)
     await writeMoments(c, moments, tag)
+    await countEmbedded(c, moments.length)
   }
   if (c.epoch > 0) {
     await deleteEarlierEpochs(c)
@@ -334,6 +403,14 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<numbe
     await deleteEarlierRepSeqs(c)
   }
   await beat(c)
+  await inTransaction(deps, c.organizationId, (run) =>
+    run(CALL_MOMENTS_RECORD, [
+      c.organizationId,
+      c.callId,
+      moments.length,
+      built.length - moments.length,
+    ])
+  )
   // The completion runs in its own short transaction, after every external write.
   const done = await inTransaction(deps, c.organizationId, (run) =>
     run(CALL_JOB_COMPLETE, [c.organizationId, c.jobId, c.token, tag.outcomeSeq])

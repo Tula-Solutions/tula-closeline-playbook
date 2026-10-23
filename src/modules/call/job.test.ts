@@ -11,6 +11,8 @@ import {
   CALL_JOB_COMPLETE,
   claimedCallJobs,
   DEAL_SET_OUTCOME,
+  EMBED_USAGE_ADD,
+  EMBED_USAGE_PURGE,
 } from 'tula-closeline-db'
 import { personIn } from '~/modules/document/test-support'
 import { ShuttingDown } from '~/modules/ingestion/runtime'
@@ -442,5 +444,99 @@ describe('processing a Transcript', () => {
       expect(everything).not.toContain(secret)
     }
     expect(logged(h.deps, 'a Call job ended').length).toBeGreaterThan(0)
+  })
+})
+
+describe('the daily embed budget', () => {
+  /** Today's Moment total for an Organization, read without adding. */
+  async function usedToday(h: CallHarness, org: string = h.organizationId): Promise<number> {
+    const result = await h.deps.database.scope(org, (run) => run(EMBED_USAGE_ADD, [org, 0]))
+    return Number(result.rows[0]?.moments ?? 0)
+  }
+
+  test('a Call counts its embedded Moments against the day and records both counts on the Call', async () => {
+    const h = await createCallHarness({ env: { MAX_MOMENTS_PER_CALL: '2' } })
+    const call = await upload(h, transcriptText('count', 5))
+
+    await h.runCalls()
+
+    expect(await usedToday(h)).toBe(2)
+    expect(h.deps.database.calls(h.organizationId).find((c) => c.id === call.id)).toMatchObject({
+      embedded_moments: 2,
+      skipped_moments: 3,
+    })
+  })
+
+  test('a Call over the day budget waits for the next UTC day, embeds nothing and is not counted', async () => {
+    const h = await createCallHarness({ env: { EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3' } })
+    const first = await upload(h, transcriptText('one', 3))
+    await h.runCalls()
+    expect((await h.readCall(first.id)).state).toBe('ready')
+    const second = await upload(h, transcriptText('two', 3))
+    const embed = spyOn(h.deps.embedder, 'embed')
+
+    await h.runCalls()
+
+    expect((await h.readCall(second.id)).state).toBe('processing')
+    expect(embed).not.toHaveBeenCalled()
+    expect(await usedToday(h)).toBe(3)
+    expect(logged(h.deps, 'a Call waits for the next day of the embed budget')).toHaveLength(1)
+
+    // The day turns: the budget is fresh and the same Call is embedded.
+    await h.deps.time.advance(24 * 60 * 60 * 1000)
+    await h.deps.time.advance(60 * 60 * 1000)
+    await h.runCalls()
+    expect((await h.readCall(second.id)).state).toBe('ready')
+  })
+
+  test('a retried Call is counted once, not once per attempt', async () => {
+    const h = await createCallHarness()
+    const call = await upload(h, transcriptText('retry', 2))
+    const embed = h.deps.embedder.embed.bind(h.deps.embedder)
+    let failures = 1
+    h.deps.embedder.embed = async (...args) => {
+      if (failures-- > 0) {
+        throw new Error('model unavailable')
+      }
+      return embed(...args)
+    }
+
+    await h.runCalls()
+    expect(await usedToday(h)).toBe(0)
+    await h.deps.time.advance(20 * 60 * 1000)
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+    expect(await usedToday(h)).toBe(2)
+  })
+
+  test('another Organization has its own budget', async () => {
+    const h = await createCallHarness({ env: { EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3' } })
+    await upload(h, transcriptText('mine', 3))
+    await h.runCalls()
+
+    expect(await usedToday(h)).toBe(3)
+    expect(await usedToday(h, 'org_00000000000000000000000000000000')).toBe(0)
+  })
+
+  test('the purge removes at most the batch and never today', async () => {
+    const h = await createCallHarness()
+    const org = h.organizationId
+    const run = (text: string, params: unknown[]) =>
+      h.deps.database.scope(org, (r) => r(text, params))
+    for (let day = 0; day < 4; day++) {
+      await run(EMBED_USAGE_ADD, [org, 1])
+      await h.deps.time.advance(24 * 60 * 60 * 1000)
+    }
+    await run(EMBED_USAGE_ADD, [org, 1])
+
+    const first = await run(EMBED_USAGE_PURGE, [org, 1, 2])
+    const second = await run(EMBED_USAGE_PURGE, [org, 1, 100])
+    const third = await run(EMBED_USAGE_PURGE, [org, 1, 100])
+
+    expect(first.rowCount).toBe(2)
+    expect(second.rowCount).toBe(1)
+    expect(third.rowCount).toBe(0)
+    expect(await usedToday(h)).toBe(1)
   })
 })

@@ -15,6 +15,7 @@ services:
       CLOSELINE_AUTH_PASSWORD: closeline_auth_local
       CLOSELINE_CORE_PASSWORD: closeline_core_local
       CLOSELINE_PLAYBOOK_PASSWORD: closeline_playbook_local
+      CLOSELINE_VOICE_PASSWORD: closeline_voice_local
     ports: ['127.0.0.1:${POSTGRES_PORT:-5432}:5432']
     tmpfs:
       - /var/lib/postgresql

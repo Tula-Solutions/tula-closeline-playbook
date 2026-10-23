@@ -34,10 +34,14 @@ paths:
   logged for a person and never claimed, orphan objects) every `HOUSEKEEPING_INTERVAL_MS`. Orphan
   rule: delete an object under `documents/doc_<id>/` only if the id has no row and the object is
   older than 24 h (`ORPHAN_OBJECT_MIN_AGE_MS`, the db's rule, not a setting). Orphans have the `orphan_sweep` work kind (an Organization
-  is named 25 h after its oldest unswept upload attempt): `visitOrphanSweep` sweeps, then records
-  it with `ORPHAN_SWEEP_DONE` using the time the sweep started (not when done is called), under a
-  1 s `lock_timeout`; a timeout is tried again next tick, unreported, and a listing cut short by
-  `ORPHAN_MAX_PAGES` is not marked. Keys are purged at `IDEMPOTENCY_PURGE_AGE_MS` (26 h). Upload
+  is named 25 h after its oldest unswept upload attempt): `visitOrphanSweep` is resumable: each page is one
+  `ORPHAN_SWEEP_CLAIM` (`ORPHAN_CLAIM_MS`), one listing page and one `ORPHAN_SWEEP_PAGE_DONE` carrying
+  the claim token, which saves the cursor (JSON of the first visit's start time, the kind and the object
+  cursor, at most 1024 bytes) so a visit cut short by `ORPHAN_MAX_PAGES` continues next time. The start
+  time of the first visit goes in every page (an object stored during the sweep is not counted as
+  examined); a sweep older than 25 h begins again. `held` false or `claimed` false stops with no effect.
+  The last page completes under a 1 s `lock_timeout`; a timeout is tried again next tick, unreported.
+  Never finish a claimed sweep with `ORPHAN_SWEEP_DONE`. Keys are purged at `IDEMPOTENCY_PURGE_AGE_MS` (26 h). Upload
   transactions insert their idempotency key before `QUOTA_LOCK` (the db's lock-order rule).
   An upload that may write an object first commits an attempt record (route
   `documents.upload_attempt`, random key, no response; one short extra transaction and one row per

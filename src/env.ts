@@ -6,7 +6,12 @@ import {
   MAX_DOCUMENT_PAGES,
   regionSchema,
 } from 'tula-closeline-contract'
-import { PLAYBOOK_MAX_BATCH } from 'tula-closeline-db'
+import {
+  EMBED_USAGE_MAX_MOMENTS,
+  ORPHAN_SWEEP_MAX_CLAIM_MS,
+  ORPHAN_SWEEP_MIN_CLAIM_MS,
+  PLAYBOOK_MAX_BATCH,
+} from 'tula-closeline-db'
 import { environmentSchema, requireSentryDsn, sentryDsnSchema } from 'tula-closeline-kit'
 import { z } from 'zod'
 
@@ -281,6 +286,12 @@ const schema = z
     ORPHAN_PAGE_SIZE: integer(1, 1_000).default(200),
     /** Listing pages the orphan sweep reads per Organization per pass. */
     ORPHAN_MAX_PAGES: integer(1, 1_000).default(25),
+    /** How long one orphan-sweep page holds the Organization's sweep claim, in ms; a page must finish well inside it. */
+    ORPHAN_CLAIM_MS: integer(ORPHAN_SWEEP_MIN_CLAIM_MS, ORPHAN_SWEEP_MAX_CLAIM_MS).default(120_000),
+    /** The Moments one Organization may embed per UTC day; a Call over it waits for the next day. */
+    EMBED_DAILY_MOMENTS_PER_ORGANIZATION: integer(1, EMBED_USAGE_MAX_MOMENTS).default(200_000),
+    /** Days of embed counts kept besides today before the purge removes them (1 to 365). */
+    EMBED_USAGE_KEEP_DAYS: integer(1, 365).default(35),
     /** How long shutdown lets jobs and sweeps reach a step boundary before it moves on, in ms. */
     WORKERS_STOP_DEADLINE_MS: integer(1, 120_000).default(5_000),
   })

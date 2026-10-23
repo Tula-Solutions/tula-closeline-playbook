@@ -5,6 +5,7 @@ import {
   IDEMPOTENCY_BEGIN,
   ORGANIZATIONS_WITH_WORK,
   ORPHAN_SWEEP_DONE,
+  ORPHAN_SWEEP_PAGE_DONE,
 } from 'tula-closeline-db'
 import { postgresError } from '~/adapters/memory/playbook-database'
 import { registry } from '~/messages'
@@ -341,11 +342,11 @@ describe('the orphan object sweep', () => {
     expect(await names()).not.toContain(h.organizationId)
   })
 
-  test('a lock timeout on ORPHAN_SWEEP_DONE is tried again next tick, with no error report', async () => {
+  test('a lock timeout on ORPHAN_SWEEP_PAGE_DONE is tried again next tick, with no error report', async () => {
     const h = createPipelineHarness()
     await h.upload('a.txt', paragraphs(2), { key: 'first' })
     await h.deps.time.advance(26 * 60 * 60 * 1000)
-    h.deps.database.failAlways(ORPHAN_SWEEP_DONE, postgresError('55P03'))
+    h.deps.database.failAlways(ORPHAN_SWEEP_PAGE_DONE, postgresError('55P03'))
     const names = async () =>
       (await h.deps.discover('orphan_sweep', '', 100)).map((row) => row.organization_id)
 
@@ -355,6 +356,8 @@ describe('the orphan object sweep', () => {
     expect(h.deps.reported).toEqual([])
     expect(await names()).toContain(h.organizationId)
     h.deps.database.clearFailures()
+    // The failed page left its claim held; the next tick is minutes later, after it lapsed.
+    await h.deps.time.advance(10 * 60 * 1000)
     await h.deps.workers.sweeps.run('housekeeping')
     expect(await names()).not.toContain(h.organizationId)
   })
@@ -379,7 +382,7 @@ describe('the orphan object sweep', () => {
     ).toContain(h.organizationId)
   })
 
-  test('ORPHAN_SWEEP_DONE gets the time the sweep started, not the time done was called', async () => {
+  test('ORPHAN_SWEEP_PAGE_DONE gets the time the sweep started, not the time done was called', async () => {
     const h = createPipelineHarness()
     await h.upload('a.txt', paragraphs(2), { key: 'first' })
     await h.deps.time.advance(26 * 60 * 60 * 1000)
@@ -389,8 +392,8 @@ describe('the orphan object sweep', () => {
     h.deps.scope = (organizationId, fn) =>
       scope(organizationId, (run) =>
         fn(async (text, params) => {
-          if (text === ORPHAN_SWEEP_DONE) {
-            seen.push([...params])
+          if (text === ORPHAN_SWEEP_PAGE_DONE) {
+            seen.push([params[0], params[1]])
           }
           return run(text, params)
         })
@@ -404,7 +407,9 @@ describe('the orphan object sweep', () => {
 
     await h.deps.workers.sweeps.run('housekeeping')
 
-    expect(seen).toEqual([[h.organizationId, started]])
+    // One page per kind, all with the time the sweep started.
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.every((p) => p[0] === h.organizationId && p[1] === started)).toBe(true)
   })
 
   test('the idempotency purge keeps a key for 26 hours', async () => {
@@ -766,7 +771,7 @@ describe('the orphan age is the database rule (24 hours), not a setting', () => 
 })
 
 describe('what the housekeeping sweep says about an orphan visit it could not finish', () => {
-  test('a listing longer than the page bound is logged at warn with the Organization and the bound, and never marked done', async () => {
+  test('a listing longer than the page bound is logged at info with the Organization and the bound, saved and never marked done', async () => {
     const h = createPipelineHarness({ env: { ORPHAN_PAGE_SIZE: '2', ORPHAN_MAX_PAGES: '1' } })
     await h.upload('a.txt', paragraphs(2), { key: 'first' })
     for (let i = 0; i < 6; i++) {
@@ -790,14 +795,13 @@ describe('what the housekeeping sweep says about an orphan visit it could not fi
     await h.deps.workers.sweeps.run('housekeeping')
 
     expect(seen).not.toContain(ORPHAN_SWEEP_DONE)
+    expect(seen).toContain(ORPHAN_SWEEP_PAGE_DONE)
     const lines = h.deps.logLines
       .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter(
-        (line) => line.msg === 'an orphan sweep did not cover the listing; it will start again'
-      )
+      .filter((line) => line.msg === 'an orphan sweep continues at the next visit')
     expect(lines).toHaveLength(1)
     expect(lines[0]).toMatchObject({
-      level: 40,
+      level: 30,
       organizationId: h.organizationId,
       maxPages: 1,
     })
@@ -807,7 +811,7 @@ describe('what the housekeeping sweep says about an orphan visit it could not fi
     const h = createPipelineHarness()
     await h.upload('a.txt', paragraphs(2), { key: 'first' })
     await h.deps.time.advance(26 * 60 * 60 * 1000)
-    h.deps.database.failAlways(ORPHAN_SWEEP_DONE, postgresError('55P03'))
+    h.deps.database.failAlways(ORPHAN_SWEEP_PAGE_DONE, postgresError('55P03'))
 
     await h.deps.workers.sweeps.run('housekeeping')
 

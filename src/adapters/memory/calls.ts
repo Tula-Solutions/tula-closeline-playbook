@@ -20,6 +20,7 @@ import {
   CALL_LIST_PENDING_CLEANUP,
   CALL_LIST_SPENT_PURGES,
   CALL_MAX_VENDOR_SENDS,
+  CALL_MOMENTS_RECORD,
   CALL_PURGE_CLAIM,
   CALL_PURGE_COMPLETE,
   CALL_PURGE_MAX_ATTEMPTS,
@@ -90,6 +91,9 @@ export type MemoryCallRow = {
   sent_to_vendor_at: number | null
   vendor_send_seq: number
   vendor_removed_at: number | null
+  /** The Moments the job embedded and the ones the cap skipped (`calls.embedded_moments`, `skipped_moments`). */
+  embedded_moments: number | null
+  skipped_moments: number | null
   created_at_us: number
   updated_at: number
 }
@@ -441,6 +445,8 @@ export function runCallStatement(
         sent_to_vendor_at: null,
         vendor_send_seq: 0,
         vendor_removed_at: null,
+        embedded_moments: null,
+        skipped_moments: null,
         created_at_us: ctx.nextMicroseconds(),
         updated_at: now(),
       }
@@ -759,6 +765,19 @@ export function runCallStatement(
       }
       j.next_attempt_at = now() + lease(leaseMs)
       return rows([{ id: j.id }])
+    }
+    case CALL_MOMENTS_RECORD: {
+      const [organization, id, embedded, skipped] = params as [string, string, number, number]
+      const c = findCall(organization, id)
+      if (c === undefined || (c.state !== 'processing' && c.state !== 'ready')) {
+        return none
+      }
+      const clamp = (value: unknown) => Math.min(Math.max(Number(value) || 0, 0), 1_000_000)
+      c.embedded_moments = clamp(embedded)
+      c.skipped_moments = clamp(skipped)
+      return rows([
+        { id: c.id, embedded_moments: c.embedded_moments, skipped_moments: c.skipped_moments },
+      ])
     }
     case CALL_JOB_RETRY: {
       const [organization, id, token, delayMs] = params as [string, string, string, number]

@@ -32,8 +32,8 @@ const discover: Discover = (kind, after, batch) =>
   })
 
 /** A harness whose database access is the real one; time is virtual, so database clocks are compared only through rows set up here. */
-function harness() {
-  const h = createPipelineHarness()
+function harness(env: Record<string, string> = {}) {
+  const h = createPipelineHarness({ env })
   h.deps.scope = scopeOver(service.db)
   h.deps.discover = discover
   return h
@@ -199,6 +199,30 @@ describe('the db v0.13.0 statements against Postgres', () => {
     const visit = await visitOrphanSweep(h.deps, h.organizationId, never)
 
     expect(visit).toMatchObject({ status: 'done', deleted: 1 })
+    expect((await listed()).items).toEqual([])
+  })
+
+  test('a sweep cut short by the page bound saves its cursor and the next visit finishes it', async () => {
+    const h = harness({ ORPHAN_PAGE_SIZE: '2', ORPHAN_MAX_PAGES: '1' })
+    await catchUp(h)
+    const keys: string[] = []
+    for (let i = 0; i < 5; i++) {
+      const key = `documents/doc_${String(i).repeat(32)}/original.pdf`
+      await h.deps.objects.put(h.organizationId, key, new Uint8Array([1]))
+      keys.push(key)
+    }
+    await h.deps.time.advance(30 * 60 * 60 * 1000)
+    const listed = () => h.deps.objects.list(h.organizationId, { prefix: 'documents/' })
+
+    const first = await visitOrphanSweep(h.deps, h.organizationId, never)
+    expect(first).toEqual({ status: 'incomplete', deleted: 2 })
+    expect((await listed()).items).toHaveLength(3)
+
+    let last = first
+    for (let i = 0; i < 6 && last.status !== 'done'; i++) {
+      last = await visitOrphanSweep(h.deps, h.organizationId, never)
+    }
+    expect(last.status).toBe('done')
     expect((await listed()).items).toEqual([])
   })
 })

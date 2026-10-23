@@ -6,7 +6,10 @@ import {
   DOCUMENT_LIST_SPENT_PURGES,
   IDEMPOTENCY_PURGE,
   IDEMPOTENCY_PURGE_AGE_MS,
-  ORPHAN_SWEEP_DONE,
+  ORPHAN_SWEEP_AGE_MS,
+  ORPHAN_SWEEP_CLAIM,
+  ORPHAN_SWEEP_CURSOR_MAX_BYTES,
+  ORPHAN_SWEEP_PAGE_DONE,
 } from 'tula-closeline-db'
 import type { ProcessedStore } from 'tula-closeline-kit'
 import { isLockTimeout } from '~/adapters/postgres/retry'
@@ -172,6 +175,7 @@ const ORPHAN_KINDS: readonly OrphanKind[] = [
  * `ORPHAN_MAX_PAGES` pages a pass); an object is deleted only when its owner no longer needs it and
  * its last write is old, so an upload in progress, whose object is young, is never touched. An
  * object under another prefix, or with a key of another shape, is left alone. Returns the objects deleted.
+ * It keeps no cursor: {@link visitOrphanSweep} is the resumable form the worker runs.
  */
 export async function sweepOrphanObjects(
   deps: PipelineDeps,
@@ -196,35 +200,15 @@ export async function sweepOrphanObjectsOnce(
   signal: AbortSignal
 ): Promise<OrphanSweepResult> {
   const { env } = deps
-  const oldest = deps.clock.now().getTime() - ORPHAN_OBJECT_MIN_AGE_MS
   let deleted = 0
   let complete = true
-  for (const kind of ORPHAN_KINDS) {
+  for (let k = 0; k < ORPHAN_KINDS.length; k++) {
     let cursor: string | undefined
     let kindComplete = false
     for (let page = 0; page < env.ORPHAN_MAX_PAGES && !signal.aborted; page++) {
-      const listed = await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
-        deps.objects.list(organizationId, {
-          prefix: kind.prefix,
-          limit: env.ORPHAN_PAGE_SIZE,
-          ...(cursor === undefined ? {} : { cursor }),
-        })
-      )
-      const old = listed.items.filter((item) => item.lastModified.getTime() < oldest)
-      const ids = [...new Set(old.flatMap((item) => kind.ownerOf(item.key) ?? []))]
-      if (ids.length > 0) {
-        const needed = await kind.needed(deps, organizationId, ids)
-        for (const item of old) {
-          const id = kind.ownerOf(item.key)
-          if (id !== undefined && !needed.has(id)) {
-            await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
-              deps.objects.delete(organizationId, item.key)
-            )
-            deleted++
-          }
-        }
-      }
-      cursor = listed.nextCursor
+      const result = await sweepOrphanPage(deps, organizationId, k, cursor, signal)
+      deleted += result.deleted
+      cursor = result.next
       if (cursor === undefined) {
         kindComplete = true
         break
@@ -238,6 +222,45 @@ export async function sweepOrphanObjectsOnce(
   return { deleted, complete: complete && !signal.aborted }
 }
 
+/** Lists one page of one kind's prefix from `cursor` and deletes the orphans on it; `next` is undefined at the end. */
+async function sweepOrphanPage(
+  deps: PipelineDeps,
+  organizationId: string,
+  kindIndex: number,
+  cursor: string | undefined,
+  signal: AbortSignal
+): Promise<{ deleted: number; next: string | undefined }> {
+  const { env } = deps
+  const kind = ORPHAN_KINDS[kindIndex]
+  if (kind === undefined) {
+    return { deleted: 0, next: undefined }
+  }
+  const oldest = deps.clock.now().getTime() - ORPHAN_OBJECT_MIN_AGE_MS
+  let deleted = 0
+  const listed = await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
+    deps.objects.list(organizationId, {
+      prefix: kind.prefix,
+      limit: env.ORPHAN_PAGE_SIZE,
+      ...(cursor === undefined ? {} : { cursor }),
+    })
+  )
+  const old = listed.items.filter((item) => item.lastModified.getTime() < oldest)
+  const ids = [...new Set(old.flatMap((item) => kind.ownerOf(item.key) ?? []))]
+  if (ids.length > 0) {
+    const needed = await kind.needed(deps, organizationId, ids)
+    for (const item of old) {
+      const id = kind.ownerOf(item.key)
+      if (id !== undefined && !needed.has(id)) {
+        await within(deps, 'object store', env.INGESTION_IO_TIMEOUT_MS, signal, () =>
+          deps.objects.delete(organizationId, item.key)
+        )
+        deleted++
+      }
+    }
+  }
+  return { deleted, next: listed.nextCursor }
+}
+
 /** The statement every orphan-sweep completion starts with: it waits for open uploads, so only briefly. */
 const ORPHAN_DONE_LOCK_TIMEOUT_SQL = "set local lock_timeout = '1s'"
 
@@ -245,38 +268,133 @@ const ORPHAN_DONE_LOCK_TIMEOUT_SQL = "set local lock_timeout = '1s'"
 export type OrphanVisit =
   /** Swept and marked done; `more` says a newer upload attempt keeps the Organization named. */
   | { status: 'done'; deleted: number; more: boolean }
-  /** The listing was cut short; nothing is marked, and the next tick sweeps again. */
+  /** The page bound or a cancel cut the visit short; the cursor is saved and the next visit continues from it. */
   | { status: 'incomplete'; deleted: number }
-  /** `ORPHAN_SWEEP_DONE` waited past its lock timeout (an upload or an erasure is open); the next tick tries again. */
+  /** Another instance holds the sweep's claim, or ours ran out; nothing more is done now. */
+  | { status: 'held_elsewhere'; deleted: number }
+  /** The completion waited past its lock timeout (an upload or an erasure is open); the next tick tries again. */
   | { status: 'busy'; deleted: number }
 
+/** Where a sweep is: when it began, the kind it is in and that kind's listing cursor. */
+type SweepPosition = { s: number; k: number; c: string | null }
+
+/** Reads a saved cursor, or undefined when it is missing, malformed or older than the 25 hour window. */
+function readPosition(saved: unknown, nowMs: number): SweepPosition | undefined {
+  if (typeof saved !== 'string') {
+    return undefined
+  }
+  try {
+    const value: unknown = JSON.parse(saved)
+    if (typeof value !== 'object' || value === null) {
+      return undefined
+    }
+    const { s, k, c } = value as Record<string, unknown>
+    if (
+      typeof s !== 'number' ||
+      !Number.isFinite(s) ||
+      typeof k !== 'number' ||
+      !Number.isInteger(k) ||
+      k < 0 ||
+      k >= ORPHAN_KINDS.length ||
+      (c !== null && typeof c !== 'string') ||
+      nowMs - s > ORPHAN_SWEEP_AGE_MS ||
+      s > nowMs + 5 * 60 * 1000
+    ) {
+      return undefined
+    }
+    return { s, k, c }
+  } catch {
+    return undefined
+  }
+}
+
 /**
- * One visit for the `orphan_sweep` work kind: sweeps the Organization's orphan objects, then records
- * it with `ORPHAN_SWEEP_DONE`. The `$2` time is taken before the sweep starts, not when done is
- * called: an object stored while the sweep ran may have been missed, and a later time would count
- * it as examined. Done runs under a short `lock_timeout`; a timeout is `busy`, tried again at the
- * next tick without an error report. A listing cut short is not marked.
+ * One visit for the `orphan_sweep` work kind. The sweep is resumable: each page is one claim
+ * (`ORPHAN_SWEEP_CLAIM`), one listing page and one `ORPHAN_SWEEP_PAGE_DONE`, which saves where the
+ * listing stands (the cursor also carries the first visit's start time) so a sweep that no visit can
+ * finish in `ORPHAN_MAX_PAGES` pages continues next time instead of starting over. The start time is
+ * taken before the first page and passed on every visit of one sweep, so an object stored while the
+ * sweep ran is not counted as examined; a sweep older than the 25 hour window begins again. The last
+ * page completes the sweep under a short `lock_timeout` (a timeout is `busy`). A page whose claim
+ * ran out is not recorded (`held` false) and is listed again later; deleting is idempotent.
  */
 export async function visitOrphanSweep(
   deps: PipelineDeps,
   organizationId: string,
   signal: AbortSignal
 ): Promise<OrphanVisit> {
-  const startedAt = deps.clock.now()
-  const { deleted, complete } = await sweepOrphanObjectsOnce(deps, organizationId, signal)
-  if (!complete) {
-    return { status: 'incomplete', deleted }
-  }
-  try {
-    const done = await inTransaction(deps, organizationId, async (run) => {
-      await run(ORPHAN_DONE_LOCK_TIMEOUT_SQL, [])
-      return run(ORPHAN_SWEEP_DONE, [organizationId, startedAt.toISOString()])
-    })
-    return { status: 'done', deleted, more: done.rows[0]?.more === true }
-  } catch (error) {
-    if (isLockTimeout(error)) {
-      return { status: 'busy', deleted }
+  const { env } = deps
+  let deleted = 0
+  for (let page = 0; page < env.ORPHAN_MAX_PAGES; page++) {
+    if (signal.aborted) {
+      return { status: 'incomplete', deleted }
     }
-    throw error
+    const claim = await inTransaction(deps, organizationId, (run) =>
+      run(ORPHAN_SWEEP_CLAIM, [organizationId, env.ORPHAN_CLAIM_MS])
+    )
+    const claimed = claim.rows[0]
+    if (claimed === undefined || claimed.claimed !== true) {
+      return { status: 'held_elsewhere', deleted }
+    }
+    const token = String(claimed.claim_token)
+    const nowMs = deps.clock.now().getTime()
+    const position = readPosition(claimed.sweep_cursor, nowMs) ?? { s: nowMs, k: 0, c: null }
+    const result = await sweepOrphanPage(
+      deps,
+      organizationId,
+      position.k,
+      position.c ?? undefined,
+      signal
+    )
+    deleted += result.deleted
+    let cursor: string | null
+    if (result.next !== undefined) {
+      cursor = JSON.stringify({ s: position.s, k: position.k, c: result.next })
+    } else if (position.k + 1 < ORPHAN_KINDS.length) {
+      cursor = JSON.stringify({ s: position.s, k: position.k + 1, c: null })
+    } else {
+      cursor = null
+    }
+    if (cursor !== null && Buffer.byteLength(cursor) > ORPHAN_SWEEP_CURSOR_MAX_BYTES) {
+      deps.logger.warn('an orphan sweep cursor is too long to save; the claim will lapse', {
+        organizationId,
+      })
+      return { status: 'incomplete', deleted }
+    }
+    try {
+      const done = await inTransaction(deps, organizationId, async (run) => {
+        if (cursor === null) {
+          await run(ORPHAN_DONE_LOCK_TIMEOUT_SQL, [])
+        }
+        return run(ORPHAN_SWEEP_PAGE_DONE, [
+          organizationId,
+          new Date(position.s).toISOString(),
+          cursor,
+          token,
+        ])
+      })
+      const row = done.rows[0]
+      if (row === undefined || row.held !== true) {
+        return { status: 'held_elsewhere', deleted }
+      }
+      if (cursor === null) {
+        if (deleted > 0) {
+          deps.logger.info('objects with no owner were deleted', {
+            organizationId,
+            objects: deleted,
+          })
+        }
+        return { status: 'done', deleted, more: row.more === true }
+      }
+    } catch (error) {
+      if (isLockTimeout(error)) {
+        return { status: 'busy', deleted }
+      }
+      throw error
+    }
   }
+  if (deleted > 0) {
+    deps.logger.info('objects with no owner were deleted', { organizationId, objects: deleted })
+  }
+  return { status: 'incomplete', deleted }
 }
