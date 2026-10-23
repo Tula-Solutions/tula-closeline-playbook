@@ -290,6 +290,8 @@ const schema = z
     ORPHAN_CLAIM_MS: integer(ORPHAN_SWEEP_MIN_CLAIM_MS, ORPHAN_SWEEP_MAX_CLAIM_MS).default(120_000),
     /** The Moments one Organization may embed per UTC day; a Call over it waits for the next day. */
     EMBED_DAILY_MOMENTS_PER_ORGANIZATION: integer(1, EMBED_USAGE_MAX_MOMENTS).default(200_000),
+    /** Days a Call may wait on the embed budget, from the job's creation, before it fails (1 to 90). */
+    EMBED_DEFER_MAX_AGE_DAYS: integer(1, 90).default(14),
     /** Days of embed counts kept besides today before the purge removes them (1 to 365). */
     EMBED_USAGE_KEEP_DAYS: integer(1, 365).default(35),
     /** How long shutdown lets jobs and sweeps reach a step boundary before it moves on, in ms. */

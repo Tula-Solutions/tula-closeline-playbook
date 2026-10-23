@@ -9,6 +9,7 @@ import {
 import {
   CALL_JOB_CLAIM,
   CALL_JOB_COMPLETE,
+  CALL_JOB_DEFER,
   claimedCallJobs,
   DEAL_SET_OUTCOME,
   EMBED_USAGE_ADD,
@@ -547,5 +548,149 @@ describe('the daily embed budget', () => {
     expect(second.rowCount).toBe(1)
     expect(third.rowCount).toBe(0)
     expect(await usedToday(h)).toBe(1)
+  })
+
+  describe('a day of waiting does not spend an attempt', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000
+
+    /** Uses the whole day's budget for the Organization, as other Calls would. */
+    async function exhaust(h: CallHarness, budget: number): Promise<void> {
+      const org = h.organizationId
+      await h.deps.database.scope(org, (run) => run(EMBED_USAGE_ADD, [org, budget]))
+    }
+
+    /** Moves the clock to ten minutes past the next UTC midnight, past any jitter. */
+    async function nextDay(h: CallHarness): Promise<void> {
+      const now = h.deps.clock.now().getTime()
+      await h.deps.time.advance((Math.floor(now / DAY_MS) + 1) * DAY_MS + 10 * 60_000 - now)
+    }
+
+    test('25 deferrals in a row, then the budget frees and the Call is embedded', async () => {
+      const h = await createCallHarness({
+        env: { EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3', EMBED_DEFER_MAX_AGE_DAYS: '60' },
+      })
+      const call = await upload(h, transcriptText('later', 3))
+      const embed = spyOn(h.deps.embedder, 'embed')
+
+      for (let day = 0; day < 25; day++) {
+        await exhaust(h, 3)
+        await h.runCalls()
+        expect((await h.readCall(call.id)).state).toBe('processing')
+        await nextDay(h)
+      }
+      expect(embed).not.toHaveBeenCalled()
+      expect(h.deps.database.callJobs(h.organizationId)[0]).toMatchObject({
+        state: 'queued',
+        attempts: 0,
+      })
+
+      await h.runCalls()
+
+      expect((await h.readCall(call.id)).state).toBe('ready')
+      expect(embed).toHaveBeenCalled()
+    })
+
+    test('the Call is due after the next UTC midnight, within a few minutes of it', async () => {
+      const h = await createCallHarness({
+        env: { EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3' },
+      })
+      await upload(h, transcriptText('held', 3))
+      await exhaust(h, 3)
+      const now = h.deps.clock.now().getTime()
+      const midnight = (Math.floor(now / DAY_MS) + 1) * DAY_MS
+
+      await h.runCalls()
+
+      const due = h.deps.database.callJobs(h.organizationId)[0]?.next_attempt_at ?? 0
+      expect(due).toBeGreaterThanOrEqual(midnight)
+      expect(due).toBeLessThanOrEqual(midnight + 10 * 60_000)
+    })
+
+    test('a real failure after deferrals still counts its attempt and ends at the limit', async () => {
+      const h = await createCallHarness({
+        env: {
+          EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3',
+          INGESTION_MAX_ATTEMPTS: '2',
+          EMBED_DEFER_MAX_AGE_DAYS: '60',
+        },
+      })
+      const call = await upload(h, transcriptText('broken', 3))
+      for (let day = 0; day < 3; day++) {
+        await exhaust(h, 3)
+        await h.runCalls()
+        await nextDay(h)
+      }
+      h.deps.embedder.embed = async () => {
+        throw new Error('model unavailable')
+      }
+
+      await h.runCalls()
+      expect((await h.readCall(call.id)).state).toBe('processing')
+      expect(h.deps.database.callJobs(h.organizationId)[0]).toMatchObject({ attempts: 1 })
+      await nextDay(h)
+      await h.runCalls()
+
+      expect(await h.readCall(call.id)).toMatchObject({
+        state: 'failed',
+        failureReason: 'processing_failed',
+      })
+    })
+
+    test('a Call that has waited longer than the limit fails instead of waiting again', async () => {
+      const h = await createCallHarness({
+        env: { EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3', EMBED_DEFER_MAX_AGE_DAYS: '3' },
+      })
+      const call = await upload(h, transcriptText('stale', 3))
+      for (let day = 0; day < 3; day++) {
+        await exhaust(h, 3)
+        await h.runCalls()
+        expect((await h.readCall(call.id)).state).toBe('processing')
+        await nextDay(h)
+      }
+      await exhaust(h, 3)
+      await nextDay(h)
+      await h.deps.time.advance(DAY_MS)
+      await exhaust(h, 3)
+
+      await h.runCalls()
+
+      expect(await h.readCall(call.id)).toMatchObject({
+        state: 'failed',
+        failureReason: 'processing_failed',
+      })
+    })
+
+    test('a lost claim at the deferral is logged and stops, with no retry', async () => {
+      const h = await createCallHarness({ env: { EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3' } })
+      await upload(h, transcriptText('lost', 3))
+      await exhaust(h, 3)
+      const claimed = await h.deps.database.scope(h.organizationId, (run) =>
+        run(CALL_JOB_CLAIM, [h.organizationId, 1, 60_000, null])
+      )
+      const job = claimedCallJobs(claimed.rows as never).jobs[0]
+      expect(job).toBeDefined()
+      // Another claim takes the job over once the budget has been checked.
+      const scope = h.deps.scope
+      h.deps.scope = (async (org: string, fn: Parameters<typeof scope>[1]) =>
+        scope(org, async (run) =>
+          fn(async (text: string, params: readonly unknown[] = []) => {
+            if (text === CALL_JOB_DEFER) {
+              // The claim token no longer matches: another claim took the job over.
+              return run(text, [org, params[1], crypto.randomUUID(), params[3]])
+            }
+            return run(text, params)
+          })
+        )) as typeof scope
+
+      const outcome = await runCallJob(
+        h.deps,
+        h.organizationId,
+        job as NonNullable<typeof job>,
+        new AbortController().signal
+      )
+
+      expect(outcome).toBe('lost')
+      expect(logged(h.deps, 'a Call job ended')).toHaveLength(1)
+    })
   })
 })
