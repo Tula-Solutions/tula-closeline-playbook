@@ -2,6 +2,8 @@ import { createRoute, type OpenAPIHono } from '@hono/zod-openapi'
 import type { Context, MiddlewareHandler } from 'hono'
 import {
   PLAYBOOK_READ_ROLES,
+  resolveCitationsRequestSchema,
+  resolveCitationsResponseSchema,
   SALES_HISTORY_READ_ROLES,
   searchDocumentsRequestSchema,
   searchDocumentsResponseSchema,
@@ -14,6 +16,7 @@ import { createRouter } from '~/http/router'
 import { PUBLIC_SECURITY } from '~/http/security'
 import { contractRoute, failureResponses } from '~/modules/document/openapi'
 import { assertRole, type CallContext } from '~/modules/service-kit'
+import { resolveCitations } from './citations'
 import { searchDocuments } from './documents'
 import * as Search from './service'
 
@@ -55,6 +58,27 @@ const searchMoments = createRoute({
   },
 })
 
+const resolveCitationsRoute = createRoute({
+  ...contractRoute('resolveCitations'),
+  middleware: requirePlaybookReader,
+  tags: ['search'],
+  summary: 'Resolve Citations to their current text',
+  security: [{ [PUBLIC_SECURITY]: [] }],
+  request: {
+    body: {
+      required: true,
+      content: { 'application/json': { schema: resolveCitationsRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: 'One item per reference, in request order: available with snippets, or removed.',
+      content: { 'application/json': { schema: resolveCitationsResponseSchema } },
+    },
+    ...failureResponses('resolveCitations'),
+  },
+})
+
 /** What this service adds to the contract's description of the page: the format rule it applies. */
 const PAGE_RULE =
   ' In this service `page` is set only for a PDF (by its file name extension); it is null for PPTX and every other format.'
@@ -81,7 +105,7 @@ const searchDocumentsRoute = createRoute({
   },
 })
 
-/** The search routes under `/v1`. It only reads: no idempotency key. */
+/** The search and Citation routes under `/v1`. It only reads: no idempotency key. */
 export function createSearchRouter(container: Container): OpenAPIHono<AuthedEnv> {
   const router = createRouter<AuthedEnv>()
   router.openapi(searchMoments, async (c) =>
@@ -89,6 +113,9 @@ export function createSearchRouter(container: Container): OpenAPIHono<AuthedEnv>
   )
   router.openapi(searchDocumentsRoute, async (c) =>
     c.json(await searchDocuments(container, contextOf(c), c.req.valid('json')), 200)
+  )
+  router.openapi(resolveCitationsRoute, async (c) =>
+    c.json(await resolveCitations(container, contextOf(c), c.req.valid('json')), 200)
   )
   return router
 }

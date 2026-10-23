@@ -24,7 +24,9 @@
   "paths": {
     "/healthz": {
       "get": {
-        "tags": ["health"],
+        "tags": [
+          "health"
+        ],
         "summary": "Liveness",
         "description": "Returns 200 while the process is up. It checks no dependency.",
         "responses": {
@@ -37,7 +39,9 @@
                   "properties": {
                     "status": {
                       "type": "string",
-                      "enum": ["ok"]
+                      "enum": [
+                        "ok"
+                      ]
                     },
                     "service": {
                       "type": "string"
@@ -49,7 +53,11 @@
                       }
                     }
                   },
-                  "required": ["status", "service", "libraries"]
+                  "required": [
+                    "status",
+                    "service",
+                    "libraries"
+                  ]
                 }
               }
             }
@@ -79,10 +87,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -92,7 +105,9 @@
     },
     "/readyz": {
       "get": {
-        "tags": ["health"],
+        "tags": [
+          "health"
+        ],
         "summary": "Readiness",
         "description": "Runs every dependency check, each with a short timeout; 503 when any fails.",
         "responses": {
@@ -105,7 +120,10 @@
                   "properties": {
                     "status": {
                       "type": "string",
-                      "enum": ["ready", "unavailable"]
+                      "enum": [
+                        "ready",
+                        "unavailable"
+                      ]
                     },
                     "checks": {
                       "type": "array",
@@ -117,14 +135,24 @@
                           },
                           "status": {
                             "type": "string",
-                            "enum": ["ok", "failed", "timeout"]
+                            "enum": [
+                              "ok",
+                              "failed",
+                              "timeout"
+                            ]
                           }
                         },
-                        "required": ["name", "status"]
+                        "required": [
+                          "name",
+                          "status"
+                        ]
                       }
                     }
                   },
-                  "required": ["status", "checks"]
+                  "required": [
+                    "status",
+                    "checks"
+                  ]
                 }
               }
             }
@@ -154,10 +182,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -171,7 +204,10 @@
                   "properties": {
                     "status": {
                       "type": "string",
-                      "enum": ["ready", "unavailable"]
+                      "enum": [
+                        "ready",
+                        "unavailable"
+                      ]
                     },
                     "checks": {
                       "type": "array",
@@ -183,14 +219,24 @@
                           },
                           "status": {
                             "type": "string",
-                            "enum": ["ok", "failed", "timeout"]
+                            "enum": [
+                              "ok",
+                              "failed",
+                              "timeout"
+                            ]
                           }
                         },
-                        "required": ["name", "status"]
+                        "required": [
+                          "name",
+                          "status"
+                        ]
                       }
                     }
                   },
-                  "required": ["status", "checks"]
+                  "required": [
+                    "status",
+                    "checks"
+                  ]
                 }
               }
             }
@@ -201,7 +247,9 @@
     "/internal/playbook/organizations/{organizationId}/remove-all": {
       "post": {
         "description": "Internal, for offboarding and erasure; no caller yet. Removes every document, file, chunk and vector an Organization has, and, since ADR 0018, its Calls, Recordings, Transcripts, Moments, Deals and Deal imports (and the copy the transcription vendor holds of a Recording), soft-deleted ones included, without waiting for retention. Idempotent by end state: it answers 200 whenever nothing remains, and never answers 200 while data remains. A transient failure (the store, the vector index or the vendor is briefly unreachable) answers 503 server.unavailable with a Retry-After header, and a repeat with the same Idempotency-Key or without reaches 200 once the removal finishes; a failure that will not go away stays an error. Served on the internal network only; takes the Organization from the path.",
-        "tags": ["internal"],
+        "tags": [
+          "internal"
+        ],
         "summary": "Remove everything an Organization has in the Playbook",
         "security": [
           {
@@ -246,10 +294,15 @@
                     },
                     "status": {
                       "type": "string",
-                      "enum": ["removed"]
+                      "enum": [
+                        "removed"
+                      ]
                     }
                   },
-                  "required": ["organizationId", "status"]
+                  "required": [
+                    "organizationId",
+                    "status"
+                  ]
                 }
               }
             }
@@ -279,10 +332,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -312,10 +370,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -356,10 +419,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -389,10 +457,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -422,10 +495,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -466,10 +544,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -480,7 +563,9 @@
     "/v1/playbook/documents": {
       "post": {
         "description": "Uploads one file (multipart/form-data, one part named \"file\") to the Organization's Playbook. Owner and Admin only; Managers and Reps get auth.forbidden. The type and size of the file part are checked before anything is stored: document.unsupported_type (415) and document.too_large (413); a malformed name or an empty file is request.invalid. The common request.too_large and request.unsupported_media_type apply to the whole request instead: a body over the envelope limit, or a body that is not multipart. Answers 201 with the new document in state \"uploaded\". If the content matches a document the Organization already has, answers 200 with that stored document, with its stored fileName (not the new upload's name), so a duplicate is an answer, not an error: a match on a \"deleted\" document restores it (state \"processing\"), and a match on a \"failed\" document re-queues it for processing and answers with state \"uploaded\". The page limit is not checked here: a document over it ends in state \"failed\" with failureReason \"too_many_pages\". Accepts an Idempotency-Key header.",
-        "tags": ["documents"],
+        "tags": [
+          "documents"
+        ],
         "summary": "Upload a document",
         "security": [
           {
@@ -515,7 +600,9 @@
                     "description": "The file."
                   }
                 },
-                "required": ["file"]
+                "required": [
+                  "file"
+                ]
               }
             }
           }
@@ -552,16 +639,28 @@
                       "maximum": 26214400
                     },
                     "pageCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 300
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["uploaded", "processing", "ready", "failed", "deleted"]
+                      "enum": [
+                        "uploaded",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "too_many_pages",
                         "unreadable",
@@ -572,12 +671,18 @@
                       ]
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -645,16 +750,28 @@
                       "maximum": 26214400
                     },
                     "pageCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 300
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["uploaded", "processing", "ready", "failed", "deleted"]
+                      "enum": [
+                        "uploaded",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "too_many_pages",
                         "unreadable",
@@ -665,12 +782,18 @@
                       ]
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -732,10 +855,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -765,10 +893,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -798,10 +931,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -842,10 +980,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -875,10 +1018,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -908,10 +1056,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -941,10 +1094,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -974,10 +1132,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1007,10 +1170,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1051,10 +1219,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1084,10 +1257,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1096,7 +1274,9 @@
       },
       "get": {
         "description": "Lists the Organization's documents, newest first (sorted by createdAt, then id, both descending), one cursor-paginated page at a time (at most 100). Owner, Admin, Manager and Rep may read. Soft-deleted documents are left out unless state=deleted is asked for.",
-        "tags": ["documents"],
+        "tags": [
+          "documents"
+        ],
         "summary": "List documents",
         "security": [
           {
@@ -1134,7 +1314,13 @@
           {
             "schema": {
               "type": "string",
-              "enum": ["uploaded", "processing", "ready", "failed", "deleted"]
+              "enum": [
+                "uploaded",
+                "processing",
+                "ready",
+                "failed",
+                "deleted"
+              ]
             },
             "required": false,
             "name": "state",
@@ -1178,16 +1364,28 @@
                             "maximum": 26214400
                           },
                           "pageCount": {
-                            "type": ["integer", "null"],
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
                             "minimum": 1,
                             "maximum": 300
                           },
                           "state": {
                             "type": "string",
-                            "enum": ["uploaded", "processing", "ready", "failed", "deleted"]
+                            "enum": [
+                              "uploaded",
+                              "processing",
+                              "ready",
+                              "failed",
+                              "deleted"
+                            ]
                           },
                           "failureReason": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "enum": [
                               "too_many_pages",
                               "unreadable",
@@ -1198,12 +1396,18 @@
                             ]
                           },
                           "deletedAt": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "maxLength": 64,
                             "format": "date-time"
                           },
                           "purgeAt": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "maxLength": 64,
                             "format": "date-time"
                           },
@@ -1240,12 +1444,18 @@
                       "maxItems": 100
                     },
                     "nextCursor": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1,
                       "maxLength": 512
                     }
                   },
-                  "required": ["items", "nextCursor"]
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ]
                 }
               }
             }
@@ -1275,10 +1485,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1308,10 +1523,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1341,10 +1561,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1374,10 +1599,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1388,7 +1618,9 @@
     "/v1/playbook/documents/{documentId}": {
       "get": {
         "description": "Reads one document and its state, with the failure reason when it failed and the purge time when it was deleted. Owner, Admin, Manager and Rep may read.",
-        "tags": ["documents"],
+        "tags": [
+          "documents"
+        ],
         "summary": "Read a document",
         "security": [
           {
@@ -1438,16 +1670,28 @@
                       "maximum": 26214400
                     },
                     "pageCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 300
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["uploaded", "processing", "ready", "failed", "deleted"]
+                      "enum": [
+                        "uploaded",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "too_many_pages",
                         "unreadable",
@@ -1458,12 +1702,18 @@
                       ]
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -1525,10 +1775,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1558,10 +1813,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1591,10 +1851,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1624,10 +1889,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1657,10 +1927,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1669,7 +1944,9 @@
       },
       "delete": {
         "description": "Soft-deletes a document: it is hidden at once and purged after the retention period, and can be restored until then. Owner and Admin only. Idempotent by end state: answers 200 with the document in state \"deleted\" and its purge time, and deleting an already deleted document answers the same. Takes no body.",
-        "tags": ["documents"],
+        "tags": [
+          "documents"
+        ],
         "summary": "Delete a document",
         "security": [
           {
@@ -1719,16 +1996,28 @@
                       "maximum": 26214400
                     },
                     "pageCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 300
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["uploaded", "processing", "ready", "failed", "deleted"]
+                      "enum": [
+                        "uploaded",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "too_many_pages",
                         "unreadable",
@@ -1739,12 +2028,18 @@
                       ]
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -1806,10 +2101,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1839,10 +2139,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1872,10 +2177,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1905,10 +2215,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1938,10 +2253,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -1952,7 +2272,9 @@
     "/v1/playbook/documents/{documentId}/restore": {
       "post": {
         "description": "Restores a soft-deleted document within the retention period; it is re-ingested from the kept file and shows as \"processing\". Owner and Admin only. Idempotent by end state: a document that is no longer deleted (restored by an earlier call, or never deleted) answers 200 with the document as it is. A deleted document whose purge time has passed but which the purge has not yet removed is document.not_restorable (410); once purged the record is gone and the answer is document.not_found (404). Takes no body.",
-        "tags": ["documents"],
+        "tags": [
+          "documents"
+        ],
         "summary": "Restore a deleted document",
         "security": [
           {
@@ -2002,16 +2324,28 @@
                       "maximum": 26214400
                     },
                     "pageCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 300
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["uploaded", "processing", "ready", "failed", "deleted"]
+                      "enum": [
+                        "uploaded",
+                        "processing",
+                        "ready",
+                        "failed",
+                        "deleted"
+                      ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "too_many_pages",
                         "unreadable",
@@ -2022,12 +2356,18 @@
                       ]
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -2089,10 +2429,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2122,10 +2467,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2155,10 +2505,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2188,10 +2543,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2221,10 +2581,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2254,10 +2619,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2268,7 +2638,9 @@
     "/v1/playbook/deals": {
       "get": {
         "description": "Lists the Organization's Deals, newest first (sorted by createdAt, then id, the opaque Deal id, both descending), one cursor-paginated page at a time (at most 100). Owner and Admin only. outcome limits the list to one Outcome and appearedInImport=false lists the Deals that have Calls but never appeared in a CSV, so a mistyped deal id is visible.",
-        "tags": ["deals"],
+        "tags": [
+          "deals"
+        ],
         "summary": "List Deals",
         "security": [
           {
@@ -2306,7 +2678,11 @@
           {
             "schema": {
               "type": "string",
-              "enum": ["won", "lost", "open"]
+              "enum": [
+                "won",
+                "lost",
+                "open"
+              ]
             },
             "required": false,
             "name": "outcome",
@@ -2315,7 +2691,10 @@
           {
             "schema": {
               "type": "string",
-              "enum": ["true", "false"]
+              "enum": [
+                "true",
+                "false"
+              ]
             },
             "required": false,
             "name": "appearedInImport",
@@ -2344,23 +2723,39 @@
                             "maxLength": 1000
                           },
                           "name": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "maxLength": 1000
                           },
                           "outcome": {
                             "type": "string",
-                            "enum": ["won", "lost", "open"]
+                            "enum": [
+                              "won",
+                              "lost",
+                              "open"
+                            ]
                           },
                           "closedAt": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "format": "date"
                           },
                           "amount": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "pattern": "^(0|[1-9]\\d{0,14})(\\.\\d{1,2})?$"
                           },
                           "currency": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "pattern": "^[A-Z]{3}$"
                           },
                           "callCount": {
@@ -2398,12 +2793,18 @@
                       "maxItems": 100
                     },
                     "nextCursor": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1,
                       "maxLength": 512
                     }
                   },
-                  "required": ["items", "nextCursor"]
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ]
                 }
               }
             }
@@ -2433,10 +2834,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2466,10 +2872,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2499,10 +2910,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2532,10 +2948,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2546,7 +2967,9 @@
     "/v1/playbook/deals/lookup": {
       "post": {
         "description": "Finds a Deal by the customer deal id, sent in the JSON body {\"dealId\":...} so it never appears in a URL, a query string or a cursor (trimmed, otherwise exact and case-sensitive). Answers 200 with the Deal, whose opaque id is then used in every path, or deal.not_found. Owner and Admin only. It changes nothing.",
-        "tags": ["deals"],
+        "tags": [
+          "deals"
+        ],
         "summary": "Look a Deal up by the customer's deal id",
         "security": [
           {
@@ -2565,7 +2988,9 @@
                     "maxLength": 1000
                   }
                 },
-                "required": ["dealId"],
+                "required": [
+                  "dealId"
+                ],
                 "additionalProperties": false
               }
             }
@@ -2588,23 +3013,39 @@
                       "maxLength": 1000
                     },
                     "name": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 1000
                     },
                     "outcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "closedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "format": "date"
                     },
                     "amount": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "pattern": "^(0|[1-9]\\d{0,14})(\\.\\d{1,2})?$"
                     },
                     "currency": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "pattern": "^[A-Z]{3}$"
                     },
                     "callCount": {
@@ -2667,10 +3108,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2700,10 +3146,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2733,10 +3184,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2766,10 +3222,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2799,10 +3260,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2813,7 +3279,9 @@
     "/v1/playbook/deals/{dealRecordId}": {
       "get": {
         "description": "Reads one Deal by its opaque id (the deal_ id from a list or a lookup, never the customer deal id, which is found with the lookup route). Owner and Admin only. A Deal cannot be deleted on its own.",
-        "tags": ["deals"],
+        "tags": [
+          "deals"
+        ],
         "summary": "Read a Deal",
         "security": [
           {
@@ -2848,23 +3316,39 @@
                       "maxLength": 1000
                     },
                     "name": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 1000
                     },
                     "outcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "closedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "format": "date"
                     },
                     "amount": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "pattern": "^(0|[1-9]\\d{0,14})(\\.\\d{1,2})?$"
                     },
                     "currency": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "pattern": "^[A-Z]{3}$"
                     },
                     "callCount": {
@@ -2927,10 +3411,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2960,10 +3449,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -2993,10 +3487,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3026,10 +3525,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3059,10 +3563,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3073,7 +3582,9 @@
     "/v1/playbook/deals/{dealRecordId}/outcome": {
       "put": {
         "description": "Sets or corrects a Deal's Outcome (won, lost or open), even a decided one. Owner and Admin only. Idempotent by end state. A change bumps the Deal's Outcome sequence and queues the re-tag of its Moments; search follows the database at once for a lost Deal and may lag for a Deal that has just become won.",
-        "tags": ["deals"],
+        "tags": [
+          "deals"
+        ],
         "summary": "Set a Deal's Outcome",
         "security": [
           {
@@ -3100,14 +3611,23 @@
                 "properties": {
                   "outcome": {
                     "type": "string",
-                    "enum": ["won", "lost", "open"]
+                    "enum": [
+                      "won",
+                      "lost",
+                      "open"
+                    ]
                   },
                   "closedAt": {
-                    "type": ["string", "null"],
+                    "type": [
+                      "string",
+                      "null"
+                    ],
                     "format": "date"
                   }
                 },
-                "required": ["outcome"],
+                "required": [
+                  "outcome"
+                ],
                 "additionalProperties": false
               }
             }
@@ -3130,23 +3650,39 @@
                       "maxLength": 1000
                     },
                     "name": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 1000
                     },
                     "outcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "closedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "format": "date"
                     },
                     "amount": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "pattern": "^(0|[1-9]\\d{0,14})(\\.\\d{1,2})?$"
                     },
                     "currency": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "pattern": "^[A-Z]{3}$"
                     },
                     "callCount": {
@@ -3209,10 +3745,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3242,10 +3783,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3275,10 +3821,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3308,10 +3859,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3341,10 +3897,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3355,7 +3916,9 @@
     "/v1/playbook/deal-imports": {
       "post": {
         "description": "Uploads the fixed CSV template (columns deal_id, outcome, closed_at, amount, currency and optionally name; closed_at is a plain YYYY-MM-DD date, kept as written, and a value with a time or an offset is a rejected row with the reason invalid_closed_at; up to 10 MB and 50,000 rows) as multipart/form-data with one file part named \"file\". Owner and Admin only. The type, size and first row are checked before anything is stored: deal_import.unsupported_type (415), deal_import.too_large (413) and deal_import.header_invalid (422). An Organization with MAX_QUEUED_DEAL_IMPORTS (5) imports not yet finished (state uploaded or processing) is refused with deal_import.busy (429) and nothing is stored; the count is checked before the file is stored, so a refused upload leaves no import. The header is read with checkDealImportHeaderText (the same reader and limits as parseCsv) on the first 8192 characters of the file (a header still unfinished there is deferred to the job, not refused), and the job re-checks the header of its full parse with the same verdict. The rest of the file is parsed in the background job, never on the request path, under strict RFC 4180 quoting: a stray quote fails the file, and a cell over 1000 characters fails the whole file too (a cell up to 1000 characters is checked row by row, and a bad one is a rejected row); blank lines at the end of the file are ignored, and an interior blank line is a rejected row with the reason blank_row, so the report has no gap, and it still counts in the row numbers, and rowNumber is the record number with the header as record 1. Answers 202 with the import in state \"uploaded\"; it is processed in the background. Imports are not deduplicated by content: each upload is a new import, and only the Idempotency-Key makes a retry of the same request answer with the stored import. Valid rows are applied and bad rows are reported, never dropped: a deal id already won or lost, or repeated within the file, is a rejected row in the report, not an HTTP error. A file with more rows than the limit, a cell over the length limit or a quoting error ends in state \"failed\" with failureReason \"too_many_rows\" or \"unreadable\". Accepts an Idempotency-Key header.",
-        "tags": ["deal-imports"],
+        "tags": [
+          "deal-imports"
+        ],
         "summary": "Upload a Deal import CSV",
         "security": [
           {
@@ -3390,7 +3953,9 @@
                     "description": "The CSV file."
                   }
                 },
-                "required": ["file"]
+                "required": [
+                  "file"
+                ]
               }
             }
           }
@@ -3409,24 +3974,46 @@
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["uploaded", "processing", "completed", "failed"]
+                      "enum": [
+                        "uploaded",
+                        "processing",
+                        "completed",
+                        "failed"
+                      ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
-                      "enum": ["too_many_rows", "unreadable", "processing_failed", null]
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "too_many_rows",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
                     },
                     "rowCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 0,
                       "maximum": 50000
                     },
                     "appliedCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 0,
                       "maximum": 50000
                     },
                     "rejectedCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 0,
                       "maximum": 50000
                     },
@@ -3485,10 +4072,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3518,10 +4110,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3551,10 +4148,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3595,10 +4197,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3628,10 +4235,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3661,10 +4273,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3694,10 +4311,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3727,10 +4349,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3760,10 +4387,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3804,10 +4436,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3837,10 +4474,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -3849,7 +4491,9 @@
       },
       "get": {
         "description": "Lists the Organization's Deal imports, newest first (sorted by createdAt, then id, both descending), one cursor-paginated page at a time (at most 100). Owner and Admin only.",
-        "tags": ["deal-imports"],
+        "tags": [
+          "deal-imports"
+        ],
         "summary": "List Deal imports",
         "security": [
           {
@@ -3904,24 +4548,46 @@
                           },
                           "state": {
                             "type": "string",
-                            "enum": ["uploaded", "processing", "completed", "failed"]
+                            "enum": [
+                              "uploaded",
+                              "processing",
+                              "completed",
+                              "failed"
+                            ]
                           },
                           "failureReason": {
-                            "type": ["string", "null"],
-                            "enum": ["too_many_rows", "unreadable", "processing_failed", null]
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "too_many_rows",
+                              "unreadable",
+                              "processing_failed",
+                              null
+                            ]
                           },
                           "rowCount": {
-                            "type": ["integer", "null"],
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
                             "minimum": 0,
                             "maximum": 50000
                           },
                           "appliedCount": {
-                            "type": ["integer", "null"],
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
                             "minimum": 0,
                             "maximum": 50000
                           },
                           "rejectedCount": {
-                            "type": ["integer", "null"],
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
                             "minimum": 0,
                             "maximum": 50000
                           },
@@ -3955,12 +4621,18 @@
                       "maxItems": 100
                     },
                     "nextCursor": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1,
                       "maxLength": 512
                     }
                   },
-                  "required": ["items", "nextCursor"]
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ]
                 }
               }
             }
@@ -3990,10 +4662,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4023,10 +4700,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4056,10 +4738,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4089,10 +4776,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4103,7 +4795,9 @@
     "/v1/playbook/deal-imports/{importId}": {
       "get": {
         "description": "Reads one import: its state, failure reason and the counts of rows, applied rows and rejected rows. Owner and Admin only.",
-        "tags": ["deal-imports"],
+        "tags": [
+          "deal-imports"
+        ],
         "summary": "Read a Deal import",
         "security": [
           {
@@ -4135,24 +4829,46 @@
                     },
                     "state": {
                       "type": "string",
-                      "enum": ["uploaded", "processing", "completed", "failed"]
+                      "enum": [
+                        "uploaded",
+                        "processing",
+                        "completed",
+                        "failed"
+                      ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
-                      "enum": ["too_many_rows", "unreadable", "processing_failed", null]
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "too_many_rows",
+                        "unreadable",
+                        "processing_failed",
+                        null
+                      ]
                     },
                     "rowCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 0,
                       "maximum": 50000
                     },
                     "appliedCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 0,
                       "maximum": 50000
                     },
                     "rejectedCount": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 0,
                       "maximum": 50000
                     },
@@ -4211,10 +4927,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4244,10 +4965,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4277,10 +5003,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4310,10 +5041,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4343,10 +5079,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4357,7 +5098,9 @@
     "/v1/playbook/deal-imports/{importId}/rows": {
       "get": {
         "description": "Reads the report of an import, in CSV order, one cursor-paginated page at a time (at most 100); result=rejected lists only the rows that need fixing. Each row has its row number (the header is row 1), the deal id when it was valid, the result and a reason code. No other cell is returned. Owner and Admin only.",
-        "tags": ["deal-imports"],
+        "tags": [
+          "deal-imports"
+        ],
         "summary": "Read the report of a Deal import",
         "security": [
           {
@@ -4404,7 +5147,10 @@
           {
             "schema": {
               "type": "string",
-              "enum": ["applied", "rejected"]
+              "enum": [
+                "applied",
+                "rejected"
+              ]
             },
             "required": false,
             "name": "result",
@@ -4430,15 +5176,24 @@
                             "maximum": 50001
                           },
                           "dealId": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "maxLength": 1000
                           },
                           "result": {
                             "type": "string",
-                            "enum": ["applied", "rejected"]
+                            "enum": [
+                              "applied",
+                              "rejected"
+                            ]
                           },
                           "reason": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "enum": [
                               "wrong_column_count",
                               "invalid_deal_id",
@@ -4455,17 +5210,28 @@
                             ]
                           }
                         },
-                        "required": ["rowNumber", "dealId", "result", "reason"]
+                        "required": [
+                          "rowNumber",
+                          "dealId",
+                          "result",
+                          "reason"
+                        ]
                       },
                       "maxItems": 100
                     },
                     "nextCursor": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1,
                       "maxLength": 512
                     }
                   },
-                  "required": ["items", "nextCursor"]
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ]
                 }
               }
             }
@@ -4495,10 +5261,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4528,10 +5299,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4561,10 +5337,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4594,10 +5375,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4627,10 +5413,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -4641,7 +5432,9 @@
     "/v1/playbook/calls": {
       "post": {
         "description": "Uploads one Call as a Transcript (txt, vtt, srt or json, up to 5 MB) or a Recording (mp3, m4a, wav, ogg, webm or flac, up to 500 MB, streamed to storage and never held whole), as multipart/form-data with one file part named \"file\" and the text fields \"dealId\" and \"rep\". Owner and Admin only; Managers and Reps get auth.forbidden. A Transcript needs \"rep\", the JSON {\"by\":\"speaker\",\"label\":...}; a per-side Recording takes {\"by\":\"channel\",\"channel\":\"left\"|\"right\"}; a Recording with no \"rep\" waits in state \"awaiting_rep\" after transcription until an Owner or Admin picks one. A Deal that does not exist yet is created \"open\". Refused with rights.confirmation_required (403, its details name the wording version to show) until the Organization has a current rights confirmation. The type and size of the file part are checked before anything is stored: call.unsupported_type (415) and call.too_large (413); a malformed name, an empty file or a bad field is request.invalid, and a Rep choice that does not suit the kind is call.rep_invalid. The common request.too_large and request.unsupported_media_type apply to the whole request instead. Answers 201 with the new Call in state \"uploaded\". If the content matches a Call the Organization already has under the same Deal, answers 200 with that stored Call: a match on a \"deleted\" Call restores it (state \"processing\") and a match on a \"failed\" Call under the same Deal whose failureReason is transcription_failed, transcription_timed_out or processing_failed (reasons that can be transient) re-queues it for processing (state \"uploaded\"); a match on a failed Call with any other reason answers 200 with the failed Call unchanged, because the same file would fail the same way: rep_label_not_found and not_per_side are fixed by changing the Rep, and too_many_speakers, no_turns, too_few_speakers, too_long and unreadable by choosing to delete the Call and upload a corrected file; any other match returns the Call as it is. The same content under another deal id is call.content_in_other_deal. A recording over 3 hours, a Transcript with no turns or fewer than two speakers, or a Rep label not in the file is not checked here: the Call ends in state \"failed\" with a failureReason. Accepts an Idempotency-Key header.",
-        "tags": ["calls"],
+        "tags": [
+          "calls"
+        ],
         "summary": "Upload a Call Transcript or Recording",
         "security": [
           {
@@ -4684,7 +5477,10 @@
                     "description": "JSON text naming the Rep: {\"by\":\"speaker\",\"label\":\"...\"} for a Transcript; {\"by\":\"channel\",\"channel\":\"left\"|\"right\"} for a per-side Recording; absent for a Recording whose Rep is picked after transcription."
                   }
                 },
-                "required": ["file", "dealId"]
+                "required": [
+                  "file",
+                  "dealId"
+                ]
               }
             }
           }
@@ -4711,14 +5507,21 @@
                     },
                     "dealOutcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "inSearch": {
                       "type": "boolean"
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["transcript", "recording"]
+                      "enum": [
+                        "transcript",
+                        "recording"
+                      ]
                     },
                     "fileName": {
                       "type": "string",
@@ -4745,7 +5548,10 @@
                       "maximum": 524288000
                     },
                     "durationSeconds": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 10800
                     },
@@ -4762,7 +5568,10 @@
                       ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "no_turns",
                         "too_few_speakers",
@@ -4784,14 +5593,19 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["speaker"]
+                              "enum": [
+                                "speaker"
+                              ]
                             },
                             "label": {
                               "type": "string",
                               "maxLength": 1000
                             }
                           },
-                          "required": ["by", "label"],
+                          "required": [
+                            "by",
+                            "label"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -4799,14 +5613,22 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["channel"]
+                              "enum": [
+                                "channel"
+                              ]
                             },
                             "channel": {
                               "type": "string",
-                              "enum": ["left", "right"]
+                              "enum": [
+                                "left",
+                                "right"
+                              ]
                             }
                           },
-                          "required": ["by", "channel"],
+                          "required": [
+                            "by",
+                            "channel"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -4837,18 +5659,27 @@
                             "maxLength": 480
                           }
                         },
-                        "required": ["label", "excerpt"],
+                        "required": [
+                          "label",
+                          "excerpt"
+                        ],
                         "additionalProperties": false
                       },
                       "maxItems": 20
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -4913,14 +5744,21 @@
                     },
                     "dealOutcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "inSearch": {
                       "type": "boolean"
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["transcript", "recording"]
+                      "enum": [
+                        "transcript",
+                        "recording"
+                      ]
                     },
                     "fileName": {
                       "type": "string",
@@ -4947,7 +5785,10 @@
                       "maximum": 524288000
                     },
                     "durationSeconds": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 10800
                     },
@@ -4964,7 +5805,10 @@
                       ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "no_turns",
                         "too_few_speakers",
@@ -4986,14 +5830,19 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["speaker"]
+                              "enum": [
+                                "speaker"
+                              ]
                             },
                             "label": {
                               "type": "string",
                               "maxLength": 1000
                             }
                           },
-                          "required": ["by", "label"],
+                          "required": [
+                            "by",
+                            "label"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -5001,14 +5850,22 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["channel"]
+                              "enum": [
+                                "channel"
+                              ]
                             },
                             "channel": {
                               "type": "string",
-                              "enum": ["left", "right"]
+                              "enum": [
+                                "left",
+                                "right"
+                              ]
                             }
                           },
-                          "required": ["by", "channel"],
+                          "required": [
+                            "by",
+                            "channel"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -5039,18 +5896,27 @@
                             "maxLength": 480
                           }
                         },
-                        "required": ["label", "excerpt"],
+                        "required": [
+                          "label",
+                          "excerpt"
+                        ],
                         "additionalProperties": false
                       },
                       "maxItems": 20
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -5119,10 +5985,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5152,10 +6023,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5185,10 +6061,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5229,10 +6110,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5262,10 +6148,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5295,10 +6186,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5328,10 +6224,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5361,10 +6262,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5394,10 +6300,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5438,10 +6349,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5471,10 +6387,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5483,7 +6404,9 @@
       },
       "get": {
         "description": "Lists the Organization's Calls, newest first (sorted by createdAt, then id, both descending), one cursor-paginated page at a time (at most 100). Owner and Admin only. Deleted Calls are left out unless state=deleted is asked for; state=awaiting_rep lists the Calls waiting for a Rep and dealRecordId (the opaque Deal id) limits the list to one Deal. A list item never carries speakers: only the single-Call read returns speaker excerpts.",
-        "tags": ["calls"],
+        "tags": [
+          "calls"
+        ],
         "summary": "List Calls",
         "security": [
           {
@@ -5572,14 +6495,21 @@
                           },
                           "dealOutcome": {
                             "type": "string",
-                            "enum": ["won", "lost", "open"]
+                            "enum": [
+                              "won",
+                              "lost",
+                              "open"
+                            ]
                           },
                           "inSearch": {
                             "type": "boolean"
                           },
                           "kind": {
                             "type": "string",
-                            "enum": ["transcript", "recording"]
+                            "enum": [
+                              "transcript",
+                              "recording"
+                            ]
                           },
                           "fileName": {
                             "type": "string",
@@ -5606,7 +6536,10 @@
                             "maximum": 524288000
                           },
                           "durationSeconds": {
-                            "type": ["integer", "null"],
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
                             "minimum": 1,
                             "maximum": 10800
                           },
@@ -5623,7 +6556,10 @@
                             ]
                           },
                           "failureReason": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "enum": [
                               "no_turns",
                               "too_few_speakers",
@@ -5645,14 +6581,19 @@
                                 "properties": {
                                   "by": {
                                     "type": "string",
-                                    "enum": ["speaker"]
+                                    "enum": [
+                                      "speaker"
+                                    ]
                                   },
                                   "label": {
                                     "type": "string",
                                     "maxLength": 1000
                                   }
                                 },
-                                "required": ["by", "label"],
+                                "required": [
+                                  "by",
+                                  "label"
+                                ],
                                 "additionalProperties": false
                               },
                               {
@@ -5660,14 +6601,22 @@
                                 "properties": {
                                   "by": {
                                     "type": "string",
-                                    "enum": ["channel"]
+                                    "enum": [
+                                      "channel"
+                                    ]
                                   },
                                   "channel": {
                                     "type": "string",
-                                    "enum": ["left", "right"]
+                                    "enum": [
+                                      "left",
+                                      "right"
+                                    ]
                                   }
                                 },
-                                "required": ["by", "channel"],
+                                "required": [
+                                  "by",
+                                  "channel"
+                                ],
                                 "additionalProperties": false
                               },
                               {
@@ -5684,12 +6633,18 @@
                             "maxItems": 20
                           },
                           "deletedAt": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "maxLength": 64,
                             "format": "date-time"
                           },
                           "purgeAt": {
-                            "type": ["string", "null"],
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "maxLength": 64,
                             "format": "date-time"
                           },
@@ -5734,12 +6689,18 @@
                       "maxItems": 100
                     },
                     "nextCursor": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1,
                       "maxLength": 512
                     }
                   },
-                  "required": ["items", "nextCursor"]
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ]
                 }
               }
             }
@@ -5769,10 +6730,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5802,10 +6768,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5835,10 +6806,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5868,10 +6844,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -5882,7 +6863,9 @@
     "/v1/playbook/calls/{callId}": {
       "get": {
         "description": "Reads one Call and its state, with the failure reason when it failed, the speaker labels to pick a Rep from and the purge time when it was deleted. For a Recording with speaker labels, above all one awaiting its Rep, it also returns speakers: a short excerpt per label (the first turns of the speaker, at most 240 characters, cut at a word boundary with an ellipsis; at most 20 speakers) so a person can tell who is the Rep. The excerpts are tenant Transcript text: returned only to the Owner and Admin of the owning Organization and never logged. No other Transcript text or audio is returned. Owner and Admin only.",
-        "tags": ["calls"],
+        "tags": [
+          "calls"
+        ],
         "summary": "Read a Call",
         "security": [
           {
@@ -5922,14 +6905,21 @@
                     },
                     "dealOutcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "inSearch": {
                       "type": "boolean"
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["transcript", "recording"]
+                      "enum": [
+                        "transcript",
+                        "recording"
+                      ]
                     },
                     "fileName": {
                       "type": "string",
@@ -5956,7 +6946,10 @@
                       "maximum": 524288000
                     },
                     "durationSeconds": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 10800
                     },
@@ -5973,7 +6966,10 @@
                       ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "no_turns",
                         "too_few_speakers",
@@ -5995,14 +6991,19 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["speaker"]
+                              "enum": [
+                                "speaker"
+                              ]
                             },
                             "label": {
                               "type": "string",
                               "maxLength": 1000
                             }
                           },
-                          "required": ["by", "label"],
+                          "required": [
+                            "by",
+                            "label"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -6010,14 +7011,22 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["channel"]
+                              "enum": [
+                                "channel"
+                              ]
                             },
                             "channel": {
                               "type": "string",
-                              "enum": ["left", "right"]
+                              "enum": [
+                                "left",
+                                "right"
+                              ]
                             }
                           },
-                          "required": ["by", "channel"],
+                          "required": [
+                            "by",
+                            "channel"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -6048,18 +7057,27 @@
                             "maxLength": 480
                           }
                         },
-                        "required": ["label", "excerpt"],
+                        "required": [
+                          "label",
+                          "excerpt"
+                        ],
                         "additionalProperties": false
                       },
                       "maxItems": 20
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -6128,10 +7146,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6161,10 +7184,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6194,10 +7222,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6227,10 +7260,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6260,10 +7298,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6272,7 +7315,9 @@
       },
       "delete": {
         "description": "Soft-deletes a Call: it and its Moments are hidden from search at once and purged after 30 days, and it can be restored until then. Owner and Admin only. Idempotent by end state: answers 200 with the Call in state \"deleted\" and its purge time, and deleting an already deleted Call answers the same. Takes no body.",
-        "tags": ["calls"],
+        "tags": [
+          "calls"
+        ],
         "summary": "Delete a Call",
         "security": [
           {
@@ -6312,14 +7357,21 @@
                     },
                     "dealOutcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "inSearch": {
                       "type": "boolean"
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["transcript", "recording"]
+                      "enum": [
+                        "transcript",
+                        "recording"
+                      ]
                     },
                     "fileName": {
                       "type": "string",
@@ -6346,7 +7398,10 @@
                       "maximum": 524288000
                     },
                     "durationSeconds": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 10800
                     },
@@ -6363,7 +7418,10 @@
                       ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "no_turns",
                         "too_few_speakers",
@@ -6385,14 +7443,19 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["speaker"]
+                              "enum": [
+                                "speaker"
+                              ]
                             },
                             "label": {
                               "type": "string",
                               "maxLength": 1000
                             }
                           },
-                          "required": ["by", "label"],
+                          "required": [
+                            "by",
+                            "label"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -6400,14 +7463,22 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["channel"]
+                              "enum": [
+                                "channel"
+                              ]
                             },
                             "channel": {
                               "type": "string",
-                              "enum": ["left", "right"]
+                              "enum": [
+                                "left",
+                                "right"
+                              ]
                             }
                           },
-                          "required": ["by", "channel"],
+                          "required": [
+                            "by",
+                            "channel"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -6438,18 +7509,27 @@
                             "maxLength": 480
                           }
                         },
-                        "required": ["label", "excerpt"],
+                        "required": [
+                          "label",
+                          "excerpt"
+                        ],
                         "additionalProperties": false
                       },
                       "maxItems": 20
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -6518,10 +7598,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6551,10 +7636,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6584,10 +7674,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6617,10 +7712,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6650,10 +7750,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6664,7 +7769,9 @@
     "/v1/playbook/calls/{callId}/restore": {
       "post": {
         "description": "Restores a soft-deleted Call within the retention period; it is processed again from the kept Transcript (a Recording is never transcribed twice) and shows as \"processing\". Owner and Admin only. Idempotent by end state: a Call that is no longer deleted answers 200 with the Call as it is. A deleted Call whose purge time has passed but which the purge has not yet removed is call.not_restorable (410); once purged the record is gone and the answer is call.not_found (404). Takes no body.",
-        "tags": ["calls"],
+        "tags": [
+          "calls"
+        ],
         "summary": "Restore a deleted Call",
         "security": [
           {
@@ -6704,14 +7811,21 @@
                     },
                     "dealOutcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "inSearch": {
                       "type": "boolean"
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["transcript", "recording"]
+                      "enum": [
+                        "transcript",
+                        "recording"
+                      ]
                     },
                     "fileName": {
                       "type": "string",
@@ -6738,7 +7852,10 @@
                       "maximum": 524288000
                     },
                     "durationSeconds": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 10800
                     },
@@ -6755,7 +7872,10 @@
                       ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "no_turns",
                         "too_few_speakers",
@@ -6777,14 +7897,19 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["speaker"]
+                              "enum": [
+                                "speaker"
+                              ]
                             },
                             "label": {
                               "type": "string",
                               "maxLength": 1000
                             }
                           },
-                          "required": ["by", "label"],
+                          "required": [
+                            "by",
+                            "label"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -6792,14 +7917,22 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["channel"]
+                              "enum": [
+                                "channel"
+                              ]
                             },
                             "channel": {
                               "type": "string",
-                              "enum": ["left", "right"]
+                              "enum": [
+                                "left",
+                                "right"
+                              ]
                             }
                           },
-                          "required": ["by", "channel"],
+                          "required": [
+                            "by",
+                            "channel"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -6830,18 +7963,27 @@
                             "maxLength": 480
                           }
                         },
-                        "required": ["label", "excerpt"],
+                        "required": [
+                          "label",
+                          "excerpt"
+                        ],
                         "additionalProperties": false
                       },
                       "maxItems": 20
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -6910,10 +8052,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6943,10 +8090,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -6976,10 +8128,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7009,10 +8166,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7042,10 +8204,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7075,10 +8242,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7089,7 +8261,9 @@
     "/v1/playbook/calls/{callId}/rep": {
       "put": {
         "description": "Picks the Rep of a Call waiting in \"awaiting_rep\", or changes the Rep of a \"ready\" Call or a \"failed\" Call whose failureReason is rep_label_not_found or not_per_side, with {\"rep\":{\"by\":\"speaker\",\"label\":...}} or {\"rep\":{\"by\":\"channel\",\"channel\":...}}. Owner and Admin only, and any of them may pick, not only the uploader. A choice that does not suit the Call, or a label that is not among its speakers, is call.rep_invalid; a Call in any other state or with any other failure reason is call.rep_not_changeable. A different Rep answers 200 with the Call in state \"processing\": its Moments are rebuilt by a queued job and the Call is out of search until it finishes. Idempotent by end state: choosing the Rep the Call already has changes nothing and answers 200 with the Call as it is.",
-        "tags": ["calls"],
+        "tags": [
+          "calls"
+        ],
         "summary": "Pick or change the Rep of a Call",
         "security": [
           {
@@ -7121,14 +8295,19 @@
                         "properties": {
                           "by": {
                             "type": "string",
-                            "enum": ["speaker"]
+                            "enum": [
+                              "speaker"
+                            ]
                           },
                           "label": {
                             "type": "string",
                             "maxLength": 1000
                           }
                         },
-                        "required": ["by", "label"],
+                        "required": [
+                          "by",
+                          "label"
+                        ],
                         "additionalProperties": false
                       },
                       {
@@ -7136,20 +8315,30 @@
                         "properties": {
                           "by": {
                             "type": "string",
-                            "enum": ["channel"]
+                            "enum": [
+                              "channel"
+                            ]
                           },
                           "channel": {
                             "type": "string",
-                            "enum": ["left", "right"]
+                            "enum": [
+                              "left",
+                              "right"
+                            ]
                           }
                         },
-                        "required": ["by", "channel"],
+                        "required": [
+                          "by",
+                          "channel"
+                        ],
                         "additionalProperties": false
                       }
                     ]
                   }
                 },
-                "required": ["rep"],
+                "required": [
+                  "rep"
+                ],
                 "additionalProperties": false
               }
             }
@@ -7177,14 +8366,21 @@
                     },
                     "dealOutcome": {
                       "type": "string",
-                      "enum": ["won", "lost", "open"]
+                      "enum": [
+                        "won",
+                        "lost",
+                        "open"
+                      ]
                     },
                     "inSearch": {
                       "type": "boolean"
                     },
                     "kind": {
                       "type": "string",
-                      "enum": ["transcript", "recording"]
+                      "enum": [
+                        "transcript",
+                        "recording"
+                      ]
                     },
                     "fileName": {
                       "type": "string",
@@ -7211,7 +8407,10 @@
                       "maximum": 524288000
                     },
                     "durationSeconds": {
-                      "type": ["integer", "null"],
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
                       "minimum": 1,
                       "maximum": 10800
                     },
@@ -7228,7 +8427,10 @@
                       ]
                     },
                     "failureReason": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "enum": [
                         "no_turns",
                         "too_few_speakers",
@@ -7250,14 +8452,19 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["speaker"]
+                              "enum": [
+                                "speaker"
+                              ]
                             },
                             "label": {
                               "type": "string",
                               "maxLength": 1000
                             }
                           },
-                          "required": ["by", "label"],
+                          "required": [
+                            "by",
+                            "label"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -7265,14 +8472,22 @@
                           "properties": {
                             "by": {
                               "type": "string",
-                              "enum": ["channel"]
+                              "enum": [
+                                "channel"
+                              ]
                             },
                             "channel": {
                               "type": "string",
-                              "enum": ["left", "right"]
+                              "enum": [
+                                "left",
+                                "right"
+                              ]
                             }
                           },
-                          "required": ["by", "channel"],
+                          "required": [
+                            "by",
+                            "channel"
+                          ],
                           "additionalProperties": false
                         },
                         {
@@ -7303,18 +8518,27 @@
                             "maxLength": 480
                           }
                         },
-                        "required": ["label", "excerpt"],
+                        "required": [
+                          "label",
+                          "excerpt"
+                        ],
                         "additionalProperties": false
                       },
                       "maxItems": 20
                     },
                     "deletedAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
                     "purgeAt": {
-                      "type": ["string", "null"],
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "maxLength": 64,
                       "format": "date-time"
                     },
@@ -7383,10 +8607,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7416,10 +8645,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7449,10 +8683,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7482,10 +8721,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7515,10 +8759,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7548,10 +8797,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7581,10 +8835,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7595,7 +8854,9 @@
     "/v1/playbook/rights-confirmation": {
       "get": {
         "description": "Reads the Organization's recorded confirmation that it may share Recordings and Transcripts, with who confirmed and when, the version of the wording they saw, the current wording version, optionally the text of that version (also in RIGHTS_WORDINGS) and whether the stored one is current. Owner and Admin only. Without a current confirmation, uploads of Calls are refused; existing Calls are kept and stay searchable.",
-        "tags": ["rights"],
+        "tags": [
+          "rights"
+        ],
         "summary": "Read the rights confirmation",
         "security": [
           {
@@ -7616,7 +8877,10 @@
                       "maximum": 1000000
                     },
                     "confirmation": {
-                      "type": ["object", "null"],
+                      "type": [
+                        "object",
+                        "null"
+                      ],
                       "properties": {
                         "wordingVersion": {
                           "type": "integer",
@@ -7633,7 +8897,11 @@
                           "format": "date-time"
                         }
                       },
-                      "required": ["wordingVersion", "confirmedByUserId", "confirmedAt"]
+                      "required": [
+                        "wordingVersion",
+                        "confirmedByUserId",
+                        "confirmedAt"
+                      ]
                     },
                     "confirmed": {
                       "type": "boolean"
@@ -7663,14 +8931,24 @@
                         },
                         "draft": {
                           "type": "boolean",
-                          "enum": [true]
+                          "enum": [
+                            true
+                          ]
                         }
                       },
-                      "required": ["heading", "paragraphs", "checkbox"],
+                      "required": [
+                        "heading",
+                        "paragraphs",
+                        "checkbox"
+                      ],
                       "additionalProperties": false
                     }
                   },
-                  "required": ["currentWordingVersion", "confirmation", "confirmed"]
+                  "required": [
+                    "currentWordingVersion",
+                    "confirmation",
+                    "confirmed"
+                  ]
                 }
               }
             }
@@ -7700,10 +8978,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7733,10 +9016,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7766,10 +9054,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7778,7 +9071,9 @@
       },
       "put": {
         "description": "Records the confirmation, with the wording version the member was shown, which must be the current one (else rights.version_outdated, 409). Owner and Admin only. Who confirmed and when come from the token and the clock, never from the body. Idempotent by end state: confirming the current version again changes nothing. A lawyer is to check the wording before real customers use it.",
-        "tags": ["rights"],
+        "tags": [
+          "rights"
+        ],
         "summary": "Confirm the rights wording",
         "security": [
           {
@@ -7798,7 +9093,9 @@
                     "maximum": 1000000
                   }
                 },
-                "required": ["wordingVersion"],
+                "required": [
+                  "wordingVersion"
+                ],
                 "additionalProperties": false
               }
             }
@@ -7818,7 +9115,10 @@
                       "maximum": 1000000
                     },
                     "confirmation": {
-                      "type": ["object", "null"],
+                      "type": [
+                        "object",
+                        "null"
+                      ],
                       "properties": {
                         "wordingVersion": {
                           "type": "integer",
@@ -7835,7 +9135,11 @@
                           "format": "date-time"
                         }
                       },
-                      "required": ["wordingVersion", "confirmedByUserId", "confirmedAt"]
+                      "required": [
+                        "wordingVersion",
+                        "confirmedByUserId",
+                        "confirmedAt"
+                      ]
                     },
                     "confirmed": {
                       "type": "boolean"
@@ -7865,14 +9169,24 @@
                         },
                         "draft": {
                           "type": "boolean",
-                          "enum": [true]
+                          "enum": [
+                            true
+                          ]
                         }
                       },
-                      "required": ["heading", "paragraphs", "checkbox"],
+                      "required": [
+                        "heading",
+                        "paragraphs",
+                        "checkbox"
+                      ],
                       "additionalProperties": false
                     }
                   },
-                  "required": ["currentWordingVersion", "confirmation", "confirmed"]
+                  "required": [
+                    "currentWordingVersion",
+                    "confirmation",
+                    "confirmed"
+                  ]
                 }
               }
             }
@@ -7902,10 +9216,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7935,10 +9254,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -7968,10 +9292,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8001,10 +9330,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8034,10 +9368,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8048,7 +9387,9 @@
     "/v1/playbook/search/moments": {
       "post": {
         "description": "Finds Moments in the Organization's won Deals that resemble the conversation so far, so the Copilot can show what worked. The body is the latest turns (1 to 6, each a role of rep or prospect and its text, at most 2000 characters in all) and an optional limit (1 to 20, default 5). It answers the best matches, best first, at most 20, each with the opaque callId and dealRecordId, a score and two snippets of at most 512 characters (what the Prospect said and what the Rep said next), and evidence: the number of candidate Moments and the distinct won Deals among them. The evidence counts only the over-fetched candidate window (the best min(100, limit x 5) Moments by similarity, after the eligibility checks), not every won Deal in the Organization. There is no cursor: the result is a bounded top-k. Only Moments of Calls whose Deal is won and whose Call is in search are returned, and only from the caller's Organization. It never returns the customer's dealId, name or amount. The request and the snippets are tenant conversation text and are never logged. It only reads, so it takes no Idempotency-Key and a repeat is harmless. request.invalid (400) for a body outside the bounds; server.timeout (504) when it takes too long; server.unavailable (503) with a Retry-After header when the embedding model or the vector store cannot answer. Owner and Admin only, as for all sales history (the owner's decision of 2026-10-13); a Manager or a Rep gets auth.forbidden, because a Rep sees only their own conversations. The phase-2 Copilot calls this service-to-service, not with a Rep's token.",
-        "tags": ["search"],
+        "tags": [
+          "search"
+        ],
         "summary": "Find similar Moments in won Deals",
         "security": [
           {
@@ -8069,7 +9410,10 @@
                       "properties": {
                         "role": {
                           "type": "string",
-                          "enum": ["rep", "prospect"]
+                          "enum": [
+                            "rep",
+                            "prospect"
+                          ]
                         },
                         "text": {
                           "type": "string",
@@ -8077,7 +9421,10 @@
                           "maxLength": 4000
                         }
                       },
-                      "required": ["role", "text"],
+                      "required": [
+                        "role",
+                        "text"
+                      ],
                       "additionalProperties": false
                     },
                     "minItems": 1,
@@ -8090,7 +9437,9 @@
                     "default": 5
                   }
                 },
-                "required": ["turns"],
+                "required": [
+                  "turns"
+                ],
                 "additionalProperties": false
               }
             }
@@ -8129,7 +9478,13 @@
                             "maxLength": 1024
                           }
                         },
-                        "required": ["callId", "dealRecordId", "score", "prospect", "repNext"]
+                        "required": [
+                          "callId",
+                          "dealRecordId",
+                          "score",
+                          "prospect",
+                          "repNext"
+                        ]
                       },
                       "maxItems": 20
                     },
@@ -8147,10 +9502,16 @@
                           "maximum": 100
                         }
                       },
-                      "required": ["moments", "deals"]
+                      "required": [
+                        "moments",
+                        "deals"
+                      ]
                     }
                   },
-                  "required": ["items", "evidence"]
+                  "required": [
+                    "items",
+                    "evidence"
+                  ]
                 }
               }
             }
@@ -8180,10 +9541,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8213,10 +9579,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8246,10 +9617,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8279,10 +9655,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8323,10 +9704,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8356,10 +9742,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8370,7 +9761,9 @@
     "/v1/playbook/search/documents": {
       "post": {
         "description": "Finds passages in the Organization's Playbook documents that resemble the conversation so far, so a Rep can see what the company's own material says. The body is the same as for the Moments search: the latest turns (1 to 6, each a role of rep or prospect and its text, at most 2000 characters in all) and an optional limit (1 to 20, default 5). It answers the best passages, best first, at most 20, one item per chunk, each with the documentId, the document's fileName (the Organization's own file name), the page (the 1-based page for a paginated format such as PDF, null for a format without pages such as TXT, MD or DOCX and anything else the parser reads as one page; the service decides by media type), a score and a snippet of at most 512 characters, and evidence: the number of candidate chunks that survive the staleness check and the distinct documents among them. The evidence counts only the over-fetched candidate window (the best min(100, limit x 5) chunks by similarity, after the staleness check), not every document in the Organization. The query is embedded with documentQueryText (the turns trimmed and joined by a newline, no role labels), because document chunks are embedded as plain text. There is no cursor: the result is a bounded top-k. Only chunks of documents that are ready and not replaced are returned, and only from the caller's Organization. The request and the snippets are the Organization's own conversation and sales text and are never logged. It only reads, so it takes no Idempotency-Key and a repeat is harmless. request.invalid (400) for a body outside the bounds; server.timeout (504) when it takes too long; server.unavailable (503) with a Retry-After header when the embedding model or the vector store cannot answer. Every role that reads the Playbook (Owner, Admin, Manager and Rep) may call it, because the text is the Organization's own sales material; any other is auth.forbidden. In this service `page` is set only for a PDF (by its file name extension); it is null for PPTX and every other format.",
-        "tags": ["search"],
+        "tags": [
+          "search"
+        ],
         "summary": "Find similar passages in Playbook documents",
         "security": [
           {
@@ -8391,7 +9784,10 @@
                       "properties": {
                         "role": {
                           "type": "string",
-                          "enum": ["rep", "prospect"]
+                          "enum": [
+                            "rep",
+                            "prospect"
+                          ]
                         },
                         "text": {
                           "type": "string",
@@ -8399,7 +9795,10 @@
                           "maxLength": 4000
                         }
                       },
-                      "required": ["role", "text"],
+                      "required": [
+                        "role",
+                        "text"
+                      ],
                       "additionalProperties": false
                     },
                     "minItems": 1,
@@ -8412,7 +9811,9 @@
                     "default": 5
                   }
                 },
-                "required": ["turns"],
+                "required": [
+                  "turns"
+                ],
                 "additionalProperties": false
               }
             }
@@ -8440,7 +9841,10 @@
                             "maxLength": 1000
                           },
                           "page": {
-                            "type": ["integer", "null"],
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
                             "minimum": 1,
                             "maximum": 300
                           },
@@ -8452,7 +9856,13 @@
                             "maxLength": 1024
                           }
                         },
-                        "required": ["documentId", "fileName", "page", "score", "snippet"]
+                        "required": [
+                          "documentId",
+                          "fileName",
+                          "page",
+                          "score",
+                          "snippet"
+                        ]
                       },
                       "maxItems": 20
                     },
@@ -8470,10 +9880,16 @@
                           "maximum": 100
                         }
                       },
-                      "required": ["chunks", "documents"]
+                      "required": [
+                        "chunks",
+                        "documents"
+                      ]
                     }
                   },
-                  "required": ["items", "evidence"]
+                  "required": [
+                    "items",
+                    "evidence"
+                  ]
                 }
               }
             }
@@ -8503,10 +9919,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8536,10 +9957,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8569,10 +9995,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8602,10 +10033,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8646,10 +10082,15 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
@@ -8679,10 +10120,525 @@
                           "additionalProperties": {}
                         }
                       },
-                      "required": ["code", "message"]
+                      "required": [
+                        "code",
+                        "message"
+                      ]
                     }
                   },
-                  "required": ["error"]
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/playbook/citations/resolve": {
+      "post": {
+        "description": "Resolves the Citations on a Draft back to the text they point at, so a Rep sees why a sentence was written. The body is refs: one to 20 references, each a Moment (callId, dealRecordId) or a document page (documentId, page or null). It answers one item per reference, in request order. An item is state available, with the snippets of at most 512 characters (what the Prospect said and the Rep said next for a Moment; the file name and passage for a document), or state removed, with the ids only and no text, when the Call, Deal or document was deleted, is no longer searchable, never existed or belongs to another Organization; none of those is an error, so existence is not revealed. It never returns the customer's dealId, name or amount. The snippets are tenant text and are never logged. It only reads, so it takes no Idempotency-Key and a repeat is harmless. request.invalid (400) for a body outside the bounds; server.timeout (504) when it takes too long; server.unavailable (503) with a Retry-After header when the store cannot answer. Every role that reads the Playbook (Owner, Admin, Manager and Rep) may call it; any other is auth.forbidden.",
+        "tags": [
+          "search"
+        ],
+        "summary": "Resolve Citations to their current text",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "refs": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "moment"
+                              ]
+                            },
+                            "callId": {
+                              "type": "string",
+                              "pattern": "^call_[0-9a-f]{32}$"
+                            },
+                            "dealRecordId": {
+                              "type": "string",
+                              "pattern": "^deal_[0-9a-f]{32}$"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "callId",
+                            "dealRecordId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "document"
+                              ]
+                            },
+                            "documentId": {
+                              "type": "string",
+                              "pattern": "^doc_[0-9a-f]{32}$"
+                            },
+                            "page": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 1,
+                              "maximum": 300
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "documentId",
+                            "page"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 20
+                  }
+                },
+                "required": [
+                  "refs"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One item per reference, in request order: available with snippets, or removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "available"
+                                ]
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "moment"
+                                ]
+                              },
+                              "callId": {
+                                "type": "string",
+                                "pattern": "^call_[0-9a-f]{32}$"
+                              },
+                              "dealRecordId": {
+                                "type": "string",
+                                "pattern": "^deal_[0-9a-f]{32}$"
+                              },
+                              "prospect": {
+                                "type": "string",
+                                "maxLength": 1024
+                              },
+                              "repNext": {
+                                "type": "string",
+                                "maxLength": 1024
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "kind",
+                              "callId",
+                              "dealRecordId",
+                              "prospect",
+                              "repNext"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "available"
+                                ]
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "document"
+                                ]
+                              },
+                              "documentId": {
+                                "type": "string",
+                                "pattern": "^doc_[0-9a-f]{32}$"
+                              },
+                              "page": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ],
+                                "minimum": 1,
+                                "maximum": 300
+                              },
+                              "fileName": {
+                                "type": "string",
+                                "maxLength": 1000
+                              },
+                              "snippet": {
+                                "type": "string",
+                                "maxLength": 1024
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "kind",
+                              "documentId",
+                              "page",
+                              "fileName",
+                              "snippet"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "removed"
+                                ]
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "moment"
+                                ]
+                              },
+                              "callId": {
+                                "type": "string",
+                                "pattern": "^call_[0-9a-f]{32}$"
+                              },
+                              "dealRecordId": {
+                                "type": "string",
+                                "pattern": "^deal_[0-9a-f]{32}$"
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "kind",
+                              "callId",
+                              "dealRecordId"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "removed"
+                                ]
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "document"
+                                ]
+                              },
+                              "documentId": {
+                                "type": "string",
+                                "pattern": "^doc_[0-9a-f]{32}$"
+                              },
+                              "page": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ],
+                                "minimum": 1,
+                                "maximum": 300
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "kind",
+                              "documentId",
+                              "page"
+                            ]
+                          }
+                        ]
+                      },
+                      "minItems": 1,
+                      "maxItems": 20
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "server.unavailable.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$",
+                  "description": "Whole seconds to wait before trying again."
+                },
+                "required": true,
+                "description": "Whole seconds to wait before trying again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "server.timeout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
                 }
               }
             }
