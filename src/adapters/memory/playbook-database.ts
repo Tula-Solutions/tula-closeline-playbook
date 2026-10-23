@@ -34,6 +34,10 @@ import {
   DOCUMENT_RESTORE_FOR_UPLOAD,
   DOCUMENT_SEARCH_STATE,
   DOCUMENT_SOFT_DELETE,
+  EMBED_USAGE_ADD,
+  EMBED_USAGE_MAX_ADD,
+  EMBED_USAGE_MAX_MOMENTS,
+  EMBED_USAGE_PURGE,
   IDEMPOTENCY_BEGIN,
   IDEMPOTENCY_COMPLETE,
   IDEMPOTENCY_LOOKUP,
@@ -55,7 +59,13 @@ import {
   ORGANIZATION_REMOVE_REST,
   ORGANIZATIONS_WITH_WORK,
   ORPHAN_SWEEP_AGE_MS,
+  ORPHAN_SWEEP_CLAIM,
+  ORPHAN_SWEEP_CURSOR_MAX_BYTES,
   ORPHAN_SWEEP_DONE,
+  ORPHAN_SWEEP_MAX_CLAIM_MS,
+  ORPHAN_SWEEP_MIN_CLAIM_MS,
+  ORPHAN_SWEEP_PAGE_DONE,
+  ORPHAN_SWEEP_STATE,
   PLAYBOOK_MAX_BATCH,
   PLAYBOOK_MIN_LEASE_MS,
   QUOTA_LOCK,
@@ -225,7 +235,22 @@ type State = {
    * is the creation time of the latest upload attempt whose key erasure or the key purge deleted
    * (the real hint and row stand in for it until a sweep covers it).
    */
-  orphans: Map<string, { sweptThrough: number | null; lostAttemptAt: number | null }>
+  orphans: Map<string, OrphanRow>
+  /** The `embed_usage` rows: Moments counted per Organization and UTC day (`<organization>|<yyyy-mm-dd>`). */
+  embedUsage: Map<string, number>
+}
+
+/** One `orphan_sweeps` row: the sweep's cursor and the deadline of the claim on it are in microseconds. */
+type OrphanRow = {
+  sweptThrough: number | null
+  lostAttemptAt: number | null
+  cursor: string | null
+  claimUntilUs: number | null
+}
+
+/** A fresh `orphan_sweeps` row. */
+function newOrphanRow(): OrphanRow {
+  return { sweptThrough: null, lostAttemptAt: null, cursor: null, claimUntilUs: null }
 }
 
 /** A Postgres-style failure the double raises on request: an error carrying a SQLSTATE `code`. */
@@ -382,7 +407,7 @@ function noteLostAttempts(
   if (latest === Number.NEGATIVE_INFINITY) {
     return
   }
-  const row = state.orphans.get(organization) ?? { sweptThrough: null, lostAttemptAt: null }
+  const row = state.orphans.get(organization) ?? newOrphanRow()
   row.lostAttemptAt = Math.max(row.lostAttemptAt ?? Number.NEGATIVE_INFINITY, latest)
   state.orphans.set(organization, row)
 }
@@ -424,6 +449,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     consumed: [],
     usage: new Set(),
     orphans: new Map(),
+    embedUsage: new Map(),
   }
   const failures: { statement: string; error: Error; once: boolean }[] = []
   const commitFailures: { error: Error; applied: boolean }[] = []
@@ -454,6 +480,26 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     let uploadLockHeld = false
     const documentsOf = (organization: unknown) =>
       state.documents.filter((d) => own(organization) && d.organization_id === organization)
+    /** The body of `orphan_sweep_done`: advance `swept_through` and settle the work hint. */
+    const finishSweep = (organization: string, through: string) => {
+      const row = state.orphans.get(organization) ?? newOrphanRow()
+      // Cut to the orphan age before now, and never moved back.
+      const cut = Math.min(new Date(through).getTime(), now() - ORPHAN_SWEEP_AGE_MS)
+      row.sweptThrough = Math.max(row.sweptThrough ?? Number.NEGATIVE_INFINITY, cut)
+      state.orphans.set(organization, row)
+      const more = pendingAttempts(state, organization).length > 0
+      if (
+        !more &&
+        !state.keys.some((k) => k.organization_id === organization) &&
+        documentsOf(organization).length === 0 &&
+        row.claimUntilUs === null
+      ) {
+        state.orphans.delete(organization)
+      } else if (!more) {
+        row.lostAttemptAt = null
+      }
+      return { swept_through: pgTimestamp(row.sweptThrough), more }
+    }
     const find = (organization: unknown, id: unknown) =>
       documentsOf(organization).find((d) => d.id === id)
     const dealsOf = (organization: unknown) =>
@@ -967,6 +1013,11 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           }
           state.rights = state.rights.filter((r) => r.organization_id !== organization)
           state.usage.delete(organization)
+          for (const key of [...state.embedUsage.keys()]) {
+            if (key.startsWith(`${organization}|`)) {
+              state.embedUsage.delete(key)
+            }
+          }
           state.settings = state.settings.filter((x) => x.organization_id !== organization)
           state.consumed = state.consumed.filter((x) => x.organization_id !== organization)
           const erased = state.keys.filter(
@@ -1576,25 +1627,134 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         }
         case ORPHAN_SWEEP_DONE: {
           const [organization, through] = params as [string, string]
+          return own(organization) ? rows([finishSweep(organization, through)]) : none
+        }
+        case ORPHAN_SWEEP_CLAIM: {
+          const [organization, claimMs] = params as [string, number]
           if (!own(organization)) {
             return none
           }
-          const row = state.orphans.get(organization) ?? { sweptThrough: null, lostAttemptAt: null }
-          // Cut to the orphan age before now, and never moved back.
-          const cut = Math.min(new Date(through).getTime(), now() - ORPHAN_SWEEP_AGE_MS)
-          row.sweptThrough = Math.max(row.sweptThrough ?? Number.NEGATIVE_INFINITY, cut)
-          state.orphans.set(organization, row)
-          const more = pendingAttempts(state, organization).length > 0
-          if (
-            !more &&
-            !state.keys.some((k) => k.organization_id === organization) &&
-            documentsOf(organization).length === 0
-          ) {
-            state.orphans.delete(organization)
-          } else if (!more) {
-            row.lostAttemptAt = null
+          const length = Math.min(
+            Math.max(Math.trunc(Number(claimMs)) || 0, ORPHAN_SWEEP_MIN_CLAIM_MS),
+            ORPHAN_SWEEP_MAX_CLAIM_MS
+          )
+          const row = state.orphans.get(organization) ?? newOrphanRow()
+          if (row.claimUntilUs !== null && row.claimUntilUs > now() * 1000) {
+            return rows([
+              { claimed: false, swept_through: null, sweep_cursor: null, claim_token: null },
+            ])
           }
-          return rows([{ swept_through: pgTimestamp(row.sweptThrough), more }])
+          row.claimUntilUs = nextMicroseconds() + length * 1000
+          state.orphans.set(organization, row)
+          return rows([
+            {
+              claimed: true,
+              swept_through:
+                row.sweptThrough === null ? '-infinity' : pgTimestamp(row.sweptThrough),
+              sweep_cursor: row.cursor,
+              claim_token: pgTimestampUs(row.claimUntilUs),
+            },
+          ])
+        }
+        case ORPHAN_SWEEP_PAGE_DONE: {
+          const [organization, through, cursor, token] = params as [
+            string,
+            string,
+            string | null,
+            string | null,
+          ]
+          if (!own(organization)) {
+            return none
+          }
+          const row = state.orphans.get(organization)
+          const stale = {
+            held: false,
+            swept_through: null,
+            more: null,
+            sweep_cursor: null,
+          }
+          if (
+            row === undefined ||
+            row.claimUntilUs === null ||
+            token === null ||
+            token !== pgTimestampUs(row.claimUntilUs) ||
+            row.claimUntilUs <= now() * 1000
+          ) {
+            return rows([stale])
+          }
+          if (cursor !== null && Buffer.byteLength(cursor) > ORPHAN_SWEEP_CURSOR_MAX_BYTES) {
+            throw postgresError('23514', 'the sweep cursor is too long')
+          }
+          if (cursor !== null && cursor.length === 0) {
+            throw postgresError('23514', 'the sweep cursor is empty')
+          }
+          row.claimUntilUs = null
+          if (cursor !== null) {
+            row.cursor = cursor
+            return rows([
+              {
+                held: true,
+                swept_through:
+                  row.sweptThrough === null ? '-infinity' : pgTimestamp(row.sweptThrough),
+                more: true,
+                sweep_cursor: cursor,
+              },
+            ])
+          }
+          row.cursor = null
+          const done = finishSweep(organization, through)
+          return rows([{ held: true, ...done, sweep_cursor: null }])
+        }
+        case ORPHAN_SWEEP_STATE: {
+          const [organization] = params as [string]
+          const row = own(organization) ? state.orphans.get(organization) : undefined
+          return row === undefined
+            ? none
+            : rows([
+                {
+                  swept_through:
+                    row.sweptThrough === null ? '-infinity' : pgTimestamp(row.sweptThrough),
+                  sweep_cursor: row.cursor,
+                  sweep_claim_until:
+                    row.claimUntilUs === null ? null : pgTimestampUs(row.claimUntilUs),
+                },
+              ])
+        }
+        case EMBED_USAGE_ADD: {
+          const [organization, moments] = params as [string, number | null]
+          if (!own(organization)) {
+            return none
+          }
+          const day = new Date(now()).toISOString().slice(0, 10)
+          const key = `${organization}|${day}`
+          const add = Math.min(
+            Math.max(Math.trunc(Number(moments ?? 0)) || 0, 0),
+            EMBED_USAGE_MAX_ADD
+          )
+          const total = Math.min((state.embedUsage.get(key) ?? 0) + add, EMBED_USAGE_MAX_MOMENTS)
+          state.embedUsage.set(key, total)
+          return rows([{ day, moments: total }])
+        }
+        case EMBED_USAGE_PURGE: {
+          const [organization, keepDays, size] = params as [string, number, number]
+          if (!own(organization)) {
+            return none
+          }
+          const keep = Math.max(Math.trunc(Number(keepDays)) || 0, 1)
+          const today = Math.floor(now() / 86_400_000)
+          const old = [...state.embedUsage.keys()]
+            .filter((k) => k.startsWith(`${organization}|`))
+            .map((k) => ({
+              k,
+              day: Math.floor(Date.parse(`${k.split('|')[1]}T00:00:00Z`) / 86_400_000),
+            }))
+            .filter((x) => x.day < today - keep)
+            .sort((a, b) => a.day - b.day)
+            .slice(0, batch(size, PLAYBOOK_MAX_BATCH))
+          for (const x of old) {
+            state.embedUsage.delete(x.k)
+          }
+          return { rows: [], rowCount: old.length }
         }
         case IDEMPOTENCY_PURGE: {
           const [organization, ageMs, size] = params as [string, number, number]
@@ -1829,6 +1989,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         consumed: structuredClone(committed.consumed),
         usage: new Set(committed.usage),
         orphans: structuredClone(committed.orphans),
+        embedUsage: new Map(committed.embedUsage),
       }
       const inside: string[] = []
       transactionStatements.push(inside)
@@ -1907,6 +2068,8 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         sent_to_vendor_at: null,
         vendor_send_seq: 0,
         vendor_removed_at: null,
+        embedded_moments: null,
+        skipped_moments: null,
         created_at_us: at * 1000,
         updated_at: at,
         ...row,

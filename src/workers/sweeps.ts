@@ -76,9 +76,8 @@ export function createSweeps(deps: PipelineDeps, processed: ProcessedStore): Swe
       forEachOrganization(deps, 'orphan_sweep', signal, async (organizationId) => {
         const visit = await visitOrphanSweep(deps, organizationId, signal)
         if (visit.status === 'incomplete' && !signal.aborted) {
-          // Listed again from the top next time, so an Organization with more objects than the
-          // bound covers is starved (a persisted cursor would fix it: it needs its own ticket).
-          deps.logger.warn('an orphan sweep did not cover the listing; it will start again', {
+          // The cursor is saved, so the next visit continues the listing where this one stopped.
+          deps.logger.info('an orphan sweep continues at the next visit', {
             organizationId,
             maxPages: env.ORPHAN_MAX_PAGES,
             pageSize: env.ORPHAN_PAGE_SIZE,

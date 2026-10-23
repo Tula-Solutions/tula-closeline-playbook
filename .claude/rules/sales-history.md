@@ -92,7 +92,7 @@ paths:
   deterministic (`momentVectorId`), so a retry overwrites. Moments are embedded by role, never by label. At most `MAX_MOMENTS_PER_CALL`
   (2,000) are embedded, the first half and the last half of the cap (the close of a long call is kept); the Call still ends `ready` and the count skipped is logged. The re-tag
   applies the same cap; change the cap only upward together with a re-embed, or the re-tag reports the Moments it
-  did not find as missing (raised) or leaves vectors past the new cap on an old tag (lowered). There is no per-Organization daily embed budget yet (it needs a db counter).
+  did not find as missing (raised) or leaves vectors past the new cap on an old tag (lowered). Each Organization has a daily embed budget (`EMBED_DAILY_MOMENTS_PER_ORGANIZATION`, counted by `EMBED_USAGE_ADD` per UTC day of the database): a Call that would pass it is given back until the next UTC day and embeds nothing; the check and the add are two statements, so concurrent jobs can pass the budget by one Call each. The embedded and skipped counts are recorded on the Call (`CALL_MOMENTS_RECORD`), and a bounded `EMBED_USAGE_PURGE` runs from the job. A wait burns claim attempts (the db caps one wait at an hour and gives up at 20 claims).
 - Every Moment vector carries `outcome` and `outcome_seq`, whatever the Deal's Outcome. Whether a Moment
   may be returned is decided at query time by `momentMayBeReturned` (`eligibility.ts`): the vector's tag
   says won AND Postgres says `inSearch`. The vector filter alone is never enough. No search route exists
