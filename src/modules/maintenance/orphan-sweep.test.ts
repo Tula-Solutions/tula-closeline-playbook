@@ -111,6 +111,33 @@ describe('the resumable orphan sweep', () => {
     expect(seen).toEqual([restarted])
   })
 
+  test('a saved start time far ahead of this instance clock is not trusted and the sweep begins again', async () => {
+    const h = createPipelineHarness({ env: { ORPHAN_PAGE_SIZE: '2', ORPHAN_MAX_PAGES: '1' } })
+    await h.upload('a.txt', paragraphs(2), { key: 'first' })
+    await seedOrphans(h, h.organizationId, 6)
+    await h.deps.time.advance(26 * HOUR)
+    await visitOrphanSweep(h.deps, h.organizationId, never)
+    // Another instance whose clock runs an hour behind the one that saved the cursor.
+    const behind = new Date(h.deps.clock.now().getTime() - HOUR + 60_000)
+    const real = h.deps.clock
+    h.deps.clock = { now: () => behind, advance: (duration) => real.advance(duration) }
+    const seen: unknown[] = []
+    const scope = h.deps.scope
+    h.deps.scope = (organizationId, fn) =>
+      scope(organizationId, (run) =>
+        fn(async (text, params) => {
+          if (text === ORPHAN_SWEEP_PAGE_DONE) {
+            seen.push(params[1])
+          }
+          return run(text, params)
+        })
+      )
+
+    await visitOrphanSweep(h.deps, h.organizationId, never)
+
+    expect(seen).toEqual([behind.toISOString()])
+  })
+
   test('a second instance cannot claim while a claim is held, and the visit stops', async () => {
     const h = createPipelineHarness()
     await h.upload('a.txt', paragraphs(2), { key: 'first' })
