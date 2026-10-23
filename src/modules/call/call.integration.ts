@@ -9,6 +9,7 @@ import { sql } from 'drizzle-orm'
 import { type Call, CURRENT_RIGHTS_WORDING_VERSION, callSchema } from 'tula-closeline-contract'
 import {
   createDb,
+  EMBED_USAGE_ADD,
   ORGANIZATIONS_WITH_WORK,
   RIGHTS_CONFIRM,
   type WorkDiscoveryRow,
@@ -41,8 +42,8 @@ const discover: Discover = (kind, after, batch) =>
   })
 
 /** A harness over the real database, with its own Organization and its own people. */
-async function harness(): Promise<CallHarness> {
-  const h = await createCallHarness({ scope: scopeOver(service.db) })
+async function harness(env: Record<string, string> = {}): Promise<CallHarness> {
+  const h = await createCallHarness({ scope: scopeOver(service.db), env })
   h.deps.discover = discover
   // The memory double's seeded confirmation does not exist here: record the real one.
   await h.deps.scope(h.organizationId, (run) =>
@@ -468,5 +469,60 @@ describe('a Recording against Postgres', () => {
 
     expect(second).toEqual({ purged: 1, deferred: 0 })
     expect(h.deps.transcriber.copies(h.organizationId)).toEqual([])
+  })
+})
+
+describe('a Call held by the daily embed budget, against Postgres', () => {
+  /** Reads the job's attempts and how far its next attempt is, as the table owner. */
+  async function jobOf(organizationId: string): Promise<{ attempts: number; ahead: number }> {
+    const result = await withOrganization(owner.db, organizationId, (tx) =>
+      tx.execute<{ attempts: number; ahead: number }>(
+        sql`select attempts, extract(epoch from (next_attempt_at - clock_timestamp()))::float8 as ahead from playbook.call_jobs`
+      )
+    )
+    return result.rows[0] ?? { attempts: -1, ahead: 0 }
+  }
+
+  /** Makes the Organization's job due now. */
+  async function makeDue(organizationId: string): Promise<void> {
+    await withOrganization(owner.db, organizationId, (tx) =>
+      tx.execute(sql`update playbook.call_jobs set next_attempt_at = clock_timestamp()`)
+    )
+  }
+
+  test('22 deferrals spend no attempt, each waits for the next day, and the Call is then embedded', async () => {
+    const h = await harness({ EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '3' })
+    const org = h.organizationId
+    const call = await uploadOk(h, 'budget')
+    await h.deps.scope(org, (run) => run(EMBED_USAGE_ADD, [org, 3]))
+
+    for (let round = 0; round < 22; round++) {
+      await makeDue(org)
+      await h.runCalls()
+      expect((await h.readCall(call.id)).state).toBe('processing')
+      const job = await jobOf(org)
+      expect(job.attempts).toBe(0)
+      expect(job.ahead).toBeGreaterThan(0)
+    }
+
+    // The day's count is cleared, as when the next UTC day begins.
+    await withOrganization(owner.db, org, (tx) => tx.execute(sql`truncate playbook.embed_usage`))
+    await makeDue(org)
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+  })
+
+  test('a real failure still counts its attempt', async () => {
+    const h = await harness({ INGESTION_MAX_ATTEMPTS: '3' })
+    const call = await uploadOk(h, 'broken')
+    h.deps.embedder.embed = async () => {
+      throw new Error('model unavailable')
+    }
+
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('processing')
+    expect((await jobOf(h.organizationId)).attempts).toBe(1)
   })
 })

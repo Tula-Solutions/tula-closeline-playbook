@@ -6,10 +6,12 @@ import {
   CALL_INSERT,
   CALL_JOB_CLAIM,
   CALL_JOB_COMPLETE,
+  CALL_JOB_DEFER,
   CALL_JOB_FAIL,
   CALL_JOB_GIVE_UP_SPENT,
   CALL_JOB_HEARTBEAT,
   CALL_JOB_MAX_ATTEMPTS,
+  CALL_JOB_MAX_DEFER_DELAY_MS,
   CALL_JOB_RECORD,
   CALL_JOB_RETRY,
   CALL_JOB_TRANSCRIBED,
@@ -790,6 +792,21 @@ export function runCallStatement(
       j.state = 'queued'
       j.claim_token = null
       j.next_attempt_at = now() + Math.min(Math.max(delayMs ?? 0, 0), INGESTION_MAX_RETRY_DELAY_MS)
+      return rows([{ id: j.id, attempts: j.attempts }])
+    }
+    case CALL_JOB_DEFER: {
+      const [organization, id, token, delayMs] = params as [string, string, string, number]
+      const j = jobsOf(organization).find(
+        (x) => x.id === id && x.claim_token === token && x.state === 'running'
+      )
+      if (j === undefined) {
+        return none
+      }
+      // As the statement: the claim's attempt is given back, so a deferral spends none.
+      j.state = 'queued'
+      j.claim_token = null
+      j.attempts = Math.max(j.attempts - 1, 0)
+      j.next_attempt_at = now() + Math.min(Math.max(delayMs ?? 0, 0), CALL_JOB_MAX_DEFER_DELAY_MS)
       return rows([{ id: j.id, attempts: j.attempts }])
     }
     case CALL_JOB_RECORD: {

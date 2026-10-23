@@ -2,9 +2,11 @@ import { type CallFailureReason, MAX_TRANSCRIPT_BYTES } from 'tula-closeline-con
 import {
   CALL_GET,
   CALL_JOB_COMPLETE,
+  CALL_JOB_DEFER,
   CALL_JOB_FAIL,
   CALL_JOB_HEARTBEAT,
   CALL_JOB_MAX_ATTEMPTS,
+  CALL_JOB_MAX_DEFER_DELAY_MS,
   CALL_JOB_RECORD,
   CALL_JOB_RETRY,
   CALL_MOMENTS_RECORD,
@@ -12,7 +14,6 @@ import {
   DEAL_GET,
   EMBED_USAGE_ADD,
   EMBED_USAGE_PURGE,
-  INGESTION_MAX_RETRY_DELAY_MS,
 } from 'tula-closeline-db'
 import { TranscriberError } from 'tula-closeline-kit'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
@@ -48,6 +49,8 @@ export type CallJobOutcome =
   | 'failed'
   /** A transient failure; the job is due again after a delay. */
   | 'retried'
+  /** The daily embed budget is used up; the job is due again after the next UTC midnight, with no attempt spent. */
+  | 'deferred'
   /** The claim was lost (the Call was deleted, changed or erased, or the lease lapsed); nothing more was written. */
   | 'lost'
   /** Shutdown: the job was given back and is due at once. */
@@ -254,15 +257,23 @@ async function writeMoments(
 /** The most days of embed counts one job's opportunistic purge removes. */
 const EMBED_PURGE_BATCH = 10
 
+/** The most jitter added to the wait for the next UTC day, so a day's deferred jobs do not wake together. */
+const EMBED_DEFER_JITTER_MS = 300_000
+
 /**
  * Checks that `count` more Moments fit today's embed budget for the Organization, or says how long to wait.
  * The day is the database's UTC day. A Call that would take the day past
- * `EMBED_DAILY_MOMENTS_PER_ORGANIZATION` reserves nothing and is given back until the next UTC
- * midnight (the database caps one wait at an hour, so it wakes and asks again). Two jobs may both
- * pass the check at once, so the budget can be passed by at most one Call per concurrent worker.
- * Returns undefined when the Moments may be embedded.
+ * `EMBED_DAILY_MOMENTS_PER_ORGANIZATION` reserves nothing and is deferred until the next UTC
+ * midnight plus jitter (`CALL_JOB_DEFER`: the wait spends no attempt). The wait is bounded by the
+ * job's age: past `EMBED_DEFER_MAX_AGE_DAYS` the Call fails `processing_failed` instead of waiting
+ * again. Two jobs may both pass the check at once, so the budget can be passed by at most one Call
+ * per concurrent worker. Returns undefined when the Moments may be embedded.
  */
-async function checkEmbedBudget(c: CallJobContext, count: number): Promise<number | undefined> {
+async function checkEmbedBudget(
+  c: CallJobContext,
+  claim: ClaimedCallJob,
+  count: number
+): Promise<number | undefined> {
   const { deps } = c
   const budget = deps.env.EMBED_DAILY_MOMENTS_PER_ORGANIZATION
   const today = await inTransaction(deps, c.organizationId, (run) =>
@@ -271,8 +282,22 @@ async function checkEmbedBudget(c: CallJobContext, count: number): Promise<numbe
   const used = Number(today.rows[0]?.moments ?? 0)
   if (used > 0 && used + count > budget) {
     const nowMs = deps.clock.now().getTime()
+    const waitedMs =
+      claim.job_created_at === null ? 0 : nowMs - new Date(claim.job_created_at).getTime()
+    if (waitedMs > deps.env.EMBED_DEFER_MAX_AGE_DAYS * 86_400_000) {
+      deps.logger.warn('a Call waited too long for the embed budget and fails', {
+        organizationId: c.organizationId,
+        callId: c.callId,
+        waitedMs,
+        maxDays: deps.env.EMBED_DEFER_MAX_AGE_DAYS,
+      })
+      throw new CallFailure('processing_failed')
+    }
     const untilMidnight = 86_400_000 - (nowMs % 86_400_000)
-    const wait = Math.min(untilMidnight, INGESTION_MAX_RETRY_DELAY_MS)
+    const wait = Math.min(
+      untilMidnight + Math.floor(deps.random() * EMBED_DEFER_JITTER_MS),
+      CALL_JOB_MAX_DEFER_DELAY_MS
+    )
     deps.logger.info('a Call waits for the next day of the embed budget', {
       organizationId: c.organizationId,
       callId: c.callId,
@@ -310,11 +335,14 @@ async function purgeEmbedUsage(c: CallJobContext): Promise<void> {
   }
 }
 
+/** Why a run gives the job back before it is done: a transcription still pending, or the embed budget used up. */
+type Hold = { reason: 'transcribing' | 'budget'; afterMs: number }
+
 /**
- * Parses, records the speakers, builds and writes the Moments, and completes the Call. Returns how
- * long to give the job back for when a transcription is still pending (the job is released, not held).
+ * Parses, records the speakers, builds and writes the Moments, and completes the Call. Returns why
+ * and for how long to give the job back when it cannot finish yet (the job is released, not held).
  */
-async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<number | undefined> {
+async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<Hold | undefined> {
   const { deps } = c
   if (claim.job_kind === 'transcribe') {
     const waiting = await runTranscribe(
@@ -329,7 +357,9 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<numbe
       },
       claim
     )
-    return waiting?.pollAfterMs
+    return waiting === undefined
+      ? undefined
+      : { reason: 'transcribing', afterMs: waiting.pollAfterMs }
   }
   // A Transcript is read from its upload; a Recording from the Transcript the transcribe job kept.
   const recording = claim.call_kind === 'recording'
@@ -387,9 +417,9 @@ async function runSteps(c: CallJobContext, claim: ClaimedCallJob): Promise<numbe
   }
   const tag = await readDealOutcome(c)
   if (moments.length > 0) {
-    const wait = await checkEmbedBudget(c, moments.length)
+    const wait = await checkEmbedBudget(c, claim, moments.length)
     if (wait !== undefined) {
-      return wait
+      return { reason: 'budget', afterMs: wait }
     }
     await purgeEmbedUsage(c)
     await ensureIndexSettings(deps, c.organizationId)
@@ -452,13 +482,26 @@ export async function runCallJob(
   const heartbeat = startHeartbeat(context)
   let outcome: CallJobOutcome
   try {
-    const pollAfterMs = await runSteps(context, claim)
-    if (pollAfterMs === undefined) {
+    const hold = await runSteps(context, claim)
+    if (hold === undefined) {
       outcome = 'completed'
+    } else if (hold.reason === 'budget') {
+      // The day's embed budget is used up: not a failure, so the claim's attempt is given back.
+      const deferred = await inTransaction(deps, organizationId, (run) =>
+        run(CALL_JOB_DEFER, [organizationId, claim.id, context.token, hold.afterMs])
+      )
+      if (deferred.rows.length === 0) {
+        deps.logger.warn('a Call job lost its claim before it could be deferred', {
+          organizationId,
+          callId: claim.call_id,
+          jobId: claim.id,
+        })
+      }
+      outcome = deferred.rows.length > 0 ? 'deferred' : 'lost'
     } else {
       // The vendor is still working: give the job back for a while instead of holding a worker.
       const released = await inTransaction(deps, organizationId, (run) =>
-        run(CALL_JOB_RETRY, [organizationId, claim.id, context.token, pollAfterMs])
+        run(CALL_JOB_RETRY, [organizationId, claim.id, context.token, hold.afterMs])
       )
       outcome = released.rows.length > 0 ? 'retried' : 'lost'
     }
