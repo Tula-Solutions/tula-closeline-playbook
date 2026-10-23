@@ -18,6 +18,7 @@ else
   esac
   paths=
   flags=
+  names=
   set -f
   for token in ${script#biome check}; do
     case $token in
@@ -25,7 +26,24 @@ else
         echo "pre-commit: the check script must be 'biome check [flags] <paths>', got: $script" >&2
         exit 1
         ;;
-      -*) flags="$flags $token" ;;
+      # The hook passes these two itself, and Biome rejects a repeated flag.
+      --write | --no-errors-on-unmatched) ;;
+      -- | *" "*)
+        echo "pre-commit: the check script must be 'biome check [flags] <paths>', got: $script" >&2
+        exit 1
+        ;;
+      -*)
+        # A repeated flag makes Biome fail, so say so here.
+        name=${token%%=*}
+        case "$names " in
+          *" $name "*)
+            echo "pre-commit: the check script repeats $name, got: $script" >&2
+            exit 1
+            ;;
+        esac
+        names="$names $name"
+        flags="$flags $token"
+        ;;
       *) paths="$paths $token" ;;
     esac
   done
