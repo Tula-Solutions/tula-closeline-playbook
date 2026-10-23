@@ -489,6 +489,15 @@ describe('the daily embed budget', () => {
     expect((await h.readCall(second.id)).state).toBe('ready')
   })
 
+  test('a Call larger than the whole day budget is still embedded on an empty day', async () => {
+    const h = await createCallHarness({ env: { EMBED_DAILY_MOMENTS_PER_ORGANIZATION: '2' } })
+    const call = await upload(h, transcriptText('big', 5))
+
+    await h.runCalls()
+
+    expect((await h.readCall(call.id)).state).toBe('ready')
+  })
+
   test('a retried Call is counted once, not once per attempt', async () => {
     const h = await createCallHarness()
     const call = await upload(h, transcriptText('retry', 2))

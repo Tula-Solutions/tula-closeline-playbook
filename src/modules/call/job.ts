@@ -269,7 +269,7 @@ async function checkEmbedBudget(c: CallJobContext, count: number): Promise<numbe
     run(EMBED_USAGE_ADD, [c.organizationId, 0])
   )
   const used = Number(today.rows[0]?.moments ?? 0)
-  if (used + count > budget) {
+  if (used > 0 && used + count > budget) {
     const nowMs = deps.clock.now().getTime()
     const untilMidnight = 86_400_000 - (nowMs % 86_400_000)
     const wait = Math.min(untilMidnight, INGESTION_MAX_RETRY_DELAY_MS)
