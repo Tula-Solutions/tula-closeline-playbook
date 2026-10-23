@@ -14,7 +14,7 @@ import { measure, summary } from './measure'
 // Organization's size. The vector store and database here are the in-memory doubles, so this
 // measures the route and service layer (parse, orchestration, eligibility, response validation)
 // with a full 20-reference request (10 Moments, 10 documents), not the network (the real-adapter
-// p95 is measured in the phase load test). Typical: measured 0.38 ms a request
+// p95 is measured in the phase load test). Typical: measured 0.39 ms a request
 // locally). Budget: 2 ms per request (about 5x), the best of 5 batches of 100 requests after a 50-request
 // warm-up.
 const BUDGET_MS = 2

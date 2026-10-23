@@ -21,6 +21,8 @@ const PRICING = 'Our onboarding price is 40 dollars per seat per month for teams
 const conversation = (line = PROSPECT_LINE, answer = REP_ANSWER) =>
   `Alex: Thanks for joining today.\nSam: ${line}\nAlex: ${answer}\n`
 
+const TWO_MOMENTS = `${conversation()}Sam: Does it integrate with our CRM\nAlex: Yes, it syncs every hour\n`
+
 async function settle(h: CallHarness) {
   for (let pass = 0; pass < 50 && (await h.deps.workers.ingestion.runPass()) > 0; pass++) {}
 }
@@ -67,6 +69,10 @@ const momentRef = (c: { id: string; dealRecordId: string }) => ({
   callId: c.id,
   dealRecordId: c.dealRecordId,
 })
+const momentRefAt = (c: { id: string; dealRecordId: string }, momentIndex: number) => ({
+  ...momentRef(c),
+  momentIndex,
+})
 const documentRef = (id: string, page: number | null = null) => ({
   kind: 'document' as const,
   documentId: id,
@@ -110,12 +116,80 @@ describe('what resolves', () => {
       kind: 'moment',
       callId: c.id,
       dealRecordId: c.dealRecordId,
+      momentIndex: 0,
       prospect: momentSnippet(PROSPECT_LINE),
       repNext: momentSnippet(REP_ANSWER),
     })
     const wire = JSON.stringify(item)
     expect(wire).not.toContain('WON-1')
     expect(wire).not.toContain('dealId')
+  })
+
+  test('a Moment asked for by momentIndex resolves to exactly that Moment and echoes it', async () => {
+    const h = await createCallHarness()
+    const c = await call(h, 'TWO-1', 'won', h.people.owner, TWO_MOMENTS)
+
+    const [first, second] = await items(await resolve(h, [momentRefAt(c, 0), momentRefAt(c, 1)]))
+
+    expect(first).toMatchObject({
+      state: 'available',
+      momentIndex: 0,
+      prospect: momentSnippet(PROSPECT_LINE),
+      repNext: momentSnippet(REP_ANSWER),
+    })
+    expect(second).toMatchObject({
+      state: 'available',
+      momentIndex: 1,
+      prospect: momentSnippet('Does it integrate with our CRM'),
+      repNext: momentSnippet('Yes, it syncs every hour'),
+    })
+  })
+
+  test('a momentIndex the current build lacks is removed, with the index and no text', async () => {
+    const h = await createCallHarness()
+    const c = await call(h, 'TWO-1', 'won', h.people.owner, TWO_MOMENTS)
+
+    const { items: out, text } = await answer(await resolve(h, [momentRefAt(c, 2)]))
+
+    expect(out[0]).toEqual({
+      state: 'removed',
+      kind: 'moment',
+      callId: c.id,
+      dealRecordId: c.dealRecordId,
+      momentIndex: 2,
+    })
+    expect(text).not.toContain('CRM')
+  })
+
+  test('without momentIndex the lowest-numbered Moment resolves, and its index is echoed', async () => {
+    const h = await createCallHarness()
+    const c = await call(h, 'TWO-1', 'won', h.people.owner, TWO_MOMENTS)
+
+    const [item] = await items(await resolve(h, [momentRef(c)]))
+
+    expect(item).toMatchObject({
+      state: 'available',
+      momentIndex: 0,
+      prospect: momentSnippet(PROSPECT_LINE),
+    })
+  })
+
+  test('a second Organization asking for a momentIndex gets removed', async () => {
+    const h = await createCallHarness()
+    const otherId = newOrganizationId()
+    h.confirmRights(otherId)
+    const stranger = personIn(otherId, 'owner')
+    const mine = await call(h, 'TWO-1', 'won', h.people.owner, TWO_MOMENTS)
+
+    const [item] = await items(await resolve(h, [momentRefAt(mine, 1)], { as: stranger }))
+
+    expect(item).toEqual({
+      state: 'removed',
+      kind: 'moment',
+      callId: mine.id,
+      dealRecordId: mine.dealRecordId,
+      momentIndex: 1,
+    })
   })
 
   test('a document passage: file name and snippet, page null for a text file', async () => {

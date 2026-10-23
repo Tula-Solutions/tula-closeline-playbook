@@ -26,7 +26,11 @@ type CallState = { inSearch: boolean; epoch: number; repSeq: number; dealRecordI
 type DocumentState = { name: string; state: string; epoch: number }
 
 /** The snippets of one Moment, as the vector store holds them. */
-type MomentText = { prospect: string; repNext: string }
+type MomentText = { momentIndex: number; prospect: string; repNext: string }
+
+/** The key of one Moment lookup: the Call and the Moment asked for (empty: the lowest-numbered). */
+const momentKey = (ref: { callId: string; momentIndex?: number | undefined }) =>
+  `${ref.callId}:${ref.momentIndex ?? ''}`
 
 /** A query vector for a lookup by attributes: the store needs one, the filter decides what matches. */
 function lookupVector(dimensions: number): number[] {
@@ -73,7 +77,8 @@ function firstBy<T extends { attributes: Readonly<Record<string, string | number
  * 2. For each distinct available Moment or document passage, one vector lookup by attributes in
  *    the caller's Organization (the current build only), run together, the snippets read from the
  *    hit with the lowest Moment or chunk number. No hit means `removed`.
- * 3. One item per reference, in request order; `removed` carries the ids only.
+ * 3. One item per reference, in request order; `removed` carries the ids (and the `momentIndex` asked
+ *    for) only. An available Moment echoes the `momentIndex` it resolved.
  *
  * O(refs), at most 20: two reads and at most 20 lookups, each with the search step's deadline;
  * nothing grows with the Organization. Snippets and file names are never logged.
@@ -131,7 +136,10 @@ export async function resolveCitations(
   }
 
   // What Postgres lets through, once per distinct Call or document passage.
-  const momentLookups = new Map<string, CallState>()
+  const momentLookups = new Map<
+    string,
+    { callId: string; momentIndex?: number; state: CallState }
+  >()
   const documentLookups = new Map<
     string,
     { ref: CitationRef & { kind: 'document' }; epoch: number }
@@ -140,7 +148,11 @@ export async function resolveCitations(
     if (ref.kind === 'moment') {
       const state = calls.get(ref.callId)
       if (state?.inSearch === true && state.dealRecordId === ref.dealRecordId) {
-        momentLookups.set(ref.callId, state)
+        momentLookups.set(momentKey(ref), {
+          callId: ref.callId,
+          ...(ref.momentIndex === undefined ? {} : { momentIndex: ref.momentIndex }),
+          state,
+        })
       }
     } else {
       const state = documents.get(ref.documentId)
@@ -155,13 +167,14 @@ export async function resolveCitations(
   const moments = new Map<string, MomentText | undefined>()
   const passages = new Map<string, string | undefined>()
   await Promise.all([
-    ...[...momentLookups].map(async ([callId, state]) => {
+    ...[...momentLookups].map(async ([key, { callId, momentIndex, state }]) => {
       const hits = await outside(deps, 'vector store', organizationId, () =>
         deps.vectors.search(organizationId, {
           vector,
           topK: MAX_HITS,
           filter: {
             call_id: callId,
+            ...(momentIndex === undefined ? {} : { moment: momentIndex }),
             epoch: state.epoch,
             rep_seq: state.repSeq,
             outcome: 'won',
@@ -176,6 +189,8 @@ export async function resolveCitations(
             typeof a.prospect === 'string' &&
             typeof a.rep_next === 'string' &&
             typeof a.outcome_seq === 'number' &&
+            typeof a.moment === 'number' &&
+            (momentIndex === undefined || a.moment === momentIndex) &&
             momentMayBeReturned(
               {
                 outcome: 'won',
@@ -190,10 +205,14 @@ export async function resolveCitations(
         'moment'
       )
       moments.set(
-        callId,
+        key,
         hit === undefined
           ? undefined
-          : { prospect: String(hit.attributes.prospect), repNext: String(hit.attributes.rep_next) }
+          : {
+              momentIndex: Number(hit.attributes.moment),
+              prospect: String(hit.attributes.prospect),
+              repNext: String(hit.attributes.rep_next),
+            }
       )
     }),
     ...[...documentLookups].map(async ([key, { ref, epoch }]) => {
@@ -221,14 +240,21 @@ export async function resolveCitations(
   return resolveCitationsResponseSchema.parse({
     items: refs.map((ref) => {
       if (ref.kind === 'moment') {
-        const text = moments.get(ref.callId)
+        const text = moments.get(momentKey(ref))
         return text === undefined
-          ? { state: 'removed', kind: 'moment', callId: ref.callId, dealRecordId: ref.dealRecordId }
+          ? {
+              state: 'removed',
+              kind: 'moment',
+              callId: ref.callId,
+              dealRecordId: ref.dealRecordId,
+              ...(ref.momentIndex === undefined ? {} : { momentIndex: ref.momentIndex }),
+            }
           : {
               state: 'available',
               kind: 'moment',
               callId: ref.callId,
               dealRecordId: ref.dealRecordId,
+              momentIndex: text.momentIndex,
               prospect: text.prospect,
               repNext: text.repNext,
             }
