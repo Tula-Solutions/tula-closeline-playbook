@@ -98,3 +98,43 @@ _Avoid_: Result, disposition, status (of a Deal)
 **Moment**:
 A short window of consecutive turns in a Call, kept with its Deal's Outcome so search can find similar ones. A piece of a Document is a chunk, not a Moment.
 _Avoid_: Snippet, segment, clip
+
+**Linked Google account**:
+A person's Google account tied to their Closeline sign-in, so they can sign in with Google as well as, or instead of, a password.
+_Avoid_: Google login, social login, SSO
+
+**Visitor**:
+A person browsing Closeline's public site who has not signed in.
+_Avoid_: User, lead, traffic
+
+**Demo Request**:
+A Visitor's submitted wish to see Closeline, held by Closeline itself and not by any Organization.
+_Avoid_: Lead, enquiry, signup
+
+**Prospect Company**:
+The business a Prospect works for, held as a record in an Organization's book.
+_Avoid_: Account, Organization (that is the Closeline customer), company, client
+
+**Source**:
+Where a value on a Prospect or Prospect Company came from, with the time it arrived: manual entry, an import, a CRM or an enrichment provider.
+_Avoid_: Origin, provenance (in user-facing text), channel
+
+**Suppression**:
+An Organization's record that an address must not be contacted, made on a Prospect's request or by a bounce or complaint.
+_Avoid_: Blocklist, DNC list, opt-out list
+
+**Contact Check**:
+The question every channel asks before contacting a Prospect, answered allowed or denied with a reason.
+_Avoid_: Permission check, compliance check
+
+**Consent Wording**:
+The exact text a Prospect was shown when agreeing, kept unchanged.
+_Avoid_: Disclaimer, terms
+
+**CRM connection**:
+An Organization's authorised link to one external customer-relationship system, from which Closeline reads and to which it can write.
+_Avoid_: Integration (generic), sync account, plug-in
+
+**Stage mapping**:
+An Admin's rule saying which CRM deal stages mean won, lost or open.
+_Avoid_: Pipeline mapping, status mapping
