@@ -174,6 +174,27 @@ describe('what resolves', () => {
     })
   })
 
+  test('without momentIndex, Moment 0 resolves even when it is outside the first hits the store returns', async () => {
+    const h = await createCallHarness()
+    const c = await call(h, 'TWO-1', 'won', h.people.owner, TWO_MOMENTS)
+    const base = h.deps.vectors.search.bind(h.deps.vectors)
+    // A store whose bounded window for a lookup by Call holds only higher Moments: Moment 0 is cut off.
+    h.deps.vectors.search = async (organizationId, query) => {
+      const hits = await base(organizationId, query)
+      return query.filter?.moment === undefined
+        ? hits.filter((hit) => hit.attributes.moment !== 0)
+        : hits
+    }
+
+    const [item] = await items(await resolve(h, [momentRef(c)]))
+
+    expect(item).toMatchObject({
+      state: 'available',
+      momentIndex: 0,
+      prospect: momentSnippet(PROSPECT_LINE),
+    })
+  })
+
   test('a second Organization asking for a momentIndex gets removed', async () => {
     const h = await createCallHarness()
     const otherId = newOrganizationId()
