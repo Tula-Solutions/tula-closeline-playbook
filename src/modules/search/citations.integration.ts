@@ -98,6 +98,20 @@ describe('resolve citations against Postgres', () => {
     ])
   })
 
+  test('a Moment is resolved by momentIndex; an index the build lacks is removed', async () => {
+    const h = await harness()
+    const call = await wonCall(h, 'WON-3')
+    const ref = { kind: 'moment', callId: call.id, dealRecordId: call.dealRecordId }
+
+    const items = await resolve(h, [ref, { ...ref, momentIndex: 0 }, { ...ref, momentIndex: 5 }])
+
+    expect(items.map((item) => item.state)).toEqual(['available', 'available', 'removed'])
+    expect(items.map((item) => ('momentIndex' in item ? item.momentIndex : undefined))).toEqual([
+      0, 0, 5,
+    ])
+    expect(JSON.stringify(items[2])).not.toContain('onboarding')
+  })
+
   test('a deleted document is removed, not its text', async () => {
     const h = await harness()
     const documentId = await uploaded(h, 'pricing.txt')

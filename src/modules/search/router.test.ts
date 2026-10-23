@@ -89,13 +89,14 @@ describe('what a search returns', () => {
     expect(body.items[0]).toMatchObject({
       callId: call.id,
       dealRecordId: call.dealRecordId,
+      momentIndex: 0,
       prospect: momentSnippet(PROSPECT_LINE),
       repNext: momentSnippet('We can cut onboarding in half with a guided plan'),
     })
     expect(body.evidence).toEqual({ moments: 1, deals: 1 })
     // Nothing of the customer's: no deal id, name or amount, and no other key.
     expect(Object.keys(body.items[0] ?? {}).sort()).toEqual(
-      ['callId', 'dealRecordId', 'prospect', 'repNext', 'score'].sort()
+      ['callId', 'dealRecordId', 'momentIndex', 'prospect', 'repNext', 'score'].sort()
     )
     expect(JSON.stringify(body)).not.toContain('WON-1')
   })

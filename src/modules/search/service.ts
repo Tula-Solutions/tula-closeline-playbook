@@ -44,6 +44,7 @@ export function candidatesFor(limit: number): number {
 /** A hit read from the vector store: its attributes checked, or `undefined` for one that is not a Moment of this layout. */
 type Candidate = {
   callId: string
+  momentIndex?: number
   score: number
   tag: MomentTag
   prospect: string
@@ -71,6 +72,7 @@ function candidateOf(hit: {
   }
   return {
     callId: a.call_id,
+    ...(Number.isInteger(a.moment) ? { momentIndex: Number(a.moment) } : {}),
     score: hit.score,
     tag: { outcome: a.outcome, outcomeSeq: a.outcome_seq, epoch: a.epoch, repSeq: a.rep_seq },
     prospect: a.prospect,
@@ -245,6 +247,7 @@ export async function searchMoments(
     items: eligible.slice(0, request.limit).map(({ candidate, dealRecordId }) => ({
       callId: candidate.callId,
       dealRecordId,
+      ...(candidate.momentIndex === undefined ? {} : { momentIndex: candidate.momentIndex }),
       score: candidate.score,
       prospect: candidate.prospect,
       repNext: candidate.repNext,
