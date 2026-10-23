@@ -59,6 +59,15 @@ export function ingestionHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<Pl
         })
       }
     },
+    // Core's `prospect.erased`. No Playbook table has a Prospect key (db v0.22.0: Calls and Deals
+    // link by `deal_record_id` only), so there is no row or vector to delete: the handler
+    // acknowledges, which is the idempotent outcome for a redelivery or an unknown Prospect. It logs
+    // the Organization only. When a table gains a Prospect key, delete by it here in bounded batches.
+    'prospect.erased': async (_message, context) => {
+      deps.logger.info('prospect erased: the Playbook holds no Prospect-keyed data', {
+        organizationId: context.organizationId,
+      })
+    },
     'playbook.document_deleted': async (message, context) => {
       const organizationId = context.organizationId
       if (organizationId === undefined) {

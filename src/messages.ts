@@ -4,6 +4,7 @@ import {
   DEAL_OUTCOME_CHANGED_MESSAGE,
   DOCUMENT_DELETED_MESSAGE,
   DOCUMENT_UPLOADED_MESSAGE,
+  prospectErasedEvent,
 } from 'tula-closeline-contract'
 import { createMessageRegistry, defineMessage, type EnvelopeOf } from 'tula-closeline-kit'
 
@@ -26,6 +27,18 @@ export const callDeleted = defineMessage(CALL_DELETED_MESSAGE)
 /** The message that says a Call's Rep changed (the rebuild is found by `call_jobs`; this only nudges). */
 export const callRepChanged = defineMessage(CALL_REP_CHANGED_MESSAGE)
 
+/**
+ * `prospect.erased` as published by core: the payload is the `data` of the contract's event, the
+ * opaque Prospect id alone. The Playbook keeps nothing keyed by a Prospect (no table in the db
+ * library has a Prospect column), so its handler has nothing to delete; see `ingestionHandlers`.
+ */
+export const prospectErased = defineMessage({
+  type: 'prospect.erased',
+  version: 1,
+  scope: 'organization',
+  payload: prospectErasedEvent.schema.shape.data,
+})
+
 /** Every message type this service's queue carries. */
 export type PlaybookDefinition =
   | typeof documentUploaded
@@ -33,6 +46,7 @@ export type PlaybookDefinition =
   | typeof dealOutcomeChanged
   | typeof callDeleted
   | typeof callRepChanged
+  | typeof prospectErased
 
 /** An envelope of any type this service's queue carries. */
 export type PlaybookEnvelope = EnvelopeOf<PlaybookDefinition>
@@ -44,4 +58,5 @@ export const registry = createMessageRegistry([
   dealOutcomeChanged,
   callDeleted,
   callRepChanged,
+  prospectErased,
 ])
