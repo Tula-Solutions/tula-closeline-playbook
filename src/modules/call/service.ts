@@ -327,6 +327,7 @@ export async function upload(
         DEFAULT_MAX_RECORDING_BYTES_TOTAL,
         deps.env.MAX_DEALS_PER_ORGANIZATION,
         CURRENT_RIGHTS_WORDING_VERSION,
+        null,
       ])
     ).rows[0]
     if (answer?.result === 'created' && !stored) {
@@ -932,6 +933,7 @@ export async function uploadRecording(
         DEFAULT_MAX_RECORDING_BYTES_TOTAL,
         deps.env.MAX_DEALS_PER_ORGANIZATION,
         CURRENT_RIGHTS_WORDING_VERSION,
+        null,
       ])
     ).rows[0]
     return insertOutcome(run, organizationId, keyed, answer)

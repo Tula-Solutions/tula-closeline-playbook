@@ -53,6 +53,8 @@ import type { MemoryApplyDeal } from './deal-imports'
 /** One row of `playbook.calls`, as far as the Transcript path reads or writes it. Times are milliseconds except `created_at_us`. */
 export type MemoryCallRow = {
   id: string
+  /** Who the Call came from: an import, a Rep's upload or an Agent's own call. */
+  origin: 'imported' | 'rep' | 'agent'
   organization_id: string
   deal_record_id: string
   kind: 'transcript' | 'recording'
@@ -202,6 +204,7 @@ export function runCallStatement(
     const d = dealOf(c)
     return {
       id: c.id,
+      origin: c.origin,
       deal_record_id: c.deal_record_id,
       deal_id: d?.deal_id,
       deal_outcome: d?.outcome,
@@ -327,6 +330,7 @@ export function runCallStatement(
         maxRecordingBytes,
         maxDeals,
         wordingVersion,
+        origin,
       ] = params as [
         string,
         string,
@@ -347,6 +351,7 @@ export function runCallStatement(
         number,
         number,
         number,
+        string | null,
       ]
       if (!own(organization)) {
         return none
@@ -415,6 +420,7 @@ export function runCallStatement(
       }
       const call: MemoryCallRow = {
         id,
+        origin: origin === 'rep' || origin === 'agent' ? origin : 'imported',
         organization_id: organization,
         deal_record_id: String(dealRecordId),
         kind,
@@ -567,6 +573,7 @@ export function runCallStatement(
               epoch: c.epoch,
               rep_seq: c.rep_seq,
               deal_record_id: c.deal_record_id,
+              origin: c.origin,
             }
           })
       )

@@ -7,7 +7,7 @@ import {
   type SearchMomentsResponse,
   searchMomentsResponseSchema,
 } from 'tula-closeline-contract'
-import { CALL_SEARCH_STATE, MAX_SEARCH_STATE_IDS } from 'tula-closeline-db'
+import { CALL_SEARCH_STATE, MAX_SEARCH_STATE_IDS, SUGGESTION_GET } from 'tula-closeline-db'
 import { VECTOR_ERROR_CODES, VectorError } from 'tula-closeline-kit'
 import { postgresErrorOf } from '~/adapters/postgres/retry'
 import { toTextArrayLiteral } from '~/adapters/postgres/text-array'
@@ -15,6 +15,7 @@ import type { Container } from '~/container'
 import { RetryAfterError } from '~/http/domain-error'
 import { type MomentTag, momentMayBeReturned } from '~/modules/call/eligibility'
 import { MOMENT_VECTOR_VERSION } from '~/modules/call/moment-vectors'
+import { type CallOrigin, callOriginOf } from '~/modules/call/origin'
 import { CallTimeout, within } from '~/modules/ingestion/runtime'
 import {
   assertRole,
@@ -23,12 +24,27 @@ import {
   isTransientFailure,
   transaction,
 } from '~/modules/service-kit'
+import { momentRefsOf, toSuggestion } from '~/modules/suggestion/schema'
+import {
+  learningIsOn,
+  SUGGESTION_VECTOR_KIND,
+  SUGGESTION_VECTOR_VERSION,
+} from '~/modules/suggestion/service'
 
 /** What a search needs from the container. */
 export type SearchDeps = Pick<
   Container,
   'scope' | 'vectors' | 'embedder' | 'logger' | 'env' | 'sleep' | 'random'
 >
+
+/** The most accepted Suggestions a search returns (the contract's window). */
+const MAX_SEARCH_SUGGESTIONS = 20
+
+/** What an Agent Moment's score is multiplied by: it counts for half beside a Rep's or imported one. */
+const AGENT_WEIGHT = 0.5
+
+/** Agent Moments fill at most one place in this many of a request's `limit` (rounded up): two of ten. */
+const AGENT_SHARE_DENOMINATOR = 5
 
 /** The SQLSTATE of a statement Postgres cancelled at its `statement_timeout`. */
 const QUERY_CANCELED = '57014'
@@ -198,13 +214,29 @@ export async function searchMoments(
     throw new RetryAfterError(ERRORS['server.unavailable'], SEARCH_RETRY_AFTER_SECONDS)
   }
 
-  const hits = await outside(deps, 'vector store', organizationId, () =>
-    deps.vectors.search(organizationId, {
-      vector: query,
-      topK: candidatesFor(request.limit),
-      filter: { outcome: 'won', v: MOMENT_VECTOR_VERSION },
-    })
-  )
+  const [hits, suggestionHits] = await Promise.all([
+    outside(deps, 'vector store', organizationId, () =>
+      deps.vectors.search(organizationId, {
+        vector: query,
+        topK: candidatesFor(request.limit),
+        filter: { outcome: 'won', v: MOMENT_VECTOR_VERSION },
+      })
+    ),
+    // Suggestions are an addition to the answer: when their lookup fails the Moments still come back.
+    outside(deps, 'vector store', organizationId, () =>
+      deps.vectors.search(organizationId, {
+        vector: query,
+        topK: MAX_SEARCH_SUGGESTIONS,
+        filter: { kind: SUGGESTION_VECTOR_KIND, sv: SUGGESTION_VECTOR_VERSION },
+      })
+    ).catch((error: unknown) => {
+      deps.logger.warn('the Suggestion lookup failed; the search answers without Suggestions', {
+        organizationId,
+        reason: error instanceof Error ? error.name : 'unknown',
+      })
+      return []
+    }),
+  ])
   const candidates = hits
     .map((hit) => candidateOf(hit))
     .filter((candidate): candidate is Candidate => candidate !== undefined)
@@ -215,43 +247,130 @@ export async function searchMoments(
     // The store was asked for at most 100; more than the statement reads would be silently unread.
     throw new Error('a search found more Calls than the state statement reads')
   }
+  const suggestionIds = [
+    ...new Set(
+      suggestionHits.flatMap((hit) =>
+        typeof hit.attributes.suggestion_id === 'string' ? [hit.attributes.suggestion_id] : []
+      )
+    ),
+  ]
   const states = new Map<
     string,
-    { inSearch: boolean; epoch: number; repSeq: number; dealRecordId: string }
+    { inSearch: boolean; epoch: number; repSeq: number; dealRecordId: string; origin: CallOrigin }
   >()
-  if (callIds.length > 0) {
-    const rows = await outside(deps, 'database', organizationId, () =>
-      transaction(deps, organizationId, async (run) => {
-        // Postgres cancels the read itself at the step deadline; the wait above covers a stall that never reaches it.
-        await run(`set local statement_timeout = '${deps.env.SEARCH_STEP_TIMEOUT_MS}ms'`, [])
-        return (await run(CALL_SEARCH_STATE, [organizationId, toTextArrayLiteral(callIds)])).rows
-      })
-    )
-    for (const row of rows) {
-      states.set(String(row.call_id), {
-        inSearch: row.in_search === true,
-        epoch: Number(row.epoch),
-        repSeq: Number(row.rep_seq),
-        dealRecordId: String(row.deal_record_id),
-      })
+  const accepted = new Map<string, Record<string, unknown>>()
+  // One read of Postgres decides everything the store only hints at: the Calls' state, the switch
+  // and which Suggestions are accepted.
+  const read = await outside(deps, 'database', organizationId, () =>
+    transaction(deps, organizationId, async (run) => {
+      // Postgres cancels the read itself at the step deadline; the wait above covers a stall that never reaches it.
+      await run(`set local statement_timeout = '${deps.env.SEARCH_STEP_TIMEOUT_MS}ms'`, [])
+      const learning = await learningIsOn(run, organizationId)
+      const stateRows =
+        callIds.length === 0
+          ? []
+          : (await run(CALL_SEARCH_STATE, [organizationId, toTextArrayLiteral(callIds)])).rows
+      const suggestionRows: Record<string, unknown>[] = []
+      const citedLive = new Set<string>()
+      if (learning) {
+        for (const id of suggestionIds) {
+          const row = (await run(SUGGESTION_GET, [organizationId, id])).rows[0]
+          if (row !== undefined && row.status === 'accepted') {
+            suggestionRows.push(row)
+          }
+        }
+        // An accepted Suggestion is only as good as the Calls it cites: it is returned while at
+        // least one of them can still be searched (not deleted, rights kept, Deal still won).
+        const cited = [
+          ...new Set(suggestionRows.flatMap((row) => momentRefsOf(row).map((ref) => ref.callId))),
+        ].slice(0, MAX_SEARCH_STATE_IDS)
+        if (cited.length > 0) {
+          const live = (await run(CALL_SEARCH_STATE, [organizationId, toTextArrayLiteral(cited)]))
+            .rows
+          for (const row of live) {
+            if (row.in_search === true) {
+              citedLive.add(String(row.call_id))
+            }
+          }
+        }
+      }
+      return { learning, stateRows, suggestionRows, citedLive }
+    })
+  )
+  for (const row of read.stateRows) {
+    states.set(String(row.call_id), {
+      inSearch: row.in_search === true,
+      epoch: Number(row.epoch),
+      repSeq: Number(row.rep_seq),
+      dealRecordId: String(row.deal_record_id),
+      origin: callOriginOf(row),
+    })
+  }
+  for (const row of read.suggestionRows) {
+    if (momentRefsOf(row).some((ref) => read.citedLive.has(ref.callId))) {
+      accepted.set(String(row.id), row)
     }
   }
 
-  const eligible = candidates.flatMap((candidate) => {
-    const state = states.get(candidate.callId)
-    return state !== undefined && momentMayBeReturned(candidate.tag, state)
-      ? [{ candidate, dealRecordId: state.dealRecordId }]
-      : []
+  const eligible = candidates
+    .flatMap((candidate) => {
+      const state = states.get(candidate.callId)
+      if (state === undefined || !momentMayBeReturned(candidate.tag, state)) {
+        return []
+      }
+      // With the switch off an Agent Moment is as if it did not exist.
+      if (state.origin === 'agent' && !read.learning) {
+        return []
+      }
+      const score = state.origin === 'agent' ? candidate.score * AGENT_WEIGHT : candidate.score
+      return [{ candidate, dealRecordId: state.dealRecordId, origin: state.origin, score }]
+    })
+    .sort((a, b) => b.score - a.score)
+  const agentCap = Math.ceil(request.limit / AGENT_SHARE_DENOMINATOR)
+  const items: typeof eligible = []
+  let agents = 0
+  for (const entry of eligible) {
+    if (items.length >= request.limit) {
+      break
+    }
+    if (entry.origin === 'agent') {
+      if (agents >= agentCap) {
+        continue
+      }
+      agents++
+    }
+    items.push(entry)
+  }
+  const suggestions = suggestionHits.flatMap((hit) => {
+    const row = accepted.get(String(hit.attributes.suggestion_id))
+    if (row === undefined) {
+      return []
+    }
+    const suggestion = toSuggestion(row)
+    return [
+      {
+        suggestionId: suggestion.id,
+        kind: suggestion.kind,
+        text: suggestion.text,
+        score: hit.score,
+        provenance: {
+          dealRecordId: suggestion.provenance.dealRecordId,
+          momentRefs: momentRefsOf(row),
+        },
+      },
+    ]
   })
   return searchMomentsResponseSchema.parse({
-    items: eligible.slice(0, request.limit).map(({ candidate, dealRecordId }) => ({
+    items: items.map(({ candidate, dealRecordId, origin, score }) => ({
       callId: candidate.callId,
       dealRecordId,
       ...(candidate.momentIndex === undefined ? {} : { momentIndex: candidate.momentIndex }),
-      score: candidate.score,
+      score,
+      origin,
       prospect: candidate.prospect,
       repNext: candidate.repNext,
     })),
+    suggestions: suggestions.slice(0, Math.min(request.limit, MAX_SEARCH_SUGGESTIONS)),
     evidence: {
       moments: eligible.length,
       deals: new Set(eligible.map((entry) => entry.dealRecordId)).size,

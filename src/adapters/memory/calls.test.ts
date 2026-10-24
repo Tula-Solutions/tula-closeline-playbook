@@ -118,6 +118,7 @@ async function insert(db: Db, o: InsertOptions = {}) {
       50 * 1024 ** 3,
       o.maxDeals ?? 20_000,
       o.wording ?? WORDING,
+      null,
     ])
     return result.rows[0]
   })
