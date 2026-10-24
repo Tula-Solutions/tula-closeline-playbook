@@ -68,6 +68,7 @@ const REQUIRED_OUTSIDE_LOCAL = [
   'AUTH_AUDIENCE',
   'AWS_REGION',
   'QUEUE_URL',
+  'CORE_JOBS_QUEUE_URL',
   'STORAGE_BUCKET',
   'INTERNAL_API_TOKENS',
 ] as const
@@ -126,6 +127,11 @@ const schema = z
     AWS_REGION: z.string().min(1).max(64).optional(),
     /** The ingestion queue's URL. Unset in `local` means the in-memory queue; required elsewhere. */
     QUEUE_URL: z.url().max(2_048).optional(),
+    /**
+     * Core's jobs queue, where `export.part_ready` and `export.part_failed` go (M16). Unset in
+     * `local` means an in-memory queue nobody reads; required elsewhere.
+     */
+    CORE_JOBS_QUEUE_URL: z.url().max(2_048).optional(),
     /** Where ElasticMQ listens, for a local run against it. Accepted only when `local`. */
     QUEUE_ENDPOINT: z.url().max(2_048).optional(),
     /** The bucket holding uploaded files. Unset in `local` means the in-memory store; required elsewhere. */
@@ -268,6 +274,8 @@ const schema = z
      * so the Call still ends `ready`.
      */
     MAX_MOMENTS_PER_CALL: integer(1, 10_000).default(2_000),
+    /** The most rows an export file holds before the next file starts (a file also closes at 4 MiB). */
+    EXPORT_ROWS_PER_FILE: integer(1, 10_000).default(1_000),
     /** The most text characters one document may hold after parsing; more fails it with `processing_failed`. */
     MAX_TEXT_CHARS_PER_DOCUMENT: integer(1_000, 20_000_000).default(5_000_000),
     /** Organizations one work-discovery page returns (1 to the database's batch maximum). */

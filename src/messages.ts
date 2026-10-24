@@ -4,6 +4,9 @@ import {
   DEAL_OUTCOME_CHANGED_MESSAGE,
   DOCUMENT_DELETED_MESSAGE,
   DOCUMENT_UPLOADED_MESSAGE,
+  exportPartFailedEvent,
+  exportPartReadyEvent,
+  exportRequestedEvent,
   prospectErasedEvent,
 } from 'tula-closeline-contract'
 import { createMessageRegistry, defineMessage, type EnvelopeOf } from 'tula-closeline-kit'
@@ -39,6 +42,33 @@ export const prospectErased = defineMessage({
   payload: prospectErasedEvent.schema.shape.data,
 })
 
+/**
+ * `export.requested` as core publishes it (M16): the payload is the `data` of the contract's
+ * event. Every service with a slice of an Organization's export writes it under its own prefix.
+ */
+export const exportRequested = defineMessage({
+  type: 'export.requested',
+  version: 1,
+  scope: 'organization',
+  payload: exportRequestedEvent.schema.shape.data,
+})
+
+/** `export.part_ready` for core's jobs queue: this service's slice is written (the contract event's `data`). */
+export const exportPartReady = defineMessage({
+  type: 'export.part_ready',
+  version: 1,
+  scope: 'organization',
+  payload: exportPartReadyEvent.schema.shape.data,
+})
+
+/** `export.part_failed` for core's jobs queue: this service's slice could not be written (the contract event's `data`). */
+export const exportPartFailed = defineMessage({
+  type: 'export.part_failed',
+  version: 1,
+  scope: 'organization',
+  payload: exportPartFailedEvent.schema.shape.data,
+})
+
 /** Every message type this service's queue carries. */
 export type PlaybookDefinition =
   | typeof documentUploaded
@@ -47,6 +77,7 @@ export type PlaybookDefinition =
   | typeof callDeleted
   | typeof callRepChanged
   | typeof prospectErased
+  | typeof exportRequested
 
 /** An envelope of any type this service's queue carries. */
 export type PlaybookEnvelope = EnvelopeOf<PlaybookDefinition>
@@ -59,4 +90,14 @@ export const registry = createMessageRegistry([
   callDeleted,
   callRepChanged,
   prospectErased,
+  exportRequested,
 ])
+
+/** The message types this service publishes to core's jobs queue. */
+export type ExportReplyDefinition = typeof exportPartReady | typeof exportPartFailed
+
+/** An envelope of any type this service publishes to core's jobs queue. */
+export type ExportReplyEnvelope = EnvelopeOf<ExportReplyDefinition>
+
+/** Validates and builds the envelopes this service publishes to core's jobs queue. */
+export const exportReplyRegistry = createMessageRegistry([exportPartReady, exportPartFailed])

@@ -24,6 +24,7 @@ export type PipelineDeps = Pick<
   | 'random'
   | 'reportError'
   | 'queue'
+  | 'exportQueue'
 >
 
 /** The most epochs below the current one a cleanup looks at; older vectors are left to the search-time state check. */

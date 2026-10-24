@@ -1,6 +1,7 @@
 import type { Handlers } from 'tula-closeline-kit/queue'
 import type { PlaybookEnvelope } from '~/messages'
 import { cleanupCallDeletion } from '~/modules/call/purge'
+import * as Exports from '~/modules/export/service'
 import { cleanupDeletion } from './cleanup'
 import type { PipelineDeps } from './runtime'
 
@@ -59,6 +60,21 @@ export function ingestionHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<Pl
         })
       }
     },
+    // Core's `export.requested`: write this service's slice and answer on core's jobs queue.
+    'export.requested': async (message, context) => {
+      if (context.organizationId === undefined) {
+        return
+      }
+      await Exports.writeSlice(deps, {
+        organizationId: context.organizationId,
+        exportId: message.payload.exportId,
+        includeRecordingLinks: message.payload.includeRecordingLinks,
+        traceId: context.traceId,
+        receiveCount: context.receiveCount,
+        signal: context.signal,
+      })
+    },
+
     // Core's `prospect.erased`. No Playbook table has a Prospect key (db v0.22.0: Calls and Deals
     // link by `deal_record_id` only), so there is no row or vector to delete: the handler
     // acknowledges, which is the idempotent outcome for a redelivery or an unknown Prospect. It logs
