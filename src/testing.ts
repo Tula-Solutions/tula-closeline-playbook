@@ -33,6 +33,10 @@ import {
   type MemoryPlaybookDatabase,
 } from '~/adapters/memory/playbook-database'
 import {
+  createMemorySuggestionPhraser,
+  type MemorySuggestionPhraser,
+} from '~/adapters/memory/suggestion-phraser'
+import {
   createPostgresProcessedStore,
   type InScope,
   organizationIsRemoved,
@@ -69,6 +73,8 @@ export type TestDeps = Container & {
   /** Core's jobs queue as the export slice sees it: what it published, readable by a test. */
   exportQueue: MemoryQueue<ExportReplyDefinition>
   embedder: MemoryEmbedder
+  /** The Suggestion phraser stand-in: script its proposals, read the Moments it was given. */
+  phraser: MemorySuggestionPhraser
   ocr: MemoryOcrReader
   /** The kit's transcriber stand-in: script its results, fail its calls, list the copies it still holds. */
   transcriber: MemoryTranscriber
@@ -168,6 +174,7 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     vectors: createMemoryVectorStore({ dimensions: embedder.dimensions }),
     processed,
     embedder,
+    phraser: createMemorySuggestionPhraser(),
     parser: createMemoryParser(),
     ocr: createMemoryOcrReader(),
     transcriber: createMemoryTranscriber({

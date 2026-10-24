@@ -14,6 +14,7 @@ export type PipelineDeps = Pick<
   | 'objects'
   | 'vectors'
   | 'embedder'
+  | 'phraser'
   | 'parser'
   | 'ocr'
   | 'transcriber'

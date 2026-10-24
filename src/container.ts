@@ -35,6 +35,7 @@ import {
 } from 'tula-closeline-kit/testing'
 import { createMemoryEmbedder } from '~/adapters/memory/embedder'
 import { createEmptyOcrReader } from '~/adapters/memory/ocr'
+import { createMemorySuggestionPhraser } from '~/adapters/memory/suggestion-phraser'
 import { createDocumentParserFor } from '~/adapters/parser'
 import {
   createPostgresProcessedStore,
@@ -58,6 +59,7 @@ import {
 import type { Embedder } from '~/ports/embedder'
 import type { OcrReader } from '~/ports/ocr'
 import type { DocumentParser } from '~/ports/parser'
+import type { SuggestionPhraser } from '~/ports/suggestion-phraser'
 import { trackerSafe } from '~/tracker-safe'
 import { createWorkers, type Workers } from '~/workers'
 
@@ -127,6 +129,8 @@ export type Container = {
   processed: ProcessedStore
   /** Turns text into vectors. A fake until a real adapter exists (ADR 0010). */
   embedder: Embedder
+  /** Phrases the Suggestions an Agent's won calls prove. A memory stand-in only; no vendor adapter (ADR 0010). */
+  phraser: SuggestionPhraser
   /** Extracts the text layer of a document. A fake until a real adapter exists (ADR 0010). */
   parser: DocumentParser
   /** Reads pages with no text layer. A fake until a real adapter exists (ADR 0010). */
@@ -265,6 +269,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
   const exportQueue = createExportQueue(env)
   const objects = createObjects(env, logger)
   const embedder = createMemoryEmbedder()
+  const phraser = createMemorySuggestionPhraser()
   const scope = scopeOver(database.db)
   const discover: Discover = (kind, after, batch) =>
     // Unscoped, and the only statement of its transaction (db README, ADR 0017).
@@ -294,6 +299,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     objects,
     vectors,
     embedder,
+    phraser,
     parser,
     ocr,
     transcriber,
@@ -339,6 +345,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     vectors,
     processed,
     embedder,
+    phraser,
     parser,
     ocr,
     transcriber,

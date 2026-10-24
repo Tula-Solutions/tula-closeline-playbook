@@ -96,6 +96,7 @@ import {
   type MemoryImportRow,
   runImportStatement,
 } from './deal-imports'
+import { type MemorySuggestionRow, runSuggestionStatement } from './suggestions'
 
 export type { MemoryCallJobRow, MemoryCallRow } from './calls'
 export type { MemoryImportReportRow, MemoryImportRow } from './deal-imports'
@@ -188,6 +189,8 @@ export type MemorySettingsRow = {
   embedding_model: string
   embedding_dimension: number
   vectors_written_at: number | null
+  /** The Admin switch for learning from Agent-origin Moments; absent means the default, on. */
+  learn_from_agent_moments?: boolean
 }
 
 /** One row of `playbook.consumed_message`. */
@@ -238,6 +241,8 @@ type State = {
   orphans: Map<string, OrphanRow>
   /** The `embed_usage` rows: Moments counted per Organization and UTC day (`<organization>|<yyyy-mm-dd>`). */
   embedUsage: Map<string, number>
+  /** The Suggestions an Agent-origin Moment proposed. */
+  suggestions: MemorySuggestionRow[]
 }
 
 /** One `orphan_sweeps` row: the sweep's cursor and the deadline of the claim on it are in microseconds. */
@@ -294,6 +299,15 @@ export type MemoryPlaybookDatabase = {
   seedRights(row: MemoryRightsRow): void
   /** The Organization's index settings row, if one exists. */
   settings(organizationId: string): MemorySettingsRow | undefined
+  /** Sets who a Call came from (the routes only create imported ones), for the Agent-origin paths. */
+  setCallOrigin(organizationId: string, callId: string, origin: MemoryCallRow['origin']): void
+  /** The committed Suggestions of an Organization, oldest first. */
+  suggestions(organizationId: string): MemorySuggestionRow[]
+  /** Adds a Suggestion directly, for a state the proposal job cannot reach. */
+  seedSuggestion(
+    row: Partial<MemorySuggestionRow> &
+      Pick<MemorySuggestionRow, 'id' | 'organization_id' | 'deal_record_id'>
+  ): void
   /** The committed consumed-message records of an Organization (or the global scope). */
   consumed(organizationId: string): MemoryConsumedRow[]
   /**
@@ -450,6 +464,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     usage: new Set(),
     orphans: new Map(),
     embedUsage: new Map(),
+    suggestions: [],
   }
   const failures: { statement: string; error: Error; once: boolean }[] = []
   const commitFailures: { error: Error; applied: boolean }[] = []
@@ -1798,6 +1813,30 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           if (imported !== undefined) {
             return imported
           }
+          const suggested = runSuggestionStatement(text, params, {
+            suggestions: state.suggestions,
+            settings: state.settings,
+            createSettings: (organization, model, dimension) => {
+              state.settings.push({
+                organization_id: organization,
+                embedding_model: model,
+                embedding_dimension: dimension,
+                vectors_written_at: null,
+              })
+            },
+            own,
+            now,
+            nextMicroseconds,
+            rows,
+            none,
+            batch,
+            pgTimestamp,
+            pgTimestampUs,
+            cursorMicroseconds,
+          })
+          if (suggested !== undefined) {
+            return suggested
+          }
           const called = runCallStatement(text, params, {
             calls: state.calls,
             callJobs: state.callJobs,
@@ -1990,6 +2029,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         usage: new Set(committed.usage),
         orphans: structuredClone(committed.orphans),
         embedUsage: new Map(committed.embedUsage),
+        suggestions: structuredClone(committed.suggestions),
       }
       const inside: string[] = []
       transactionStatements.push(inside)
@@ -2019,6 +2059,32 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     discoveries,
     settings: (organizationId) =>
       committed.settings.find((x) => x.organization_id === organizationId),
+    setCallOrigin: (organizationId, callId, origin) => {
+      const call = committed.calls.find(
+        (c) => c.organization_id === organizationId && c.id === callId
+      )
+      if (call === undefined) {
+        throw new Error(`no Call ${callId} to set the origin of`)
+      }
+      call.origin = origin
+    },
+    suggestions: (organizationId) =>
+      committed.suggestions
+        .filter((x) => x.organization_id === organizationId)
+        .sort((a, b) => a.created_at_us - b.created_at_us),
+    seedSuggestion: (row) => {
+      committed.suggestions.push({
+        kind: 'objection_answer',
+        status: 'pending',
+        text: 'Seeded suggestion',
+        fingerprint: HEX(crypto.getRandomValues(new Uint8Array(32))),
+        moments: [],
+        created_at_us: nextMicroseconds(),
+        decided_at: null,
+        decided_by_membership_id: null,
+        ...row,
+      })
+    },
     consumed: (organizationId) =>
       committed.consumed.filter((c) => c.organization_id === organizationId),
     transactionStatements,
@@ -2038,6 +2104,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     seedCall: (row) => {
       const at = now()
       committed.calls.push({
+        origin: 'imported',
         kind: 'transcript',
         file_name: 'seed.txt',
         media_type: 'text/plain',

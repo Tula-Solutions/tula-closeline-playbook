@@ -60,6 +60,11 @@ describe('the booted app', () => {
       '/v1/playbook/rights-confirmation',
       '/v1/playbook/search/documents',
       '/v1/playbook/search/moments',
+      '/v1/playbook/settings/learning',
+      '/v1/playbook/suggestions',
+      '/v1/playbook/suggestions/{suggestionId}',
+      '/v1/playbook/suggestions/{suggestionId}/accept',
+      '/v1/playbook/suggestions/{suggestionId}/reject',
     ])
     expect(document.paths['/healthz']?.get.responses['500']).toBeDefined()
     expect(document.paths['/readyz']?.get.responses['503']).toBeDefined()

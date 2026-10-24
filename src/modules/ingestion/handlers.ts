@@ -2,6 +2,7 @@ import type { Handlers } from 'tula-closeline-kit/queue'
 import type { PlaybookEnvelope } from '~/messages'
 import { cleanupCallDeletion } from '~/modules/call/purge'
 import * as Exports from '~/modules/export/service'
+import { proposeFromWonDeal } from '~/modules/suggestion/propose'
 import { cleanupDeletion } from './cleanup'
 import type { PipelineDeps } from './runtime'
 
@@ -29,10 +30,18 @@ export function ingestionHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<Pl
     },
     // A nudge only: the re-tag job finds its work by discovery (`outcome_retag`), so a lost
     // message, or a change made before this handler existed, is recovered all the same.
-    'playbook.deal_outcome_changed': async (_message, context) => {
-      if (context.organizationId !== undefined) {
-        nudge(context.organizationId)
+    // Then a won Deal's Agent Calls are offered to the phraser; the proposal is idempotent by fingerprint.
+    'playbook.deal_outcome_changed': async (message, context) => {
+      if (context.organizationId === undefined) {
+        return
       }
+      nudge(context.organizationId)
+      await proposeFromWonDeal(
+        deps,
+        context.organizationId,
+        message.payload.dealRecordId,
+        context.signal
+      )
     },
     // A nudge too: the rebuild job is found by the `call_jobs` hint.
     'playbook.call_rep_changed': async (_message, context) => {

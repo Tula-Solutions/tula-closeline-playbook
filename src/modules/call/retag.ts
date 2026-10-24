@@ -49,7 +49,7 @@ export type RetagResult = {
 
 /** How one Call's re-tag ended. */
 /** The key of a Transcript Call's original file, rebuilt from its media type, which maps to one extension. */
-function objectKeyOf(callId: string, mediaType: string): string | undefined {
+export function objectKeyOf(callId: string, mediaType: string): string | undefined {
   const extension = Object.entries(MEDIA_TYPE_BY_CALL_EXTENSION).find(
     ([, type]) => type === mediaType
   )?.[0]

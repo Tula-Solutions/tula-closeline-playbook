@@ -27,11 +27,7 @@ search over them, and later fine-tuning. It owns the `playbook` Postgres schema 
 `closeline_playbook`), its bucket and its queue, and nothing else. It never reads the `core` or
 `auth` schema; it asks core over HTTP or consumes events.
 
-What exists: the skeleton (HTTP stack, token check, container, consumer loop, ports and fakes) and
-the document routes (hub issue 14, round A), and the pipeline (round B): message handlers, the
-ingestion job loop, the chunker, vector cleanup, and the purge, housekeeping and orphan sweeps.
-What does not: the vendor adapters for the vector store, embedder and OCR, and search. The parser
-is real (`src/adapters/parser/`).
+What exists: the skeleton, the document routes, the pipeline, sales history and search. What does not: the vendor adapters for the vector store, embedder, OCR and Suggestion phraser.
 **The pipeline is not deployable until plan steps 1.35 and 1.36 (hub issue 48 and the
 embedder/OCR adapters) land.** Until then `WORKERS_ENABLED=true` is refused at
 boot outside `local` (it names the fake ports, `PIPELINE_FAKE_PORTS` in `src/env.ts`, which now includes the `transcriber`; env keys `RECORDING_BODY_TIMEOUT_MS`, `TRANSCRIBE_POLL_INTERVAL_MS`, `TRANSCRIBE_MAX_WAIT_MS`, `RECORDING_MIN_BYTES_PER_SECOND`, `RECORDING_RATE_WINDOW_MS`), and the
@@ -74,6 +70,12 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   job shares the `INGESTION_CONCURRENCY` pool, is gated by `IMPORTS_ENABLED`, caps Deals at `MAX_DEALS_PER_ORGANIZATION`.
   `src/modules/call/` is the Call Transcript path (hub issue 70: upload, read, `job.ts` Moments, `purge.ts`, `erase.ts`,
   `eligibility.ts`); its job is gated by `WORKERS_ENABLED`; rules in the same rules file.
+- `src/modules/suggestion/` (hub issue 312): Agent-origin Moments and Suggestions. `propose.ts` runs on
+  `playbook.deal_outcome_changed` for a won Deal (Agent Calls only, through the `SuggestionPhraser` port;
+  model output is validated); `service.ts` lists, accepts (embeds, then decides) and rejects, Owner and Admin
+  only, and holds the per-Organization learning switch (`index_settings.learn_from_agent_moments`). Search
+  weighs Agent Moments 0.5, caps them at ceil(limit/5), drops them with the switch off, and returns an accepted Suggestion only while a Call it cites is searchable. `src/modules/call/origin.ts`
+  reads `calls.origin` (db v0.51.0; a row without it counts as imported). The decider id is derived from org and user.
 - `src/messages.ts` is the registry of the contract messages. `src/consumer.ts` wires the kit's
   `createConsumer` (name `playbook.ingestion`) over the Postgres `ProcessedStore`; handlers go in
   `createHandlers`. `server.ts` starts the consumer and, after it listens, the workers
@@ -107,8 +109,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   in memory. With `MAX_CONCURRENT_UPLOADS=1` the share is the whole gate. Two Organizations (or one
   with many accounts) can still hold every place by reconnecting each time a deadline passes, so a
   rate limit per user or source at the edge is required before production (hub issue 19, infra).
-  The default `UPLOAD_BODY_TIMEOUT_MS` of 60 s assumes at least about 3.5 Mbit/s up for a 25 MiB
-  file (25 MiB in 60 s); slower links need a larger value, and it is left at 60 s deliberately.
+  Upload timeout and memory figures: `.claude/rules/documents.md`.
 - The upload order (service.ts, `upload`): role, instance bound (`MAX_CONCURRENT_UPLOADS`, 503 with
   `Retry-After` when full: the contract has no code for it; one Organization may hold at most half
   the places, rounded up and at least one, else `rate.limited` 429 with `Retry-After`), body cap and
@@ -143,12 +144,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   guarantee, the vector cleanup is not.
 - Uploads (except Recordings, which stream to the object store in constant memory, up to 500 MB / 3 h) are held whole in memory: `MAX_CONCURRENT_UPLOADS` bounds them per instance, and sizes and
   page counts come from the contract's constants (`env.ts` may lower them, never raise them).
-  Measured on Bun 1.4.2 against a real server: a 25 MiB upload peaks at about 26 MiB of buffers and
-  25 to 50 MiB of resident memory once warm (up to about 100 MiB on the first), so plan 4 times the
-  file per upload: 100 MiB, 400 MiB at the default bound of 4.
-- A list is one call to `DOCUMENT_LIST_FILTERED` (db v0.12.0): any state filter, every column a read
-  returns on each row (`updated_at`, `page_count`), so a listed document is never read again.
-  `pageCount` is the row's `page_count`, null until the job records it with `INGESTION_JOB_ADVANCE`.
+- A list is one call to `DOCUMENT_LIST_FILTERED` (details in `.claude/rules/documents.md`).
 - File content, extracted text and prompts are untrusted data. Never log or return them; no
   document text in an error message, a log field or a queue payload.
 - Every call to a vendor port takes an `AbortSignal`. Every call has its own timeout and a bounded,
@@ -191,9 +187,7 @@ Each has a benchmark in `bench/` with a budget; a change to one states its compl
   statements (two when the file is new) and one object write: `bench/upload.bench.test.ts` times the
   CPU-bound part on a 25 MiB file. A list page is O(page size) reads; a filtered one is bounded by 6
   pages of 100. The remove-all route is bounded by 5 batches of 100.
-- **Playbook search** (not built): the Copilot searches inside a budget of about 1.5 s on a live
-  call (ADR 0010), so one embedding call plus one vector query must stay O(topK) and never scan an
-  Organization's documents. Add its benchmark with the first search function and name it here.
+- **Playbook search** (`searchMoments`): one embed plus two O(topK) vector queries (Moments, accepted Suggestions) and one read transaction; never scans an Organization.
 
 A benchmark times `measure(operation)`: a warm-up, then several batches, gated on the fastest, so a
 noisy runner cannot fail it but a real regression (every batch slower) does. Budget is about 5x the

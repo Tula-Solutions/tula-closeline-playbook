@@ -96,7 +96,7 @@ describe('what a search returns', () => {
     expect(body.evidence).toEqual({ moments: 1, deals: 1 })
     // Nothing of the customer's: no deal id, name or amount, and no other key.
     expect(Object.keys(body.items[0] ?? {}).sort()).toEqual(
-      ['callId', 'dealRecordId', 'momentIndex', 'prospect', 'repNext', 'score'].sort()
+      ['callId', 'dealRecordId', 'momentIndex', 'origin', 'prospect', 'repNext', 'score'].sort()
     )
     expect(JSON.stringify(body)).not.toContain('WON-1')
   })
@@ -261,7 +261,9 @@ describe('what a search returns', () => {
     const seen: { topK: number; filter: unknown }[] = []
     const base = h.deps.vectors.search.bind(h.deps.vectors)
     h.deps.vectors.search = async (organizationId, query) => {
-      seen.push({ topK: query.topK, filter: query.filter })
+      if (query.filter?.kind !== 'suggestion') {
+        seen.push({ topK: query.topK, filter: query.filter })
+      }
       return base(organizationId, query)
     }
 
@@ -445,6 +447,9 @@ describe('when the model or the store cannot answer', () => {
     const base = h.deps.vectors.search.bind(h.deps.vectors)
     let attempts = 0
     h.deps.vectors.search = async (organizationId, query) => {
+      if (query.filter?.kind === 'suggestion') {
+        return base(organizationId, query)
+      }
       attempts++
       if (attempts === 1) {
         throw new VectorError(VECTOR_ERROR_CODES.unavailable, 'down')
@@ -465,7 +470,10 @@ describe('when the model or the store cannot answer', () => {
     const h = await createCallHarness()
     h.deps.random = () => 0
     let attempts = 0
-    h.deps.vectors.search = async () => {
+    h.deps.vectors.search = async (_organizationId, query) => {
+      if (query.filter?.kind === 'suggestion') {
+        return []
+      }
       attempts++
       throw new VectorError(VECTOR_ERROR_CODES.unavailable, 'down')
     }
@@ -480,7 +488,10 @@ describe('when the model or the store cannot answer', () => {
   test('a vector store that rejects the request is not retried and is a 500', async () => {
     const h = await createCallHarness()
     let attempts = 0
-    h.deps.vectors.search = async () => {
+    h.deps.vectors.search = async (_organizationId, query) => {
+      if (query.filter?.kind === 'suggestion') {
+        return []
+      }
       attempts++
       throw new VectorError(VECTOR_ERROR_CODES.invalidRequest, 'bad')
     }
@@ -565,7 +576,7 @@ describe('a second Organization', () => {
     await search(h, ask('price'))
     await search(h, ask('price'), { as: stranger })
 
-    expect(namespaces).toEqual([h.organizationId, otherId])
+    expect([...new Set(namespaces)]).toEqual([h.organizationId, otherId])
   })
 
   test("a foreign call id planted in the caller's namespace is dropped, and its text never returned", async () => {
