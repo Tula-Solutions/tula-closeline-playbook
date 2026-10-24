@@ -282,6 +282,24 @@ describe('the export slice', () => {
     expect(h.sent).toHaveLength(0)
   })
 
+  test('a shutdown abort on the last delivery is rethrown, never reported as a failure', async () => {
+    const h = await harness(1)
+    await seed(h, 'seven', h.organizationId, 2)
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      Exports.writeSlice(h.deps, {
+        organizationId: h.organizationId,
+        exportId,
+        includeRecordingLinks: false,
+        traceId: 't',
+        receiveCount: Exports.LAST_ATTEMPT,
+        signal: controller.signal,
+      })
+    ).rejects.toThrow()
+    expect(h.sent).toHaveLength(0)
+  })
+
   test('a message without an Organization does nothing', async () => {
     const h = await harness(2)
     const handlers = ingestionHandlers(h.deps, () => undefined)

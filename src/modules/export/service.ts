@@ -352,6 +352,10 @@ export async function writeSlice(deps: ExportDeps, request: ExportRequest): Prom
     totals = await writer.finish()
   } catch (error) {
     // A part over the cap fails the same way every time: report it at once, do not retry.
+    // A shutdown abort is not the slice's fault: redeliver it to a live instance.
+    if (request.signal.aborted) {
+      throw error
+    }
     if (request.receiveCount < LAST_ATTEMPT && !(error instanceof PartTooLarge)) {
       throw error
     }
