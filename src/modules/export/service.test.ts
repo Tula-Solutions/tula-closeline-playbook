@@ -258,6 +258,30 @@ describe('the export slice', () => {
     expect(JSON.stringify(reply)).not.toContain('secret detail')
   })
 
+  test('a part over the file cap fails at once, without a retry', async () => {
+    const h = await harness(1)
+    await seed(h, 'six', h.organizationId, 3)
+    await Exports.writeSlice(h.deps, {
+      organizationId: h.organizationId,
+      exportId,
+      includeRecordingLinks: false,
+      traceId: 't',
+      receiveCount: 1,
+      signal,
+      maxFiles: 2,
+    })
+    const reply = h.sent.at(-1)
+    expect(reply?.type).toBe('export.part_failed')
+    expect(reply?.payload).toMatchObject({ reason: 'write_failed' })
+  })
+
+  test('a failed part_ready publish is not reported as a failed slice', async () => {
+    const h = await harness(2)
+    spyOn(h.deps.exportQueue, 'publish').mockRejectedValue(new Error('queue down'))
+    await expect(deliver(h, { receiveCount: 3 })).rejects.toThrow('queue down')
+    expect(h.sent).toHaveLength(0)
+  })
+
   test('a message without an Organization does nothing', async () => {
     const h = await harness(2)
     const handlers = ingestionHandlers(h.deps, () => undefined)

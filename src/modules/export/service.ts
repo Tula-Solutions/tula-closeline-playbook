@@ -28,6 +28,8 @@ export type ExportRequest = {
   signal: AbortSignal
   /** Rows per database page; {@link PAGE_SIZE} when left out (tests set it small to cross pages). */
   pageSize?: number
+  /** The most files the part may hold; the contract's cap when left out (tests set it low). */
+  maxFiles?: number
 }
 
 /** The rows one database page holds; the same for every dataset. */
@@ -333,34 +335,24 @@ async function reply(
  */
 export async function writeSlice(deps: ExportDeps, request: ExportRequest): Promise<void> {
   const prefix = partPrefix(request.exportId)
+  let totals: { files: number; bytes: number }
   try {
     await clearPart(deps, request.organizationId, prefix)
     const writer = new PartWriter(
       deps,
       request.organizationId,
       prefix,
-      deps.env.EXPORT_ROWS_PER_FILE
+      deps.env.EXPORT_ROWS_PER_FILE,
+      () => new PartTooLarge(),
+      request.maxFiles ?? MAX_PART_FILES
     )
     await writeDocuments(deps, request, writer)
     await writeDeals(deps, request, writer)
     await writeCalls(deps, request, writer)
-    const totals = await writer.finish()
-    if (totals.files > MAX_PART_FILES) {
-      throw new PartTooLarge()
-    }
-    await reply(deps, request, {
-      type: 'export.part_ready',
-      payload: {
-        exportId: request.exportId,
-        service: 'playbook',
-        prefix,
-        fileCount: totals.files,
-        bytes: totals.bytes,
-        readyAt: deps.clock.now().toISOString(),
-      },
-    })
+    totals = await writer.finish()
   } catch (error) {
-    if (request.receiveCount < LAST_ATTEMPT) {
+    // A part over the cap fails the same way every time: report it at once, do not retry.
+    if (request.receiveCount < LAST_ATTEMPT && !(error instanceof PartTooLarge)) {
       throw error
     }
     deps.logger.error('an export slice could not be written', {
@@ -377,5 +369,18 @@ export async function writeSlice(deps: ExportDeps, request: ExportRequest): Prom
         failedAt: deps.clock.now().toISOString(),
       },
     })
+    return
   }
+  // Outside the try: a failed publish is retried by the queue, never reported as a failed slice.
+  await reply(deps, request, {
+    type: 'export.part_ready',
+    payload: {
+      exportId: request.exportId,
+      service: 'playbook',
+      prefix,
+      fileCount: totals.files,
+      bytes: totals.bytes,
+      readyAt: deps.clock.now().toISOString(),
+    },
+  })
 }

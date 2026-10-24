@@ -27,7 +27,9 @@ export class PartWriter {
     private readonly deps: PartWriterDeps,
     private readonly organizationId: string,
     private readonly prefix: string,
-    private readonly rowsPerFile: number
+    private readonly rowsPerFile: number,
+    private readonly tooMany: () => Error,
+    private readonly maxFiles: number
   ) {}
 
   /** Adds one row to a dataset and writes the file when it is full. */
@@ -36,7 +38,7 @@ export class PartWriter {
     const buffer = this.buffers.get(dataset) ?? { lines: [], bytes: 0, chunk: 0 }
     this.buffers.set(dataset, buffer)
     buffer.lines.push(line)
-    buffer.bytes += line.length
+    buffer.bytes += this.encoder.encode(line).byteLength
     if (buffer.lines.length >= this.rowsPerFile || buffer.bytes >= MAX_FILE_BYTES) {
       await this.flush(dataset)
     }
@@ -63,12 +65,19 @@ export class PartWriter {
         source.body,
         { maxBytes: MAX_COPY_BYTES, contentType }
       )
-      this.totals.files += 1
-      this.totals.bytes += result.size
+      this.count(result.size)
       return true
     } catch (error) {
       await source.body.cancel().catch(() => undefined)
       throw error
+    }
+  }
+
+  private count(bytes: number): void {
+    this.totals.files += 1
+    this.totals.bytes += bytes
+    if (this.totals.files > this.maxFiles) {
+      throw this.tooMany()
     }
   }
 
@@ -85,7 +94,6 @@ export class PartWriter {
     await this.deps.objects.put(this.organizationId, `${this.prefix}/${name}`, body, {
       contentType: 'application/x-ndjson',
     })
-    this.totals.files += 1
-    this.totals.bytes += body.byteLength
+    this.count(body.byteLength)
   }
 }
