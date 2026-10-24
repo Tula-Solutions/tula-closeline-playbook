@@ -230,6 +230,7 @@ const DEPLOYED = {
   AUTH_AUDIENCE: 'closeline',
   AWS_REGION: 'eu-west-1',
   QUEUE_URL: 'https://sqs.eu-west-1.amazonaws.com/123456789012/playbook',
+  CORE_JOBS_QUEUE_URL: 'https://sqs.eu-west-1.amazonaws.com/123456789012/core-jobs',
   STORAGE_BUCKET: 'closeline-playbook-eu',
   INTERNAL_API_TOKENS: 'a-deployed-secret-of-at-least-32-characters',
 }

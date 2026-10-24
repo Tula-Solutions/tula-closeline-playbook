@@ -49,7 +49,12 @@ import { createHandlers, createPlaybookConsumer } from '~/consumer'
 import { describeError } from '~/describe-error'
 import { type Env, loadEnv, PIPELINE_FAKE_PORTS } from '~/env'
 import { SERVICE } from '~/info'
-import { type PlaybookEnvelope, registry } from '~/messages'
+import {
+  type ExportReplyEnvelope,
+  exportReplyRegistry,
+  type PlaybookEnvelope,
+  registry,
+} from '~/messages'
 import type { Embedder } from '~/ports/embedder'
 import type { OcrReader } from '~/ports/ocr'
 import type { DocumentParser } from '~/ports/parser'
@@ -107,6 +112,8 @@ export type Container = {
   workers: Workers
   /** The ingestion queue: SQS when `QUEUE_URL` is set, otherwise in memory (local and tests only). */
   queue: Queue<PlaybookEnvelope>
+  /** Core's jobs queue, where an export slice reports `export.part_ready` or `export.part_failed`: SQS when `CORE_JOBS_QUEUE_URL` is set, otherwise in memory (local and tests only). */
+  exportQueue: Queue<ExportReplyEnvelope>
   /** Uploaded files: S3 when `STORAGE_BUCKET` is set, otherwise in memory (local and tests only). */
   objects: ObjectStore
   /**
@@ -186,6 +193,20 @@ function createQueue(env: Env): Queue<PlaybookEnvelope> {
   })
 }
 
+/** The SQS queue of core's jobs when `CORE_JOBS_QUEUE_URL` is set, otherwise the kit's memory queue. */
+function createExportQueue(env: Env): Queue<ExportReplyEnvelope> {
+  if (env.CORE_JOBS_QUEUE_URL === undefined) {
+    return createMemoryQueue({ registry: exportReplyRegistry, clock: systemClock })
+  }
+  return createSqsQueue({
+    queueUrl: env.CORE_JOBS_QUEUE_URL,
+    region: env.AWS_REGION,
+    environment: env.ENVIRONMENT,
+    registry: exportReplyRegistry,
+    ...(env.QUEUE_ENDPOINT === undefined ? {} : { endpoint: env.QUEUE_ENDPOINT }),
+  })
+}
+
 /** The S3 object store when `STORAGE_BUCKET` is set, otherwise the kit's memory store. */
 function createObjects(env: Env, logger: Logger): ObjectStore {
   if (env.STORAGE_BUCKET === undefined) {
@@ -241,6 +262,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
   }
 
   const queue = createQueue(env)
+  const exportQueue = createExportQueue(env)
   const objects = createObjects(env, logger)
   const embedder = createMemoryEmbedder()
   const scope = scopeOver(database.db)
@@ -282,6 +304,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     random,
     reportError,
     queue,
+    exportQueue,
   }
   const workers = createWorkers(pipeline, processed)
 
@@ -311,6 +334,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     random,
     workers,
     queue,
+    exportQueue,
     objects,
     vectors,
     processed,

@@ -44,7 +44,13 @@ import type { Container, ErrorContext, ReadinessCheck } from '~/container'
 import { loadEnv } from '~/env'
 import type { AppEnv } from '~/http/types'
 import { SERVICE } from '~/info'
-import { type PlaybookDefinition, type PlaybookEnvelope, registry } from '~/messages'
+import {
+  type ExportReplyDefinition,
+  exportReplyRegistry,
+  type PlaybookDefinition,
+  type PlaybookEnvelope,
+  registry,
+} from '~/messages'
 import { createWorkers } from '~/workers'
 
 /** The issuer and audience the test environment's tokens carry. */
@@ -60,6 +66,8 @@ export type TestDeps = Container & {
   /** Time that moves only when a test advances it; the queue, store and consumer share it. */
   time: VirtualTime
   queue: MemoryQueue<PlaybookDefinition>
+  /** Core's jobs queue as the export slice sees it: what it published, readable by a test. */
+  exportQueue: MemoryQueue<ExportReplyDefinition>
   embedder: MemoryEmbedder
   ocr: MemoryOcrReader
   /** The kit's transcriber stand-in: script its results, fail its calls, list the copies it still holds. */
@@ -117,11 +125,17 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     AUTH_AUDIENCE: TEST_AUDIENCE,
     AWS_REGION: 'us-east-1',
     QUEUE_URL: 'https://sqs.test/000000000000/playbook',
+    CORE_JOBS_QUEUE_URL: 'https://sqs.test/000000000000/core-jobs',
     STORAGE_BUCKET: 'playbook-test',
     INTERNAL_API_TOKENS: TEST_INTERNAL_SECRET,
     ...overrides.env,
   })
   const queue = createMemoryQueue({ registry, clock: time.clock, sleep: time.sleep })
+  const exportQueue = createMemoryQueue({
+    registry: exportReplyRegistry,
+    clock: time.clock,
+    sleep: time.sleep,
+  })
   const embedder = createMemoryEmbedder({ dimensions: 64 })
   const database = createMemoryPlaybookDatabase({ clock: time.clock })
   const scope = overrides.scope ?? database.scope
@@ -149,6 +163,7 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     random: () => 0.5,
     database,
     queue,
+    exportQueue,
     objects: createMemoryObjectStore({ clock: time.clock }),
     vectors: createMemoryVectorStore({ dimensions: embedder.dimensions }),
     processed,
