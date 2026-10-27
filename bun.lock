@@ -8,9 +8,9 @@
         "@hono/zod-openapi": "^1.6.3",
         "drizzle-orm": "^0.45.4",
         "hono": "^4.13.13",
-        "tula-closeline-contract": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#v0.47.0",
-        "tula-closeline-db": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-db.git#v0.51.0",
-        "tula-closeline-kit": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-kit.git#v0.28.0",
+        "tula-closeline-contract": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#v0.50.0",
+        "tula-closeline-db": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-db.git#v0.54.1",
+        "tula-closeline-kit": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-kit.git#v0.28.1",
         "unpdf": "^1.8.1",
         "zod": "^4.6.5",
       },
@@ -303,11 +303,11 @@
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
 
-    "tula-closeline-contract": ["tula-closeline-contract@git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#10060eea46aaf9c45758edc66b3f116c46097f45", { "peerDependencies": { "zod": "^4.6.5" } }, "10060eea46aaf9c45758edc66b3f116c46097f45"],
+    "tula-closeline-contract": ["tula-closeline-contract@git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#61a8b5c2da0f052fb067de13a5961498ee1391ca", { "peerDependencies": { "zod": "^4.6.5" } }, "61a8b5c2da0f052fb067de13a5961498ee1391ca"],
 
-    "tula-closeline-db": ["tula-closeline-db@git+ssh://git@github.com/Tula-Solutions/tula-closeline-db.git#73c3cc3d8098426002cbe9a9d0e803e087e31bee", { "dependencies": { "drizzle-orm": "^0.45.3", "pg": "^8.23.1" } }, "73c3cc3d8098426002cbe9a9d0e803e087e31bee"],
+    "tula-closeline-db": ["tula-closeline-db@git+ssh://git@github.com/Tula-Solutions/tula-closeline-db.git#38146fb08e4150783b0fecae0558c70a23a8a461", { "dependencies": { "drizzle-orm": "^0.45.3", "pg": "^8.23.1" } }, "38146fb08e4150783b0fecae0558c70a23a8a461"],
 
-    "tula-closeline-kit": ["tula-closeline-kit@git+ssh://git@github.com/Tula-Solutions/tula-closeline-kit.git#061c13efc42da5e47539d6ced042407b16cf6127", { "dependencies": { "@aws-sdk/client-bedrock-runtime": "^3.1152.0", "@aws-sdk/client-s3": "^3.1149.0", "@aws-sdk/client-sqs": "^3.1149.0", "@aws-sdk/s3-request-presigner": "^3.1149.0", "@sentry/bun": "^11.6.0", "jose": "^6.2.12", "pino": "^10.4.0", "tula-closeline-contract": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#v0.36.0" }, "peerDependencies": { "hono": "^4.13.13", "zod": "^4.6.5" } }, "061c13efc42da5e47539d6ced042407b16cf6127"],
+    "tula-closeline-kit": ["tula-closeline-kit@git+ssh://git@github.com/Tula-Solutions/tula-closeline-kit.git#1871e90c2ccdf27368d10e80dfe8bfb9f9056a93", { "dependencies": { "@aws-sdk/client-bedrock-runtime": "^3.1152.0", "@aws-sdk/client-s3": "^3.1149.0", "@aws-sdk/client-sqs": "^3.1149.0", "@aws-sdk/s3-request-presigner": "^3.1149.0", "@sentry/bun": "^11.6.0", "jose": "^6.2.12", "pino": "^10.4.0", "tula-closeline-contract": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#v0.36.0" }, "peerDependencies": { "hono": "^4.13.13", "zod": "^4.6.5" } }, "1871e90c2ccdf27368d10e80dfe8bfb9f9056a93"],
 
     "typescript": ["typescript@7.0.2", "", { "optionalDependencies": { "@typescript/typescript-aix-ppc64": "7.0.2", "@typescript/typescript-darwin-arm64": "7.0.2", "@typescript/typescript-darwin-x64": "7.0.2", "@typescript/typescript-freebsd-arm64": "7.0.2", "@typescript/typescript-freebsd-x64": "7.0.2", "@typescript/typescript-linux-arm": "7.0.2", "@typescript/typescript-linux-arm64": "7.0.2", "@typescript/typescript-linux-loong64": "7.0.2", "@typescript/typescript-linux-mips64el": "7.0.2", "@typescript/typescript-linux-ppc64": "7.0.2", "@typescript/typescript-linux-riscv64": "7.0.2", "@typescript/typescript-linux-s390x": "7.0.2", "@typescript/typescript-linux-x64": "7.0.2", "@typescript/typescript-netbsd-arm64": "7.0.2", "@typescript/typescript-netbsd-x64": "7.0.2", "@typescript/typescript-openbsd-arm64": "7.0.2", "@typescript/typescript-openbsd-x64": "7.0.2", "@typescript/typescript-sunos-x64": "7.0.2", "@typescript/typescript-win32-arm64": "7.0.2", "@typescript/typescript-win32-x64": "7.0.2" }, "bin": { "tsc": "bin/tsc" } }, "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="],
 

@@ -4,7 +4,7 @@
   "description": "Closeline playbook service: ingestion, search and fine-tuning of an Organization's sales knowledge",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "scripts": {
     "prepare": "husky || true",
     "dev": "bun --watch src/server.ts",
@@ -25,9 +25,9 @@
     "@hono/zod-openapi": "^1.6.3",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13",
-    "tula-closeline-contract": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#v0.47.0",
-    "tula-closeline-db": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-db.git#v0.51.0",
-    "tula-closeline-kit": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-kit.git#v0.28.0",
+    "tula-closeline-contract": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-contract.git#v0.50.0",
+    "tula-closeline-db": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-db.git#v0.54.1",
+    "tula-closeline-kit": "git+ssh://git@github.com/Tula-Solutions/tula-closeline-kit.git#v0.28.1",
     "unpdf": "^1.8.1",
     "zod": "^4.6.5"
   },
