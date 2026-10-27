@@ -13,6 +13,7 @@ import { createInternalDocumentRouter } from '~/modules/document/internal-router
 import { createDocumentRouter } from '~/modules/document/router'
 import { createHealthRouter } from '~/modules/health/router'
 import { createRightsRouter } from '~/modules/rights/router'
+import { createInternalSearchRouter } from '~/modules/search/internal-router'
 import { createSearchRouter } from '~/modules/search/router'
 import { createSuggestionRouter } from '~/modules/suggestion/router'
 import { serveOpenApi } from '~/openapi'
@@ -31,6 +32,7 @@ export function createApp(container: Container): OpenAPIHono<AppEnv> {
 
   app.route('/', createHealthRouter(container))
   app.route('/', createInternalDocumentRouter(container))
+  app.route('/', createInternalSearchRouter(container))
 
   const publicRoutes = createRouter<AuthedEnv>()
   publicRoutes.use('*', authenticate(container))
