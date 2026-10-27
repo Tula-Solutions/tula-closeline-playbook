@@ -41,6 +41,7 @@ describe('the booted app', () => {
     expect(Object.keys(document.paths).sort()).toEqual([
       '/healthz',
       '/internal/playbook/organizations/{organizationId}/remove-all',
+      '/internal/v1/playbook/search/documents',
       '/readyz',
       '/v1/playbook/calls',
       '/v1/playbook/calls/{callId}',
