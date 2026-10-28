@@ -50,6 +50,11 @@ const MAX_INTERNAL_TOKEN_LENGTH = 512
  */
 export const PIPELINE_FAKE_PORTS = ['embedder', 'ocr', 'vector store', 'transcriber'] as const
 
+/** The ports still on a fake for this configuration: the embedder is real when `EMBEDDER=bedrock`. */
+export function fakePortsOf(env: { EMBEDDER?: 'memory' | 'bedrock' | undefined }): string[] {
+  return PIPELINE_FAKE_PORTS.filter((port) => port !== 'embedder' || env.EMBEDDER !== 'bedrock')
+}
+
 /** A secret is printable ASCII with no space, so it travels in a bearer header unchanged. */
 const PRINTABLE_ASCII = /^[!-~]+$/
 
@@ -125,6 +130,13 @@ const schema = z
 
     /** The AWS Region of the queue and the bucket (not the Closeline Region above). */
     AWS_REGION: z.string().min(1).max(64).optional(),
+    /** Which embedder runs: `memory` (a fake, local only) or `bedrock` (Cohere Embed v4 in `AWS_REGION`). */
+    EMBEDDER: z.enum(['memory', 'bedrock']).optional(),
+    /** The vector length of the Bedrock embedder: 256, 512, 1024 or 1536. */
+    EMBEDDING_DIMENSIONS: z.coerce
+      .number()
+      .pipe(z.union([z.literal(256), z.literal(512), z.literal(1024), z.literal(1536)]))
+      .default(1536),
     /** The ingestion queue's URL. Unset in `local` means the in-memory queue; required elsewhere. */
     QUEUE_URL: z.url().max(2_048).optional(),
     /**
@@ -342,12 +354,12 @@ const schema = z
     if (
       env.ENVIRONMENT !== 'local' &&
       env.WORKERS_ENABLED === true &&
-      PIPELINE_FAKE_PORTS.length > 0
+      fakePortsOf(env).length > 0
     ) {
       context.addIssue({
         code: 'custom',
         path: ['WORKERS_ENABLED'],
-        message: `WORKERS_ENABLED cannot be true outside local while these ports are fakes: ${PIPELINE_FAKE_PORTS.join(', ')}`,
+        message: `WORKERS_ENABLED cannot be true outside local while these ports are fakes: ${fakePortsOf(env).join(', ')}`,
       })
     }
   })

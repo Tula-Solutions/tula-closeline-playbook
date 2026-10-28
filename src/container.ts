@@ -33,6 +33,7 @@ import {
   createMemoryTranscriber,
   createMemoryVectorStore,
 } from 'tula-closeline-kit/testing'
+import { createBedrockEmbedder } from '~/adapters/bedrock/embedder'
 import { createMemoryEmbedder } from '~/adapters/memory/embedder'
 import { createEmptyOcrReader } from '~/adapters/memory/ocr'
 import { createMemorySuggestionPhraser } from '~/adapters/memory/suggestion-phraser'
@@ -48,7 +49,7 @@ import {
 } from '~/adapters/postgres/processed-store'
 import { createHandlers, createPlaybookConsumer } from '~/consumer'
 import { describeError } from '~/describe-error'
-import { type Env, loadEnv, PIPELINE_FAKE_PORTS } from '~/env'
+import { type Env, fakePortsOf, loadEnv } from '~/env'
 import { SERVICE } from '~/info'
 import {
   type ExportReplyEnvelope,
@@ -127,7 +128,7 @@ export type Container = {
   vectors: VectorStore
   /** Which queue messages are done; Postgres, so any instance can be stopped at any time. */
   processed: ProcessedStore
-  /** Turns text into vectors. A fake until a real adapter exists (ADR 0010). */
+  /** Turns text into vectors: Cohere Embed v4 on Bedrock with `EMBEDDER=bedrock`, else a fake. */
   embedder: Embedder
   /** Phrases the Suggestions an Agent's won calls prove. A memory stand-in only; no vendor adapter (ADR 0010). */
   phraser: SuggestionPhraser
@@ -138,7 +139,7 @@ export type Container = {
   /**
    * Turns a Recording into speaker turns (ADR 0010, 0018). The kit's stand-in until the AssemblyAI
    * adapter exists: no real audio leaves the service, and the workers are refused outside `local`
-   * while this is a fake ({@link PIPELINE_FAKE_PORTS}).
+   * while this is a fake ({@link fakePortsOf}).
    */
   transcriber: Transcriber
   /** The queue consumer; built here, started by `server.ts` and stopped on shutdown. */
@@ -261,14 +262,21 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     // Names only: a deployed process on a fake would otherwise look healthy while it embeds
     // nothing real. Remove a name from here as its real adapter lands.
     logger.warn('ports still on fakes', {
-      ports: PIPELINE_FAKE_PORTS,
+      ports: fakePortsOf(env),
     })
   }
 
   const queue = createQueue(env)
   const exportQueue = createExportQueue(env)
   const objects = createObjects(env, logger)
-  const embedder = createMemoryEmbedder()
+  const embedder =
+    env.EMBEDDER === 'bedrock'
+      ? createBedrockEmbedder({
+          region: env.AWS_REGION,
+          dimensions: env.EMBEDDING_DIMENSIONS,
+          timeoutMs: env.INGESTION_IO_TIMEOUT_MS,
+        })
+      : createMemoryEmbedder()
   const phraser = createMemorySuggestionPhraser()
   const scope = scopeOver(database.db)
   const discover: Discover = (kind, after, batch) =>

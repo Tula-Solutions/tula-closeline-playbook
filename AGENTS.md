@@ -44,7 +44,9 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
   the consumer. `src/testing.ts` builds the same container from in-memory doubles and virtual time.
 - The real SQS and S3 adapters are built only when `QUEUE_URL` and `STORAGE_BUCKET` are set; the
   kit's memory adapters otherwise, which `src/env.ts` allows only when `ENVIRONMENT=local`. The
-  vector store is memory only: turbopuffer's adapter is blocked on hub issue 48.
+  vector store is memory only: turbopuffer's adapter is blocked on hub issue 48. The embedder is a fake
+  unless `EMBEDDER=bedrock`: Cohere Embed v4 (ADR 0010) (`src/adapters/bedrock/embedder.ts`, one call
+  per batch of 96, `EMBEDDING_DIMENSIONS` 256/512/1024/1536, deadline `INGESTION_IO_TIMEOUT_MS`).
 - `src/ports/` holds the embedder, parser and OCR ports (ADR 0010, kept here by ADR 0016), each with
   a behaviour suite; `src/adapters/memory/` has the fakes. The parser is the one real adapter:
   `src/adapters/parser/` (PDF through `unpdf`, DOCX and PPTX through our own zip and XML reading,

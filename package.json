@@ -22,6 +22,7 @@
     "verify:changed": "biome check --changed --no-errors-on-unmatched src bench scripts && bun run typecheck && bun run test"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1156.0",
     "@hono/zod-openapi": "^1.6.3",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13",
