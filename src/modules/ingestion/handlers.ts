@@ -2,6 +2,7 @@ import type { Handlers } from 'tula-closeline-kit/queue'
 import type { PlaybookEnvelope } from '~/messages'
 import { cleanupCallDeletion } from '~/modules/call/purge'
 import * as Exports from '~/modules/export/service'
+import { handleEndedCall } from '~/modules/live-call/service'
 import { proposeFromWonDeal } from '~/modules/suggestion/propose'
 import { cleanupDeletion } from './cleanup'
 import type { PipelineDeps } from './runtime'
@@ -68,6 +69,27 @@ export function ingestionHandlers(deps: PipelineDeps, nudge: Nudge): Handlers<Pl
           callId: message.payload.callId,
         })
       }
+    },
+    // Voice's `voice.call.ended` (spec M12): an ended platform Call becomes a Call, or waits for its
+    // Deal. Ids only are logged. A failure throws, so the queue redelivers; the handler is idempotent.
+    'voice.call.ended': async (message, context) => {
+      if (context.organizationId === undefined) {
+        return
+      }
+      const result = await handleEndedCall(
+        deps,
+        context.organizationId,
+        message.payload,
+        context.signal
+      )
+      if (result === 'ingested') {
+        nudge(context.organizationId)
+      }
+      deps.logger.info('an ended platform Call was handled', {
+        organizationId: context.organizationId,
+        callId: message.payload.callId,
+        result,
+      })
     },
     // Core's `export.requested`: write this service's slice and answer on core's jobs queue.
     'export.requested': async (message, context) => {

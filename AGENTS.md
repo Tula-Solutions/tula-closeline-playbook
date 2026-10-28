@@ -158,6 +158,7 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 `SHUTDOWN_TIMEOUT_MS`, `SHUTDOWN_GRACE_MS`, `MAX_REQUEST_BODY_BYTES`, `REGION`, `SENTRY_DSN`,
 `GIT_SHA`, `DATABASE_URL`, `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE`, `AWS_REGION`,
 `QUEUE_URL`, `CORE_JOBS_QUEUE_URL`, `QUEUE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ENDPOINT`, `MAX_UPLOAD_BYTES`,
+- `VOICE_INTERNAL_URL`, `VOICE_INTERNAL_TOKEN` (both or neither): voice's internal origin and secret (ADR 0013) for `voice.call.ended` (`src/modules/live-call/`, streamed Recording, not a hot path). Unset outside `local` the fetch fails and the queue redelivers.
 `MAX_PAGES_PER_DOCUMENT`, `MAX_CONCURRENT_UPLOADS`, `UPLOAD_BODY_TIMEOUT_MS`, `MAX_DOCUMENTS_PER_ORGANIZATION`,
 `MAX_BYTES_PER_ORGANIZATION`, `INTERNAL_API_TOKENS`, `CONSUMER_CONCURRENCY`,
 `CONSUMER_STOP_DEADLINE_MS`, and the worker keys: `WORKERS_ENABLED` (job loop; local: true, elsewhere false), `IMPORTS_ENABLED` (import job; true), `SWEEPS_ENABLED` (true), `WORKERS_STOP_DEADLINE_MS`,

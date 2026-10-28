@@ -12,6 +12,7 @@ import { createDealImportRouter } from '~/modules/deal-import/router'
 import { createInternalDocumentRouter } from '~/modules/document/internal-router'
 import { createDocumentRouter } from '~/modules/document/router'
 import { createHealthRouter } from '~/modules/health/router'
+import { createLiveCallRouter } from '~/modules/live-call/router'
 import { createRightsRouter } from '~/modules/rights/router'
 import { createInternalSearchRouter } from '~/modules/search/internal-router'
 import { createSearchRouter } from '~/modules/search/router'
@@ -39,6 +40,8 @@ export function createApp(container: Container): OpenAPIHono<AppEnv> {
   publicRoutes.route('/', createDocumentRouter(container))
   publicRoutes.route('/', createDealRouter(container))
   publicRoutes.route('/', createDealImportRouter(container))
+  // Before the Call router: `/calls/awaiting-deal` would otherwise match `/calls/{callId}`.
+  publicRoutes.route('/', createLiveCallRouter(container))
   publicRoutes.route('/', createCallRouter(container))
   publicRoutes.route('/', createRightsRouter(container))
   publicRoutes.route('/', createSearchRouter(container))

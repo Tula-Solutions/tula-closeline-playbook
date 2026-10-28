@@ -396,7 +396,7 @@ export const UPLOAD_ATTEMPT_ROUTE = 'documents.upload_attempt'
  */
 export async function recordUploadAttempt(
   deps: Pick<DocumentDeps, 'scope'>,
-  context: CallContext
+  context: { organizationId: CallContext['organizationId']; userId: string }
 ): Promise<void> {
   await transaction(deps, context.organizationId, async (run) => {
     // First, as in the upload transaction: never wait the session default behind a sweep's lock.

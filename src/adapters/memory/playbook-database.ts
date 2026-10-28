@@ -96,6 +96,7 @@ import {
   type MemoryImportRow,
   runImportStatement,
 } from './deal-imports'
+import { type MemoryLiveCallWaitRow, runLiveCallStatement } from './live-calls'
 import { type MemorySuggestionRow, runSuggestionStatement } from './suggestions'
 
 export type { MemoryCallJobRow, MemoryCallRow } from './calls'
@@ -243,6 +244,8 @@ type State = {
   embedUsage: Map<string, number>
   /** The Suggestions an Agent-origin Moment proposed. */
   suggestions: MemorySuggestionRow[]
+  /** The ended Calls that wait for a Deal. */
+  liveWaits: MemoryLiveCallWaitRow[]
 }
 
 /** One `orphan_sweeps` row: the sweep's cursor and the deadline of the claim on it are in microseconds. */
@@ -465,6 +468,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
     orphans: new Map(),
     embedUsage: new Map(),
     suggestions: [],
+    liveWaits: [],
   }
   const failures: { statement: string; error: Error; once: boolean }[] = []
   const commitFailures: { error: Error; applied: boolean }[] = []
@@ -1837,6 +1841,20 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
           if (suggested !== undefined) {
             return suggested
           }
+          const waited = runLiveCallStatement(text, params, {
+            liveWaits: state.liveWaits,
+            own,
+            nextMicroseconds,
+            rows,
+            none,
+            batch,
+            pgTimestamp,
+            pgTimestampUs,
+            cursorMicroseconds,
+          })
+          if (waited !== undefined) {
+            return waited
+          }
           const called = runCallStatement(text, params, {
             calls: state.calls,
             callJobs: state.callJobs,
@@ -2030,6 +2048,7 @@ export function createMemoryPlaybookDatabase(options: { clock: Clock }): MemoryP
         orphans: structuredClone(committed.orphans),
         embedUsage: new Map(committed.embedUsage),
         suggestions: structuredClone(committed.suggestions),
+        liveWaits: structuredClone(committed.liveWaits),
       }
       const inside: string[] = []
       transactionStatements.push(inside)
