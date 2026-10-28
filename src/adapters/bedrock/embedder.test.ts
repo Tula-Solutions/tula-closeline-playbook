@@ -68,7 +68,7 @@ describe('bedrock embedder', () => {
   })
 
   test('a wrong-length embedding is refused', async () => {
-    await expect(make(fake(128)).embed(['a'], options)).rejects.toThrow(/unexpected embedding/)
+    await expect(make(fake(128)).embed(['a'], options)).rejects.toThrow(/embedder.unavailable/)
   })
 
   test('the deadline cuts a hung call', async () => {
