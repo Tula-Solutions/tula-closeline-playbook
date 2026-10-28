@@ -130,13 +130,13 @@ const schema = z
 
     /** The AWS Region of the queue and the bucket (not the Closeline Region above). */
     AWS_REGION: z.string().min(1).max(64).optional(),
-    /** Which embedder runs: `memory` (a fake, local only) or `bedrock` (Titan V2 in `AWS_REGION`). */
+    /** Which embedder runs: `memory` (a fake, local only) or `bedrock` (Cohere Embed v4 in `AWS_REGION`). */
     EMBEDDER: z.enum(['memory', 'bedrock']).optional(),
-    /** The vector length of the Bedrock embedder: 256, 512 or 1024. */
+    /** The vector length of the Bedrock embedder: 256, 512, 1024 or 1536. */
     EMBEDDING_DIMENSIONS: z.coerce
       .number()
-      .pipe(z.union([z.literal(256), z.literal(512), z.literal(1024)]))
-      .default(1024),
+      .pipe(z.union([z.literal(256), z.literal(512), z.literal(1024), z.literal(1536)]))
+      .default(1536),
     /** The ingestion queue's URL. Unset in `local` means the in-memory queue; required elsewhere. */
     QUEUE_URL: z.url().max(2_048).optional(),
     /**

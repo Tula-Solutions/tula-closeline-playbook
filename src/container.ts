@@ -128,7 +128,7 @@ export type Container = {
   vectors: VectorStore
   /** Which queue messages are done; Postgres, so any instance can be stopped at any time. */
   processed: ProcessedStore
-  /** Turns text into vectors: Titan V2 on Bedrock with `EMBEDDER=bedrock`, else a fake. */
+  /** Turns text into vectors: Cohere Embed v4 on Bedrock with `EMBEDDER=bedrock`, else a fake. */
   embedder: Embedder
   /** Phrases the Suggestions an Agent's won calls prove. A memory stand-in only; no vendor adapter (ADR 0010). */
   phraser: SuggestionPhraser
