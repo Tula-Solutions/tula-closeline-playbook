@@ -144,6 +144,15 @@ const schema = z
      * `local` means an in-memory queue nobody reads; required elsewhere.
      */
     CORE_JOBS_QUEUE_URL: z.url().max(2_048).optional(),
+    /** Voice's origin, where an ended Call's Recording is fetched (ADR 0013). Set with `VOICE_INTERNAL_TOKEN`. */
+    VOICE_INTERNAL_URL: z.url().max(2_048).optional(),
+    /** The internal bearer secret voice accepts from this service. Never logged. */
+    VOICE_INTERNAL_TOKEN: z
+      .string()
+      .min(MIN_INTERNAL_TOKEN_LENGTH)
+      .max(MAX_INTERNAL_TOKEN_LENGTH)
+      .regex(PRINTABLE_ASCII)
+      .optional(),
     /** Where ElasticMQ listens, for a local run against it. Accepted only when `local`. */
     QUEUE_ENDPOINT: z.url().max(2_048).optional(),
     /** The bucket holding uploaded files. Unset in `local` means the in-memory store; required elsewhere. */
@@ -380,6 +389,24 @@ const schema = z
           })
         }
       }
+    }
+    if ((env.VOICE_INTERNAL_URL === undefined) !== (env.VOICE_INTERNAL_TOKEN === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['VOICE_INTERNAL_URL'],
+        message: 'VOICE_INTERNAL_URL and VOICE_INTERNAL_TOKEN are set together or not at all',
+      })
+    }
+    if (
+      env.ENVIRONMENT !== 'local' &&
+      env.VOICE_INTERNAL_URL !== undefined &&
+      !env.VOICE_INTERNAL_URL.startsWith('https://')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['VOICE_INTERNAL_URL'],
+        message: 'VOICE_INTERNAL_URL must be https outside local',
+      })
     }
     if (env.INTERNAL_API_TOKENS !== undefined) {
       const entries = env.INTERNAL_API_TOKENS.split(',')

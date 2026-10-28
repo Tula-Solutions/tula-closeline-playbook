@@ -171,6 +171,8 @@ The shape in `.claude/COMMON.md` is built; add modules under `src/modules/<name>
 keys, `AWS_REGION`, `QUEUE_URL`, `CORE_JOBS_QUEUE_URL`, `STORAGE_BUCKET` and `INTERNAL_API_TOKENS` are required (the
 public local secret is refused). Add a key in both files.
 
+`VOICE_INTERNAL_URL` and `VOICE_INTERNAL_TOKEN` (both or neither, https outside `local`) are voice's internal origin and secret (ADR 0013) for `voice.call.ended` (`src/modules/live-call/`, a streamed Recording, not a hot path). Unset outside `local`, the fetch fails and the queue redelivers.
+
 ## Hot paths
 
 Each has a benchmark in `bench/` with a budget; a change to one states its complexity in the PR.

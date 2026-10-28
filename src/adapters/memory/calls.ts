@@ -357,9 +357,12 @@ export function runCallStatement(
         return none
       }
       const contentHash = Buffer.from(hash).toString('hex')
-      const rightsOk = ctx.rights.some(
-        (r) => r.organization_id === organization && r.wording_version === wordingVersion
-      )
+      // A Call the platform recorded itself (origin `rep`) needs no rights confirmation.
+      const rightsOk =
+        origin === 'rep' ||
+        ctx.rights.some(
+          (r) => r.organization_id === organization && r.wording_version === wordingVersion
+        )
       const dup = mine(organization).find(
         (c) =>
           c.content_hash === contentHash &&

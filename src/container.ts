@@ -47,6 +47,7 @@ import {
   statementOf,
   withoutRemovedOrganizations,
 } from '~/adapters/postgres/processed-store'
+import { createVoiceHttpRecordings } from '~/adapters/voice-http/recordings'
 import { createHandlers, createPlaybookConsumer } from '~/consumer'
 import { describeError } from '~/describe-error'
 import { type Env, fakePortsOf, loadEnv } from '~/env'
@@ -61,6 +62,7 @@ import type { Embedder } from '~/ports/embedder'
 import type { OcrReader } from '~/ports/ocr'
 import type { DocumentParser } from '~/ports/parser'
 import type { SuggestionPhraser } from '~/ports/suggestion-phraser'
+import type { VoiceRecordings } from '~/ports/voice-recordings'
 import { trackerSafe } from '~/tracker-safe'
 import { createWorkers, type Workers } from '~/workers'
 
@@ -142,6 +144,8 @@ export type Container = {
    * while this is a fake ({@link fakePortsOf}).
    */
   transcriber: Transcriber
+  /** Opens an ended Call's Recording at voice over the internal call (ADR 0013). */
+  voiceRecordings: VoiceRecordings
   /** The queue consumer; built here, started by `server.ts` and stopped on shutdown. */
   consumer: Consumer
   /** Probes run by `/readyz`: the database. */
@@ -296,6 +300,21 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
   const ocr = createEmptyOcrReader()
   // No real adapter yet (blocked on the vendor account and ADR 0018's preconditions): the stand-in.
   const transcriber = createMemoryTranscriber({ environment: env.ENVIRONMENT })
+  // Unset outside local would drop Calls silently, so there it fails and the queue redelivers.
+  const voiceRecordings: VoiceRecordings =
+    env.VOICE_INTERNAL_URL !== undefined && env.VOICE_INTERNAL_TOKEN !== undefined
+      ? createVoiceHttpRecordings({
+          baseUrl: env.VOICE_INTERNAL_URL,
+          token: env.VOICE_INTERNAL_TOKEN,
+        })
+      : {
+          open: async () => {
+            if (env.ENVIRONMENT !== 'local') {
+              throw new Error('VOICE_INTERNAL_URL is not set')
+            }
+            return null
+          },
+        }
   const random = Math.random
   const reportError: Container['reportError'] = (error, context) => {
     logger.error('unhandled error', { ...context, error: describeError(error) })
@@ -311,6 +330,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     parser,
     ocr,
     transcriber,
+    voiceRecordings,
     logger,
     clock: systemClock,
     env,
@@ -357,6 +377,7 @@ export function createContainer(env: Env = loadEnv(), options: ContainerOptions 
     parser,
     ocr,
     transcriber,
+    voiceRecordings,
     consumer,
     readinessChecks: [
       {

@@ -8,6 +8,7 @@ import {
   exportPartReadyEvent,
   exportRequestedEvent,
   prospectErasedEvent,
+  voiceCallEndedEvent,
 } from 'tula-closeline-contract'
 import { createMessageRegistry, defineMessage, type EnvelopeOf } from 'tula-closeline-kit'
 
@@ -40,6 +41,18 @@ export const prospectErased = defineMessage({
   version: 1,
   scope: 'organization',
   payload: prospectErasedEvent.schema.shape.data,
+})
+
+/**
+ * `voice.call.ended` as voice publishes it (spec M12): a Call the platform made itself has ended.
+ * The payload is the `data` of the contract's event; the handler fetches the Recording and makes a
+ * Call of it (see `ingestionHandlers`).
+ */
+export const voiceCallEnded = defineMessage({
+  type: 'voice.call.ended',
+  version: 1,
+  scope: 'organization',
+  payload: voiceCallEndedEvent.schema.shape.data,
 })
 
 /**
@@ -77,6 +90,7 @@ export type PlaybookDefinition =
   | typeof callDeleted
   | typeof callRepChanged
   | typeof prospectErased
+  | typeof voiceCallEnded
   | typeof exportRequested
 
 /** An envelope of any type this service's queue carries. */
@@ -90,6 +104,7 @@ export const registry = createMessageRegistry([
   callDeleted,
   callRepChanged,
   prospectErased,
+  voiceCallEnded,
   exportRequested,
 ])
 

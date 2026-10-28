@@ -39,8 +39,10 @@ import {
   CALL_RESTORE_FOR_UPLOAD,
   CALL_SET_REP,
   CALL_SOFT_DELETE,
+  LIVE_CALL_WAIT_CLEAR,
   QUOTA_LOCK,
 } from 'tula-closeline-db'
+import { INTERNAL_CALL_USER_ID } from 'tula-closeline-db/schema'
 import { AppError, StorageError } from 'tula-closeline-kit'
 import type { Run } from '~/adapters/postgres/processed-store'
 import type { Container } from '~/container'
@@ -958,6 +960,134 @@ export async function uploadRecording(
     await settleObject(deps, organizationId, objectKey, callId, true)
   }
   return { status: outcome.status, call: outcome.call }
+}
+
+/** The first bytes a WAV file starts with are checked as they stream; a file that is not one stops the store. */
+async function* wavOnly(body: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
+  let head = new Uint8Array(0)
+  let checked = false
+  for await (const chunk of body) {
+    if (!checked) {
+      head = Uint8Array.from([...head, ...chunk.subarray(0, SIGNATURE_BYTES - head.byteLength)])
+      if (head.byteLength >= SIGNATURE_BYTES) {
+        checked = true
+        if (!recordingSignatureMatches('.wav', head)) {
+          throw failure('call.unsupported_type')
+        }
+      }
+    }
+    yield chunk
+  }
+  if (!checked) {
+    throw failure('call.unsupported_type')
+  }
+}
+
+/**
+ * Stores the Recording of a Call the platform made itself (voice, spec M12) as a Call of the Deal
+ * the Rep named, with the same id as voice's Call, and queues its transcription with channel 1 as
+ * the Rep (`right`), so `awaiting_rep` is skipped. No rights confirmation applies: origin `rep`.
+ * Idempotent on the Call id: a Call that exists answers `existing` before voice is asked for the
+ * file. `open` is called only when the Call is new, and its `null` is `no_recording`. The file
+ * streams through {@link wavOnly} into the store; a failure after it leaves no Call and the object is
+ * removed when that is certain. The Call and the end of its wait commit together.
+ * shortcut: a soft-deleted Call of the same id is not restored, a rare redelivery after a delete;
+ * add `CALL_RESTORE_FOR_UPLOAD` here if a Rep can delete a live Call and expect it back.
+ */
+export async function ingestPlatformRecording(
+  deps: CallDeps,
+  input: {
+    organizationId: CallContext['organizationId']
+    callId: string
+    dealId: string
+    open: () => Promise<AsyncIterable<Uint8Array> | null>
+    signal: AbortSignal
+  }
+): Promise<'ingested' | 'existing' | 'no_recording'> {
+  const { organizationId, callId } = input
+  const known = await transaction(
+    deps,
+    organizationId,
+    async (run) => (await run(CALL_GET, [organizationId, callId])).rows[0]
+  )
+  if (known !== undefined) {
+    await transaction(deps, organizationId, (run) =>
+      run(LIVE_CALL_WAIT_CLEAR, [organizationId, callId])
+    )
+    return 'existing'
+  }
+  const body = await input.open()
+  if (body === null) {
+    return 'no_recording'
+  }
+  const objectKey = callObjectKey(callId, '.wav')
+  await recordUploadAttempt(deps, { organizationId, userId: INTERNAL_CALL_USER_ID })
+  let result: { size: number; sha256: string }
+  try {
+    result = await deps.objects.putStream(organizationId, objectKey, wavOnly(body), {
+      maxBytes: MAX_RECORDING_BYTES,
+      contentType: 'audio/wav',
+      signal: input.signal,
+    })
+  } catch (error) {
+    await removePartialObject(deps, organizationId, objectKey, callId)
+    throw error instanceof AppError ? error : asStorageFailure(error)
+  }
+  if (result.size === 0) {
+    await removePartialObject(deps, organizationId, objectKey, callId)
+    throw failure('request.invalid')
+  }
+  const decide = async (run: Run): Promise<'created' | 'existing'> => {
+    await run(LOCK_TIMEOUT_SQL, [])
+    await run(QUOTA_LOCK, [organizationId])
+    const answer = (
+      await run(CALL_INSERT, [
+        organizationId,
+        callId,
+        input.dealId,
+        formatId('deal', crypto.randomUUID()),
+        `${callId}.wav`,
+        'audio/wav',
+        'recording',
+        result.size,
+        Buffer.from(result.sha256, 'hex'),
+        INTERNAL_CALL_USER_ID,
+        objectKey,
+        'channel',
+        null,
+        'right',
+        formatId('cjob', crypto.randomUUID()),
+        DEFAULT_MAX_CALLS,
+        DEFAULT_MAX_RECORDING_BYTES_TOTAL,
+        deps.env.MAX_DEALS_PER_ORGANIZATION,
+        CURRENT_RIGHTS_WORDING_VERSION,
+        'rep',
+      ])
+    ).rows[0]
+    if (answer?.result === 'other_deal') {
+      throw failure('call.content_in_other_deal')
+    }
+    if (answer?.result === 'quota_exceeded') {
+      throw failure('call.quota_exceeded')
+    }
+    if (answer?.result !== 'created' && answer?.result !== 'existing') {
+      throw new Error('the Call insert answered with a result the service does not know')
+    }
+    await run(LIVE_CALL_WAIT_CLEAR, [organizationId, callId])
+    return answer.result
+  }
+  let outcome: 'created' | 'existing'
+  try {
+    outcome = await transaction(deps, organizationId, decide)
+  } catch (error) {
+    await settleObject(deps, organizationId, objectKey, callId, rolledBack(error))
+    throw error
+  }
+  if (outcome === 'existing') {
+    // The same bytes were already stored under an earlier Call of this Deal: this copy is not needed.
+    await settleObject(deps, organizationId, objectKey, callId, true)
+  }
+  return 'ingested'
 }
 
 /** Deletes the object of an upload that failed while streaming; a failure to delete is logged by id and left to the orphan sweep. */

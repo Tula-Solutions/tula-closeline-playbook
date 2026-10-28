@@ -18,6 +18,7 @@ export type PipelineDeps = Pick<
   | 'parser'
   | 'ocr'
   | 'transcriber'
+  | 'voiceRecordings'
   | 'logger'
   | 'clock'
   | 'env'

@@ -55,6 +55,7 @@ import {
   type PlaybookEnvelope,
   registry,
 } from '~/messages'
+import type { VoiceRecordings } from '~/ports/voice-recordings'
 import { createWorkers } from '~/workers'
 
 /** The issuer and audience the test environment's tokens carry. */
@@ -78,6 +79,8 @@ export type TestDeps = Container & {
   ocr: MemoryOcrReader
   /** The kit's transcriber stand-in: script its results, fail its calls, list the copies it still holds. */
   transcriber: MemoryTranscriber
+  /** Voice's Recordings by Call id: put bytes in, `open` streams them, a missing id is voice's 404. */
+  voiceRecordings: VoiceRecordings & { recordings: Map<string, Uint8Array> }
   /** The database double behind `scope`: it runs the db library's statements in memory. */
   database: MemoryPlaybookDatabase
   /** The kit's memory error reporter: what the consumer and the error handler would send to Sentry. */
@@ -119,6 +122,17 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
     level: 'debug',
     destination: { write: (line) => void logLines.push(line) },
   })
+  const voiceRecordingsFake = {
+    recordings: new Map<string, Uint8Array>(),
+    open: async (_organizationId: string, callId: string) => {
+      const bytes = voiceRecordingsFake.recordings.get(callId)
+      return bytes === undefined
+        ? null
+        : (async function* () {
+            yield bytes
+          })()
+    },
+  }
   const env = loadEnv({
     ENVIRONMENT: 'local',
     LOG_LEVEL: 'debug',
@@ -200,6 +214,7 @@ export function createTestDeps(overrides: TestDepsOverrides = {}): TestDeps {
         },
       }),
     }),
+    voiceRecordings: voiceRecordingsFake,
     // Replaced just below: the workers and the consumer read the rest of these fields by name.
     workers: undefined as never,
     consumer: undefined as never,
