@@ -42,6 +42,7 @@ describe('the booted app', () => {
       '/healthz',
       '/internal/playbook/organizations/{organizationId}/remove-all',
       '/internal/v1/playbook/search/documents',
+      '/internal/v1/playbook/search/moments',
       '/readyz',
       '/v1/playbook/calls',
       '/v1/playbook/calls/awaiting-deal',

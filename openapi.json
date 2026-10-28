@@ -911,6 +911,442 @@
         }
       }
     },
+    "/internal/v1/playbook/search/moments": {
+      "post": {
+        "tags": [
+          "internal"
+        ],
+        "summary": "Find similar Moments in an Organization's won Deals for another service",
+        "description": "Internal, called by core (grounded Drafts) and voice (Copilot cards) with the shared secret (ADR 0013). Same request and answer as the public Moment search. The Organization is the `X-Organization-Id` header, never the body.",
+        "security": [
+          {
+            "internalSecret": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^org_[0-9a-f]{32}$"
+            },
+            "required": true,
+            "name": "x-organization-id",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "turns": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "rep",
+                            "prospect"
+                          ]
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 4000
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "text"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "minItems": 1,
+                    "maxItems": 6
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 5
+                  }
+                },
+                "required": [
+                  "turns"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The best matches, best first, with the evidence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "callId": {
+                            "type": "string",
+                            "pattern": "^call_[0-9a-f]{32}$"
+                          },
+                          "dealRecordId": {
+                            "type": "string",
+                            "pattern": "^deal_[0-9a-f]{32}$"
+                          },
+                          "momentIndex": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 999
+                          },
+                          "origin": {
+                            "type": "string",
+                            "enum": [
+                              "imported",
+                              "rep",
+                              "agent"
+                            ]
+                          },
+                          "score": {
+                            "type": "number"
+                          },
+                          "prospect": {
+                            "type": "string",
+                            "maxLength": 1024
+                          },
+                          "repNext": {
+                            "type": "string",
+                            "maxLength": 1024
+                          }
+                        },
+                        "required": [
+                          "callId",
+                          "dealRecordId",
+                          "score",
+                          "prospect",
+                          "repNext"
+                        ]
+                      },
+                      "maxItems": 20
+                    },
+                    "suggestions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "suggestionId": {
+                            "type": "string",
+                            "pattern": "^sgs_[0-9a-f]{32}$"
+                          },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "objection_answer",
+                              "discovery_question",
+                              "closing_move"
+                            ]
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1000
+                          },
+                          "score": {
+                            "type": "number"
+                          },
+                          "provenance": {
+                            "type": "object",
+                            "properties": {
+                              "dealRecordId": {
+                                "type": "string",
+                                "pattern": "^deal_[0-9a-f]{32}$"
+                              },
+                              "momentRefs": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "callId": {
+                                      "type": "string",
+                                      "pattern": "^call_[0-9a-f]{32}$"
+                                    },
+                                    "dealRecordId": {
+                                      "type": "string",
+                                      "pattern": "^deal_[0-9a-f]{32}$"
+                                    },
+                                    "momentIndex": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 999
+                                    }
+                                  },
+                                  "required": [
+                                    "callId",
+                                    "dealRecordId"
+                                  ]
+                                },
+                                "maxItems": 10
+                              }
+                            },
+                            "required": [
+                              "dealRecordId",
+                              "momentRefs"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "suggestionId",
+                          "kind",
+                          "text",
+                          "score",
+                          "provenance"
+                        ]
+                      },
+                      "maxItems": 20,
+                      "default": []
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "moments": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "deals": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 100
+                        }
+                      },
+                      "required": [
+                        "moments",
+                        "deals"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "evidence"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "server.unavailable.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$",
+                  "description": "Whole seconds to wait before trying again."
+                },
+                "required": true,
+                "description": "Whole seconds to wait before trying again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "server.timeout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/playbook/documents": {
       "post": {
         "description": "Uploads one file (multipart/form-data, one part named \"file\") to the Organization's Playbook. Owner and Admin only; Managers and Reps get auth.forbidden. The type and size of the file part are checked before anything is stored: document.unsupported_type (415) and document.too_large (413); a malformed name or an empty file is request.invalid. The common request.too_large and request.unsupported_media_type apply to the whole request instead: a body over the envelope limit, or a body that is not multipart. Answers 201 with the new document in state \"uploaded\". If the content matches a document the Organization already has, answers 200 with that stored document, with its stored fileName (not the new upload's name), so a duplicate is an answer, not an error: a match on a \"deleted\" document restores it (state \"processing\"), and a match on a \"failed\" document re-queues it for processing and answers with state \"uploaded\". The page limit is not checked here: a document over it ends in state \"failed\" with failureReason \"too_many_pages\". Accepts an Idempotency-Key header.",
@@ -5703,6 +6139,264 @@
           },
           "404": {
             "description": "deal_import.not_found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "server.internal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/playbook/calls/awaiting-deal": {
+      "get": {
+        "description": "Lists ended platform Calls that carry no Deal identifier and so wait, in the named state awaiting_deal, before the Playbook ingests them. Oldest first, one cursor-paginated page at a time (at most 100). Each gives the Call id, its direction and when it ended. Owner and Admin only.",
+        "tags": [
+          "calls"
+        ],
+        "summary": "List ended platform Calls that wait for a Deal",
+        "security": [
+          {
+            "accessToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\d{1,3}$"
+                }
+              ],
+              "default": 25
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of Calls in the state awaiting_deal, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "callId": {
+                            "type": "string",
+                            "pattern": "^call_[0-9a-f]{32}$"
+                          },
+                          "direction": {
+                            "type": "string",
+                            "enum": [
+                              "inbound",
+                              "outbound"
+                            ]
+                          },
+                          "endedAt": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "format": "date-time"
+                          },
+                          "createdAt": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "callId",
+                          "direction",
+                          "endedAt",
+                          "createdAt"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "maxItems": 100
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "minLength": 1,
+                      "maxLength": 512
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "nextCursor"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "request.invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "auth.unauthenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "maxLength": 100,
+                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+                        },
+                        "message": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000
+                        },
+                        "details": {
+                          "type": "object",
+                          "additionalProperties": {}
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "auth.forbidden.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12833,264 +13527,6 @@
                     "learnFromAgentMoments"
                   ],
                   "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "request.invalid.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string",
-                          "maxLength": 100,
-                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
-                        },
-                        "message": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 2000
-                        },
-                        "details": {
-                          "type": "object",
-                          "additionalProperties": {}
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "auth.unauthenticated.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string",
-                          "maxLength": 100,
-                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
-                        },
-                        "message": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 2000
-                        },
-                        "details": {
-                          "type": "object",
-                          "additionalProperties": {}
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "auth.forbidden.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string",
-                          "maxLength": 100,
-                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
-                        },
-                        "message": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 2000
-                        },
-                        "details": {
-                          "type": "object",
-                          "additionalProperties": {}
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "server.internal.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string",
-                          "maxLength": 100,
-                          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
-                        },
-                        "message": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 2000
-                        },
-                        "details": {
-                          "type": "object",
-                          "additionalProperties": {}
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/playbook/calls/awaiting-deal": {
-      "get": {
-        "description": "Lists ended platform Calls that carry no Deal identifier and so wait, in the named state awaiting_deal, before the Playbook ingests them. Oldest first, one cursor-paginated page at a time (at most 100). Each gives the Call id, its direction and when it ended. Owner and Admin only.",
-        "tags": [
-          "calls"
-        ],
-        "summary": "List ended platform Calls that wait for a Deal",
-        "security": [
-          {
-            "accessToken": []
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 512
-            },
-            "required": false,
-            "name": "cursor",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "string",
-                  "pattern": "^\\d{1,3}$"
-                }
-              ],
-              "default": 25
-            },
-            "required": false,
-            "name": "limit",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "One page of Calls in the state awaiting_deal, oldest first.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "items": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": {
-                          "callId": {
-                            "type": "string",
-                            "pattern": "^call_[0-9a-f]{32}$"
-                          },
-                          "direction": {
-                            "type": "string",
-                            "enum": [
-                              "inbound",
-                              "outbound"
-                            ]
-                          },
-                          "endedAt": {
-                            "type": "string",
-                            "maxLength": 64,
-                            "format": "date-time"
-                          },
-                          "createdAt": {
-                            "type": "string",
-                            "maxLength": 64,
-                            "format": "date-time"
-                          }
-                        },
-                        "required": [
-                          "callId",
-                          "direction",
-                          "endedAt",
-                          "createdAt"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "maxItems": 100
-                    },
-                    "nextCursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ],
-                      "minLength": 1,
-                      "maxLength": 512
-                    }
-                  },
-                  "required": [
-                    "items",
-                    "nextCursor"
-                  ]
                 }
               }
             }
