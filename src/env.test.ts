@@ -408,3 +408,11 @@ describe('MAX_DEALS_PER_ORGANIZATION and IMPORTS_ENABLED', () => {
     expect(loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev' }).WORKERS_ENABLED).toBe(false)
   })
 })
+
+describe('EMBEDDER', () => {
+  test('bedrock takes the embedder off the fake list that blocks the workers', () => {
+    expect(() =>
+      loadEnv({ ...DEPLOYED, ENVIRONMENT: 'dev', WORKERS_ENABLED: 'true', EMBEDDER: 'bedrock' })
+    ).toThrow(/ocr, vector store/)
+  })
+})
